@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { GameState, GameAction, PlayerId, DeckDef } from "@/types";
 import { createGame } from "@/engine/init";
 import { executeAction, getValidActions } from "@/engine/turnManager";
@@ -23,11 +23,25 @@ export function useGameEngine(
   const [state, setState] = useState<GameState>(() =>
     createGame(humanDeck, aiDeck)
   );
+  // Counter that increments every state change to force useEffect re-trigger
+  const [stateVersion, setStateVersion] = useState(0);
   const aiPlayer: PlayerId = humanPlayer === "player1" ? "player2" : "player1";
+
+  // Wrap setState to also bump version
+  const updateState = useCallback((updater: (prev: GameState) => GameState) => {
+    setState((prev) => {
+      const next = updater(prev);
+      if (next !== prev) {
+        // Schedule version bump on next microtask to ensure re-render
+        setTimeout(() => setStateVersion((v) => v + 1), 0);
+      }
+      return next;
+    });
+  }, []);
 
   // Human dispatch
   const dispatch = useCallback((action: GameAction) => {
-    setState((prev) => {
+    updateState((prev) => {
       try {
         return executeAction(prev, action);
       } catch (err) {
@@ -35,34 +49,34 @@ export function useGameEngine(
         return prev;
       }
     });
-  }, []);
+  }, [updateState]);
 
   // Determine what needs to happen automatically
-  const needsAutoAction = useMemo(() => {
-    if (state.winner) return "none" as const;
+  const needsAutoAction = useMemo((): "ai_defend" | "auto_pass" | "ai_turn" | "none" => {
+    if (state.winner) return "none";
 
-    // Case A: Human attacked, AI must defend (counter or pass)
+    // Human attacked, AI must defend
     if (state.pendingAttack && state.currentPlayer === humanPlayer) {
-      return "ai_defend" as const;
+      return "ai_defend";
     }
 
-    // Case B: AI attacked, human has no real counters → auto pass
+    // AI attacked, human has no real counters
     if (state.pendingAttack && state.currentPlayer === aiPlayer) {
       const humanActions = getValidActions(state, humanPlayer);
       const hasRealCounter = humanActions.some((a) => a.type !== "passCounter");
-      if (!hasRealCounter) return "auto_pass" as const;
-      return "none" as const; // Human has counters, show UI
+      if (!hasRealCounter) return "auto_pass";
+      return "none";
     }
 
-    // Case C: AI's turn, no pending attack
+    // AI's turn
     if (state.currentPlayer === aiPlayer && !state.pendingAttack) {
-      return "ai_turn" as const;
+      return "ai_turn";
     }
 
-    return "none" as const;
+    return "none";
   }, [state, humanPlayer, aiPlayer]);
 
-  // Execute automatic actions with a delay
+  // Execute automatic actions — depends on stateVersion to re-trigger
   useEffect(() => {
     if (needsAutoAction === "none") return;
 
@@ -70,13 +84,11 @@ export function useGameEngine(
                   needsAutoAction === "ai_defend" ? 500 : 600;
 
     const timer = setTimeout(() => {
-      setState((prev) => {
-        // Re-check conditions inside setState to avoid stale state
+      updateState((prev) => {
         if (prev.winner) return prev;
 
         if (needsAutoAction === "ai_defend") {
           if (!prev.pendingAttack) return prev;
-          // AI tries to play counter
           const aiActions = getValidActions(prev, aiPlayer);
           const survive = aiActions.find((a) => {
             if (a.type !== "playCounter") return false;
@@ -117,16 +129,14 @@ export function useGameEngine(
     }, delay);
 
     return () => clearTimeout(timer);
-  }, [needsAutoAction, aiPlayer]);
+  }, [needsAutoAction, stateVersion, aiPlayer, updateState]);
 
   // Valid actions for human
   const validActions = useMemo(() => {
     if (state.winner) return [];
-    // Human defending against AI attack
     if (state.pendingAttack && state.currentPlayer === aiPlayer) {
       return getValidActions(state, humanPlayer);
     }
-    // Human's turn
     if (!state.pendingAttack && state.currentPlayer === humanPlayer) {
       return getValidActions(state, humanPlayer);
     }
