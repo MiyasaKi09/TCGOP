@@ -211,6 +211,11 @@ export function deployCharacter(
   });
 
   next = addLog(next, playerId, `Deploie ${def.name} en ${slot}`);
+
+  // Recalculate passive buffs (new character on board may trigger synergies, captain buffs)
+  const { recalculatePassiveBuffs } = require("./passives");
+  next = recalculatePassiveBuffs(next, playerId);
+
   return next;
 }
 

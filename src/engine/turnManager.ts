@@ -406,8 +406,21 @@ export function getValidActions(
 
     if (char.statusEffects.some((e) => e.type === "freeze")) continue;
 
+    // Check cannotAttackFemale passive
+    const cannotAttackFemale = def.passive?.effects.some(
+      (e) => e.type === "cannotAttackFemale"
+    ) ?? false;
+
     const targets = getValidTargets(state, char.instanceId, false);
     for (const targetId of targets.characterTargets) {
+      // Filter female targets if cannotAttackFemale
+      if (cannotAttackFemale) {
+        const targetCard = state.cards[targetId];
+        if (targetCard) {
+          const targetDef = getCardDef(targetCard.defId);
+          if (targetDef.tags?.includes("female")) continue;
+        }
+      }
       actions.push({
         type: "baseAttack",
         attackerInstanceId: char.instanceId,
@@ -438,8 +451,17 @@ export function getValidActions(
 
     if (char.statusEffects.some((e) => e.type === "freeze")) continue;
 
+    // Check cannotAttackFemale
+    const cantFemale = def.passive?.effects.some(
+      (e) => e.type === "cannotAttackFemale"
+    ) ?? false;
+
     const targets = getValidTargets(state, char.instanceId, true);
     for (const targetId of targets.characterTargets) {
+      if (cantFemale) {
+        const tc = state.cards[targetId];
+        if (tc && getCardDef(tc.defId).tags?.includes("female")) continue;
+      }
       actions.push({
         type: "specialAttack",
         attackerInstanceId: char.instanceId,

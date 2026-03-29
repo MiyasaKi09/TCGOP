@@ -36,7 +36,7 @@ export const mugiwaraCards: CardDef[] = [
     id: "ST01-003", name: "Nami", type: "character", cost: 2,
     faction: "pirate", rarity: "C", set: "ST01",
     atk: 1, def: 1, pv: 4,
-    traits: ["stealth", "range"], tags: ["mugiwara", "navigateur"],
+    traits: ["stealth", "range"], tags: ["mugiwara", "navigateur", "female"],
     preferredRow: "back",
     passive: {
       name: "Art de la navigation",
@@ -78,7 +78,7 @@ export const mugiwaraCards: CardDef[] = [
     id: "ST01-006", name: "Nico Robin", type: "character", cost: 3,
     faction: "pirate", rarity: "R", set: "ST01",
     atk: 3, def: 2, pv: 5,
-    traits: ["stealth", "range", "cursed"], tags: ["mugiwara"],
+    traits: ["stealth", "range", "cursed"], tags: ["mugiwara", "female"],
     preferredRow: "back",
     passive: {
       name: "Cien Fleur",

@@ -152,6 +152,14 @@ export function startTurn(state: GameState): GameState {
   // 6. Process start-of-turn effects (burn, poison, etc.)
   next = processStartOfTurnEffects(next);
 
+  // 7. Apply start-of-turn passives (healAdjacent, etc.)
+  const { applyStartOfTurnPassives, recalculatePassiveBuffs } = require("./passives");
+  next = applyStartOfTurnPassives(next, next.currentPlayer);
+
+  // 8. Recalculate passive buffs (captain, synergies)
+  next = recalculatePassiveBuffs(next, next.currentPlayer);
+  next = recalculatePassiveBuffs(next, getOpponent(next.currentPlayer));
+
   return next;
 }
 

@@ -439,7 +439,12 @@ function applyCharacterDamage(
   if (next.cards[pending.targetId].currentPv <= 0) {
     next = addLog(next, target.owner, `${targetDef.name} est KO !`);
     next = grantKOBonus(next, attackerOwner);
+    const koDefId = target.defId;
+    const koOwner = target.owner;
     next = removeFromBoard(next, pending.targetId);
+    // Apply on-KO effects (captain bonuses, synergy rage, recalculate buffs)
+    const { applyOnKOEffects } = require("./passives");
+    next = applyOnKOEffects(next, koOwner, attackerOwner, koDefId);
   }
 
   return next;

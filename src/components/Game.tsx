@@ -10,6 +10,7 @@ import Card from "./Card";
 import CaptainCard from "./CaptainCard";
 import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
+import EventConfirm from "./EventConfirm";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
 
 initializeRegistry();
@@ -25,7 +26,9 @@ type UIMode =
   | { type: "selectingTarget"; attackerId: string; isSpecial: boolean }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
-  | { type: "cardDetail"; defId: string; instanceId?: string };
+  | { type: "cardDetail"; defId: string; instanceId?: string }
+  | { type: "confirmEvent"; instanceId: string }
+  | { type: "confirmShip"; instanceId: string };
 
 export default function Game({ playerDeck, aiDeck }: GameProps) {
   const { state, validActions, dispatch, isAiTurn, humanPlayer } =
@@ -88,11 +91,11 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       setSelectedHandCard(instanceId);
       setUiMode({ type: "selectingEquipTarget", objectId: instanceId });
     } else if (def.type === "event") {
-      dispatch({ type: "playEvent", instanceId });
-      resetUI();
+      setSelectedHandCard(instanceId);
+      setUiMode({ type: "confirmEvent", instanceId });
     } else if (def.type === "ship") {
-      dispatch({ type: "deployShip", instanceId });
-      resetUI();
+      setSelectedHandCard(instanceId);
+      setUiMode({ type: "confirmShip", instanceId });
     }
   };
 
@@ -161,10 +164,43 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   const renderRow = (slots: readonly string[], playerId: PlayerId) => {
     const isPlayerSide = playerId === humanPlayer;
     const ps = state.players[playerId];
+    // Check if captain verso is in one of these slots
+    const captainSlot = ps.captain.flipped ? ps.captain.slot : null;
+
     return (
       <div className="flex gap-3 justify-center">
         {slots.map((s) => {
           const slot = s as Slot;
+
+          // Captain verso in this slot?
+          if (captainSlot === slot) {
+            const capDef = getCaptainDef(ps.captain.defId);
+            const isTarget = !isPlayerSide && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+            return (
+              <div
+                key={slot}
+                onClick={() => {
+                  if (isTarget) handleCaptainClick(playerId);
+                }}
+                className={`w-36 h-48 rounded-lg border-2 flex items-center justify-center transition-all cursor-pointer
+                  border-red-600 bg-red-950/20
+                  ${isTarget ? "ring-2 ring-red-400 animate-pulse" : ""}
+                `}
+              >
+                <div className="text-center p-1">
+                  <div className="text-[11px] font-bold text-red-300">{capDef.name}</div>
+                  <div className="text-[10px] text-red-400">VERSO</div>
+                  <div className="text-xs mt-1">
+                    <span className="text-red-400">⚔{capDef.verso.atk}</span>{" "}
+                    <span className="text-blue-400">🛡{capDef.verso.def}</span>
+                  </div>
+                  <div className={`text-xs font-bold mt-0.5 ${ps.captain.currentPv <= capDef.verso.pv / 3 ? "text-red-400" : "text-green-400"}`}>
+                    ❤{ps.captain.currentPv}/{capDef.verso.pv}
+                  </div>
+                </div>
+              </div>
+            );
+          }
           const charId = ps.board[slot];
           const instance = charId ? state.cards[charId] : null;
           const def = instance ? getCardDef(instance.defId) : null;
@@ -420,6 +456,28 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         const def = getCardDef(uiMode.defId);
         const inst = uiMode.instanceId ? state.cards[uiMode.instanceId] : undefined;
         return <CardDetail def={def} instance={inst} state={state} onClose={resetUI} />;
+      })()}
+
+      {/* Event confirmation */}
+      {(uiMode.type === "confirmEvent" || uiMode.type === "confirmShip") && (() => {
+        const card = state.cards[uiMode.instanceId];
+        if (!card) return null;
+        const def = getCardDef(card.defId);
+        return (
+          <EventConfirm
+            def={def}
+            playerVol={player.volonte}
+            onConfirm={() => {
+              if (uiMode.type === "confirmEvent") {
+                dispatch({ type: "playEvent", instanceId: uiMode.instanceId });
+              } else {
+                dispatch({ type: "deployShip", instanceId: uiMode.instanceId });
+              }
+              resetUI();
+            }}
+            onCancel={resetUI}
+          />
+        );
       })()}
     </div>
   );
