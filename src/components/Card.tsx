@@ -55,17 +55,17 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
         </div>
 
         {/* Name */}
-        <div className="font-bold text-[9px] leading-tight mt-1 truncate pr-1">{def.name}</div>
+        <div className="font-bold text-[11px] leading-tight mt-1 truncate pr-1">{def.name}</div>
 
         {/* Stats */}
         {isCharacter && (
           <>
-            <div className="flex justify-between mt-0.5 text-[9px]">
-              <span className="text-red-400">⚔{def.atk}</span>
-              <span className="text-blue-400">🛡{def.def}</span>
+            <div className="flex justify-between mt-1 text-[11px]">
+              <span className="text-red-400 font-semibold">⚔{def.atk}</span>
+              <span className="text-blue-400 font-semibold">🛡{def.def}</span>
             </div>
-            <div className="text-[9px] text-center mt-0.5">
-              <span className={instance.currentPv <= (def.pv ?? 0) / 3 ? "text-red-400" : "text-green-400"}>
+            <div className="text-xs text-center mt-0.5">
+              <span className={`font-bold ${instance.currentPv <= (def.pv ?? 0) / 3 ? "text-red-400" : "text-green-400"}`}>
                 ❤{instance.currentPv}/{def.pv}
               </span>
             </div>
@@ -74,8 +74,8 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
 
         {/* Traits compact */}
         {def.traits && def.traits.length > 0 && (
-          <div className="flex gap-0 mt-0.5 text-[8px]">
-            {def.traits.slice(0, 3).map((t) => (
+          <div className="flex gap-0.5 mt-0.5 text-[10px]">
+            {def.traits.slice(0, 4).map((t) => (
               <span key={t} title={t}>{TRAIT_ICONS[t] ?? t[0]}</span>
             ))}
           </div>
@@ -83,7 +83,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
 
         {/* Equipment indicator */}
         {instance.attachedObjects.length > 0 && (
-          <div className="text-[8px] text-amber-400">⚔x{instance.attachedObjects.length}</div>
+          <div className="text-[10px] text-amber-400 font-semibold">⚔x{instance.attachedObjects.length}</div>
         )}
 
         {/* Status */}
@@ -113,7 +113,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
         ${borderColor}
         ${selected ? "ring-2 ring-amber-400 scale-105 -translate-y-2" : "hover:-translate-y-1"}
         ${highlight ? "ring-2 ring-green-400" : ""}
-        w-32 bg-gray-900 hover:bg-gray-800 flex-shrink-0
+        w-40 bg-gray-900 hover:bg-gray-800 flex-shrink-0
       `}
     >
       {/* Cost badge */}
@@ -122,12 +122,12 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
       </div>
 
       {/* Type + Name */}
-      <div className="font-bold text-xs leading-tight mt-1">{def.name}</div>
-      <div className="text-[10px] text-gray-500 capitalize">{def.type}{def.subtype ? ` - ${def.subtype}` : ""}</div>
+      <div className="font-bold text-sm leading-tight mt-1">{def.name}</div>
+      <div className="text-xs text-gray-500 capitalize">{def.type}{def.subtype ? ` - ${def.subtype}` : ""}</div>
 
       {/* Stats for characters */}
       {isCharacter && (
-        <div className="flex justify-between mt-1.5 text-[11px]">
+        <div className="flex justify-between mt-2 text-sm">
           <span className="text-red-400 font-semibold">⚔{def.atk}</span>
           <span className="text-blue-400 font-semibold">🛡{def.def}</span>
           <span className="text-green-400 font-semibold">❤{def.pv}</span>
@@ -138,7 +138,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
       {def.traits && def.traits.length > 0 && (
         <div className="flex flex-wrap gap-0.5 mt-1">
           {def.traits.map((t) => (
-            <span key={t} className="text-[9px]" title={t}>
+            <span key={t} className="text-xs" title={t}>
               {TRAIT_ICONS[t] ?? t}
             </span>
           ))}
@@ -147,14 +147,14 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
 
       {/* Base action preview */}
       {def.baseAction && (
-        <div className="text-[9px] text-green-400 mt-1 truncate">
-          {def.baseAction.isSupport ? "🛡" : "⚔"} {def.baseAction.name}
+        <div className="text-[11px] text-green-400 mt-1.5 truncate">
+          ⚔ {def.baseAction.name}
         </div>
       )}
 
       {/* Special preview */}
       {def.specialAttack && (
-        <div className="text-[9px] text-red-400 truncate">
+        <div className="text-[11px] text-red-400 truncate">
           💥 {def.specialAttack.name} ({def.specialAttack.cost}V)
         </div>
       )}
