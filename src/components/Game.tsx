@@ -241,6 +241,15 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
         <div className="bg-gray-900 rounded-xl p-6 border-2 border-red-500 max-w-lg">
           <h3 className="text-xl font-bold text-red-400 mb-3">Attaque entrante !</h3>
+          <p className="text-base text-yellow-300 mb-2 font-semibold">
+            {pending.attackerId.startsWith("captain_")
+              ? getCaptainDef(state.players[pending.attackerId.replace("captain_", "") as PlayerId].captain.defId).name
+              : getCardDef(state.cards[pending.attackerId].defId).name}
+            {" "}attaque{" "}
+            {pending.targetIsCaptain
+              ? "votre Capitaine"
+              : getCardDef(state.cards[pending.targetId].defId).name}
+          </p>
           <p className="text-base text-gray-300 mb-4">
             Degats : <span className="text-red-300 font-bold text-2xl">{pending.rawDamage}</span>
             {pending.element && <span className="ml-2 text-gray-400">({pending.element})</span>}

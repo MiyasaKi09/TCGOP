@@ -25,6 +25,7 @@ import {
 import {
   declareBaseAttack,
   declareSpecialAttack,
+  declareFruitSpecialAttack,
   resolveAttack,
   applyCounterReduce,
   applyCounterSurvive,
@@ -71,6 +72,9 @@ export function executeAction(
         action.targetIsCaptain ?? false
       );
 
+    case "baseSupportAction":
+      return executeSupportAction(state, state.currentPlayer, action.instanceId, action.targetInstanceId);
+
     case "playEvent":
       return playEvent(state, state.currentPlayer, action.instanceId);
 
@@ -92,6 +96,9 @@ export function executeAction(
         action.targetIsCaptain ?? false
       );
 
+    case "activateShip":
+      return activateShipAbility(state, state.currentPlayer, action.shipInstanceId);
+
     case "useHaki":
       return handleHaki(state, state.currentPlayer, action);
 
@@ -102,6 +109,15 @@ export function executeAction(
       const { awakenFruit } = require("./fruits");
       return awakenFruit(state, state.currentPlayer, action.fruitInstanceId);
     }
+
+    case "fruitSpecialAttack":
+      return declareFruitSpecialAttack(
+        state,
+        action.attackerInstanceId,
+        action.fruitInstanceId,
+        action.targetInstanceId,
+        action.targetIsCaptain ?? false
+      );
 
     case "endTurn": {
       const next = endTurn(state);
@@ -299,6 +315,207 @@ function playCounter(state: GameState, instanceId: string): GameState {
 }
 
 // ============================================================
+// Ship ability activation
+// ============================================================
+
+function activateShipAbility(
+  state: GameState,
+  playerId: PlayerId,
+  shipInstanceId: string
+): GameState {
+  const ship = state.cards[shipInstanceId];
+  if (!ship) throw new Error("Ship not found");
+
+  const def = getCardDef(ship.defId);
+  if (!def.shipActive) throw new Error("Ship has no active ability");
+
+  const active = def.shipActive;
+
+  if (active.oncePerGame && ship.usedOnceAbilities.includes(active.name)) {
+    throw new Error("Ship ability already used (1x/game)");
+  }
+
+  if (!canAfford(state, playerId, active.cost)) {
+    throw new Error(`Cannot afford ${active.name} (cost ${active.cost})`);
+  }
+
+  let next = active.cost > 0 ? spendVolonte(state, playerId, active.cost) : state;
+
+  if (active.oncePerGame) {
+    next = produce(next, (draft) => {
+      draft.cards[shipInstanceId].usedOnceAbilities.push(active.name);
+    });
+  }
+
+  const desc = active.description.toLowerCase();
+
+  // Damage to front line ("deg. a toute la Ligne Avant ennemie")
+  if (desc.includes("deg.") && desc.includes("avant")) {
+    const dmgMatch = active.description.match(/(\d+)\s*deg/);
+    const dmg = dmgMatch ? parseInt(dmgMatch[1]) : 0;
+    if (dmg > 0) {
+      const opponentId = getOpponent(playerId);
+      next = produce(next, (draft) => {
+        const opp = draft.players[opponentId];
+        for (const slotKey of ["V1", "V2", "V3"] as const) {
+          const id = opp.board[slotKey];
+          if (id) {
+            draft.cards[id].currentPv -= dmg;
+          }
+        }
+      });
+    }
+    next = addLog(next, playerId, `${def.name} active ${active.name} !`);
+    return next;
+  }
+
+  // Buff all allies ("tous allies/Marines +X ATK +Y DEF")
+  if (desc.includes("+") && (desc.includes("atk") || desc.includes("def"))) {
+    const atkMatch = desc.match(/\+(\d+)\s*atk/i);
+    const defMatch = desc.match(/\+(\d+)\s*def/i);
+    const atkBuff = atkMatch ? parseInt(atkMatch[1]) : 0;
+    const defBuff = defMatch ? parseInt(defMatch[1]) : 0;
+
+    next = produce(next, (draft) => {
+      const p = draft.players[playerId];
+      for (const slot of Object.values(p.board)) {
+        if (slot) {
+          const c = draft.cards[slot];
+          if (c) {
+            if (atkBuff > 0) {
+              c.modifiers.push({
+                id: `ship_${active.name}_atk_${Date.now()}`,
+                stat: "atk",
+                amount: atkBuff,
+                source: `ship_${def.id}`,
+                duration: "turn",
+              });
+            }
+            if (defBuff > 0) {
+              c.modifiers.push({
+                id: `ship_${active.name}_def_${Date.now()}`,
+                stat: "def",
+                amount: defBuff,
+                source: `ship_${def.id}`,
+                duration: "turn",
+              });
+            }
+          }
+        }
+      }
+    });
+    next = addLog(next, playerId, `${def.name} active ${active.name} !`);
+    return next;
+  }
+
+  // Fallback: just log the activation
+  next = addLog(next, playerId, `${def.name} active ${active.name} !`);
+  return next;
+}
+
+// ============================================================
+// Support actions (Usopp trap, Robin immobilize, Chopper heal, etc.)
+// ============================================================
+
+function executeSupportAction(
+  state: GameState,
+  playerId: PlayerId,
+  instanceId: string,
+  targetInstanceId?: string
+): GameState {
+  const card = state.cards[instanceId];
+  if (!card) throw new Error("Card not found");
+  if (card.owner !== playerId) throw new Error("Not your card");
+  if (card.tapped || card.usedBaseAction) throw new Error("Action already used");
+
+  const def = getCardDef(card.defId);
+  const ba = def.baseAction;
+  if (!ba?.isSupport) throw new Error("Not a support action");
+
+  let next = produce(state, (draft) => {
+    draft.cards[instanceId].tapped = true;
+    draft.cards[instanceId].usedBaseAction = true;
+  });
+
+  // Immobilize (Robin, Kuzan)
+  if (ba.immobilize && targetInstanceId) {
+    next = produce(next, (draft) => {
+      const target = draft.cards[targetInstanceId];
+      if (target) {
+        target.statusEffects.push({
+          type: "immobilize",
+          turnsRemaining: 2, // survives start-of-turn decrement, blocks for 1 turn
+          damagePerTurn: 0,
+          source: instanceId,
+        });
+      }
+    });
+    const targetName = getCardDef(state.cards[targetInstanceId!].defId).name;
+    next = addLog(next, playerId, `${def.name} utilise ${ba.name} : ${targetName} est immobilise !`);
+    return next;
+  }
+
+  // Trap (Usopp)
+  if (ba.description?.includes("piege") || ba.description?.includes("Piege")) {
+    if (!targetInstanceId) throw new Error("Trap needs a target");
+    next = produce(next, (draft) => {
+      const target = draft.cards[targetInstanceId];
+      if (target) {
+        target.statusEffects.push({
+          type: "trap",
+          turnsRemaining: -1, // permanent until triggered
+          damagePerTurn: 3,
+          source: instanceId,
+        });
+      }
+    });
+    const targetName = getCardDef(state.cards[targetInstanceId].defId).name;
+    next = addLog(next, playerId, `${def.name} utilise ${ba.name} : piege pose sur ${targetName} !`);
+    return next;
+  }
+
+  // Heal (Chopper, Marine soldier)
+  if (ba.healAmount && targetInstanceId) {
+    const targetCard = state.cards[targetInstanceId];
+    const targetDef = getCardDef(targetCard.defId);
+    next = produce(next, (draft) => {
+      const target = draft.cards[targetInstanceId];
+      if (target) {
+        target.currentPv = Math.min(
+          target.currentPv + ba.healAmount!,
+          targetDef.pv ?? target.currentPv + ba.healAmount!
+        );
+      }
+    });
+    next = addLog(next, playerId, `${def.name} utilise ${ba.name} : +${ba.healAmount} PV a ${targetDef.name}`);
+    return next;
+  }
+
+  // Global buff (Brook "New World", Sengoku "Commandement", Nami "Mirage Tempo")
+  // Apply a generic +1 ATK buff to all allies for the turn as default
+  next = produce(next, (draft) => {
+    const p = draft.players[playerId];
+    for (const slot of Object.values(p.board)) {
+      if (slot) {
+        const c = draft.cards[slot];
+        if (c) {
+          c.modifiers.push({
+            id: `support_${ba.name}_${Date.now()}`,
+            stat: "atk",
+            amount: 1,
+            source: `support_${def.id}`,
+            duration: "turn",
+          });
+        }
+      }
+    }
+  });
+  next = addLog(next, playerId, `${def.name} utilise ${ba.name} !`);
+
+  return next;
+}
+
+// ============================================================
 // Haki handler
 // ============================================================
 
@@ -398,6 +615,41 @@ export function getValidActions(
     }
   }
 
+  // Support base actions (Usopp trap, Robin immobilize, Chopper heal, Brook buff, etc.)
+  for (const char of boardChars) {
+    if (char.tapped || char.usedBaseAction) continue;
+    if (hasSummoningSickness(state, char.instanceId)) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
+
+    const def = getCardDef(char.defId);
+    if (!def.baseAction?.isSupport) continue;
+
+    const ba = def.baseAction;
+
+    if (ba.immobilize) {
+      // Target: any enemy character
+      const oppChars = getBoardCharacters(state, getOpponent(playerId));
+      for (const opp of oppChars) {
+        actions.push({ type: "baseSupportAction", instanceId: char.instanceId, targetInstanceId: opp.instanceId });
+      }
+    } else if (ba.description?.includes("piege") || ba.description?.includes("Piege")) {
+      // Trap: target any enemy character
+      const oppChars = getBoardCharacters(state, getOpponent(playerId));
+      for (const opp of oppChars) {
+        actions.push({ type: "baseSupportAction", instanceId: char.instanceId, targetInstanceId: opp.instanceId });
+      }
+    } else if (ba.healAmount) {
+      // Heal: target any friendly character on board
+      for (const ally of boardChars) {
+        if (ally.instanceId === char.instanceId) continue;
+        actions.push({ type: "baseSupportAction", instanceId: char.instanceId, targetInstanceId: ally.instanceId });
+      }
+    } else {
+      // Global buff (no specific target needed)
+      actions.push({ type: "baseSupportAction", instanceId: char.instanceId });
+    }
+  }
+
   // Base attacks — ALL characters with ATK > 0 can base attack
   // (even support chars like Chopper ATK 1 — they do their effect + attack)
   for (const char of boardChars) {
@@ -405,10 +657,10 @@ export function getValidActions(
     if (hasSummoningSickness(state, char.instanceId)) continue;
 
     const def = getCardDef(char.defId);
-    // Must have ATK > 0 to attack
-    if (!def.atk || def.atk <= 0) continue;
+    // Must have effective ATK > 0 to attack (includes equipment + modifiers)
+    if (getEffectiveAtk(state, char.instanceId) <= 0) continue;
 
-    if (char.statusEffects.some((e) => e.type === "freeze")) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
 
     // Check cannotAttackFemale passive
     const cannotAttackFemale = def.passive?.effects.some(
@@ -453,7 +705,7 @@ export function getValidActions(
     if (def.specialAttack.oncePerGame && char.usedOnceAbilities.includes(def.specialAttack.name)) continue;
     if (!canAfford(state, playerId, def.specialAttack.cost)) continue;
 
-    if (char.statusEffects.some((e) => e.type === "freeze")) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
 
     // Check cannotAttackFemale
     const cantFemale = def.passive?.effects.some(
@@ -479,6 +731,41 @@ export function getValidActions(
         targetInstanceId: `captain_${getOpponent(playerId)}`,
         targetIsCaptain: true,
       });
+    }
+  }
+
+  // Fruit awakening special attacks
+  for (const char of boardChars) {
+    if (hasSummoningSickness(state, char.instanceId)) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
+
+    for (const objId of char.attachedObjects) {
+      const objCard = state.cards[objId];
+      if (!objCard || !objCard.isAwakened) continue;
+      const objDef = getCardDef(objCard.defId);
+      const fruitSpec = objDef.fruitEffects?.awakening?.specialAttack;
+      if (!fruitSpec) continue;
+      if (fruitSpec.oncePerGame && char.usedOnceAbilities.includes(fruitSpec.name)) continue;
+      if (!canAfford(state, playerId, fruitSpec.cost)) continue;
+
+      const targets = getValidTargets(state, char.instanceId, true);
+      for (const targetId of targets.characterTargets) {
+        actions.push({
+          type: "fruitSpecialAttack",
+          attackerInstanceId: char.instanceId,
+          fruitInstanceId: objId,
+          targetInstanceId: targetId,
+        });
+      }
+      if (targets.canTargetCaptain) {
+        actions.push({
+          type: "fruitSpecialAttack",
+          attackerInstanceId: char.instanceId,
+          fruitInstanceId: objId,
+          targetInstanceId: `captain_${getOpponent(playerId)}`,
+          targetIsCaptain: true,
+        });
+      }
     }
   }
 
@@ -523,6 +810,37 @@ export function getValidActions(
               targetSlot: adjSlot as import("@/types").Slot,
             });
           }
+        }
+      }
+    }
+  }
+
+  // Activate ship ability
+  if (player.activeShip) {
+    const shipCard = state.cards[player.activeShip];
+    if (shipCard) {
+      const shipDef = getCardDef(shipCard.defId);
+      if (shipDef.shipActive) {
+        const sa = shipDef.shipActive;
+        const canUse =
+          (!sa.oncePerGame || !shipCard.usedOnceAbilities.includes(sa.name)) &&
+          canAfford(state, playerId, sa.cost);
+        if (canUse) {
+          actions.push({ type: "activateShip", shipInstanceId: player.activeShip });
+        }
+      }
+    }
+  }
+
+  // Awaken Devil Fruits
+  const { canAwakenFruit } = require("./fruits");
+  for (const char of boardChars) {
+    for (const objId of char.attachedObjects) {
+      const objCard = state.cards[objId];
+      if (objCard) {
+        const objDef = getCardDef(objCard.defId);
+        if (objDef.subtype === "fruit" && canAwakenFruit(state, playerId, objId)) {
+          actions.push({ type: "awakenFruit", fruitInstanceId: objId });
         }
       }
     }

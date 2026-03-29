@@ -62,9 +62,17 @@ export function useArmamentHaki(
     const card = draft.cards[attackerInstanceId];
     if (card) {
       card.modifiers.push({
-        id: `haki_arm_${Date.now()}`,
+        id: `haki_arm_atk_${Date.now()}`,
         stat: "atk",
         amount: 2,
+        source: "armament_haki",
+        duration: "turn",
+      });
+      // Mark character as having Haki this turn (for Logia bypass)
+      card.modifiers.push({
+        id: `haki_arm_flag_${Date.now()}`,
+        stat: "haki",
+        amount: 1,
         source: "armament_haki",
         duration: "turn",
       });

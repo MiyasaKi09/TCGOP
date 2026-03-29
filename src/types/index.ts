@@ -265,7 +265,7 @@ export interface DeckDef {
 
 export interface Modifier {
   id: string;
-  stat: "atk" | "def" | "pv";
+  stat: "atk" | "def" | "pv" | "haki";
   amount: number;
   source: string;
   duration: "permanent" | "turn" | "nextTurn";
@@ -273,7 +273,7 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;
@@ -399,4 +399,5 @@ export type GameAction =
   | { type: "moveCharacter"; instanceId: string; targetSlot: Slot }
   | { type: "activateShip"; shipInstanceId: string }
   | { type: "awakenFruit"; fruitInstanceId: string }
+  | { type: "fruitSpecialAttack"; attackerInstanceId: string; fruitInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "endTurn" };

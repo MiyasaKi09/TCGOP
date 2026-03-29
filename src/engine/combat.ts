@@ -43,8 +43,29 @@ export function declareBaseAttack(
   }
 
   const def = getCardDef(attacker.defId);
-  if (!def.atk || def.atk <= 0) {
+  if (getEffectiveAtk(state, attackerInstanceId) <= 0) {
     throw new Error("Character has 0 ATK — cannot attack");
+  }
+
+  // Trigger trap on attacker if present
+  const trapEffect = attacker.statusEffects.find((e) => e.type === "trap");
+  if (trapEffect) {
+    state = produce(state, (draft) => {
+      const a = draft.cards[attackerInstanceId];
+      a.currentPv -= trapEffect.damagePerTurn;
+      a.statusEffects = a.statusEffects.filter((e) => e.type !== "trap");
+    });
+    state = addLog(
+      state,
+      attacker.owner,
+      `Piege ! ${def.name} subit ${trapEffect.damagePerTurn} degats en attaquant !`
+    );
+    // Check if attacker is KO'd by trap
+    if (state.cards[attackerInstanceId].currentPv <= 0) {
+      state = addLog(state, attacker.owner, `${def.name} est KO par le piege !`);
+      state = removeFromBoard(state, attackerInstanceId);
+      return state;
+    }
   }
 
   const baseAction = def.baseAction;
@@ -76,10 +97,12 @@ export function declareBaseAttack(
 
   const rawDamage = Math.max(0, atk - targetDef);
 
-  // Check Haki
+  // Check Haki (natural or from Armament Haki buff)
+  const hasArmamentBuff = attacker.modifiers.some((m) => m.source === "armament_haki");
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
-    (def.traits?.includes("logia") ?? false); // Logia attacks count as Logia
+    (def.traits?.includes("logia") ?? false) ||
+    hasArmamentBuff;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -127,6 +150,27 @@ export function declareSpecialAttack(
   }
 
   const def = getCardDef(attacker.defId);
+
+  // Trigger trap on attacker if present
+  const trapEffectSpec = attacker.statusEffects.find((e) => e.type === "trap");
+  if (trapEffectSpec) {
+    state = produce(state, (draft) => {
+      const a = draft.cards[attackerInstanceId];
+      a.currentPv -= trapEffectSpec.damagePerTurn;
+      a.statusEffects = a.statusEffects.filter((e) => e.type !== "trap");
+    });
+    state = addLog(
+      state,
+      attacker.owner,
+      `Piege ! ${def.name} subit ${trapEffectSpec.damagePerTurn} degats en attaquant !`
+    );
+    if (state.cards[attackerInstanceId].currentPv <= 0) {
+      state = addLog(state, attacker.owner, `${def.name} est KO par le piege !`);
+      state = removeFromBoard(state, attackerInstanceId);
+      return state;
+    }
+  }
+
   const spec = def.specialAttack;
   if (!spec) throw new Error("Character has no special attack");
 
@@ -174,8 +218,11 @@ export function declareSpecialAttack(
 
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
+  // Check Haki (natural or from Armament Haki buff)
+  const hasArmamentBuffSpec = attacker.modifiers.some((m) => m.source === "armament_haki");
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) || false;
+    (def.naturalHaki && def.naturalHaki.length > 0) ||
+    hasArmamentBuffSpec;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -190,6 +237,93 @@ export function declareSpecialAttack(
 
   next = produce(next, (draft) => {
     draft.cards[attackerInstanceId].usedSpecialAttack = true;
+    if (spec.oncePerGame) {
+      draft.cards[attackerInstanceId].usedOnceAbilities.push(spec.name);
+    }
+    draft.pendingAttack = pending;
+  });
+
+  const targetName = targetIsCaptain
+    ? "Capitaine"
+    : getCardDef(next.cards[targetInstanceId].defId).name;
+  next = addLog(
+    next,
+    attacker.owner,
+    `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
+  );
+
+  return next;
+}
+
+/**
+ * Declare a fruit awakening special attack.
+ */
+export function declareFruitSpecialAttack(
+  state: GameState,
+  attackerInstanceId: string,
+  fruitInstanceId: string,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): GameState {
+  const attacker = state.cards[attackerInstanceId];
+  if (!attacker) throw new Error("Attacker not found");
+  if (hasSummoningSickness(state, attackerInstanceId)) {
+    throw new Error("Character has summoning sickness");
+  }
+
+  const fruitCard = state.cards[fruitInstanceId];
+  if (!fruitCard || !fruitCard.isAwakened) throw new Error("Fruit not awakened");
+
+  const fruitDef = getCardDef(fruitCard.defId);
+  const spec = fruitDef.fruitEffects?.awakening?.specialAttack;
+  if (!spec) throw new Error("Fruit has no awakening special attack");
+
+  // Check once per game
+  if (spec.oncePerGame && attacker.usedOnceAbilities.includes(spec.name)) {
+    throw new Error("Already used this fruit ability (1x/game)");
+  }
+
+  if (!canAfford(state, attacker.owner, spec.cost)) {
+    throw new Error(`Cannot afford fruit special (cost ${spec.cost})`);
+  }
+
+  let next: GameState = spendVolonte(state, attacker.owner, spec.cost);
+
+  const def = getCardDef(attacker.defId);
+  const baseAtk = getEffectiveAtk(next, attackerInstanceId);
+  const totalAtk = baseAtk + spec.atkBonus;
+
+  let targetDefVal = 0;
+  if (targetIsCaptain) {
+    const opponent = getOpponent(attacker.owner);
+    const cap = next.players[opponent].captain;
+    const capDef = getCaptainDef(cap.defId);
+    targetDefVal = cap.flipped ? capDef.verso.def : capDef.recto.def;
+    for (const mod of cap.modifiers) {
+      if (mod.stat === "def") targetDefVal += mod.amount;
+    }
+  } else {
+    targetDefVal = getEffectiveDef(next, targetInstanceId);
+  }
+
+  const rawDamage = Math.max(0, totalAtk - targetDefVal);
+
+  const hasArmament = attacker.modifiers.some((m) => m.source === "armament_haki");
+  const hasHaki =
+    (def.naturalHaki && def.naturalHaki.length > 0) || hasArmament;
+
+  const pending: PendingAttack = {
+    attackerId: attackerInstanceId,
+    targetId: targetInstanceId,
+    targetIsCaptain,
+    isSpecial: true,
+    rawDamage,
+    element: undefined,
+    attackTraits: [],
+    hasHaki: hasHaki ?? false,
+  };
+
+  next = produce(next, (draft) => {
     if (spec.oncePerGame) {
       draft.cards[attackerInstanceId].usedOnceAbilities.push(spec.name);
     }
@@ -483,10 +617,11 @@ function applyElementEffects(
 
     case "ice":
       // Freeze: target loses next action
+      // turnsRemaining: 2 so it survives the start-of-turn decrement and blocks for 1 full turn
       next = produce(next, (draft) => {
         draft.cards[pending.targetId].statusEffects.push({
           type: "freeze",
-          turnsRemaining: 1,
+          turnsRemaining: 2,
           damagePerTurn: 0,
           source: pending.attackerId,
         });

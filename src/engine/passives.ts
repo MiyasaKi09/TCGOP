@@ -162,6 +162,53 @@ export function recalculatePassiveBuffs(
       }
     }
 
+    // === Ship passive buffs ===
+    if (player.activeShip) {
+      const shipCard = draft.cards[player.activeShip];
+      if (shipCard) {
+        const shipDef = getCardDef(shipCard.defId);
+        if (shipDef.shipPassive) {
+          const desc = shipDef.shipPassive.toLowerCase();
+          // Parse common ship passive patterns
+          const atkMatch = desc.match(/\+(\d+)\s*atk/i);
+          const defMatch = desc.match(/\+(\d+)\s*def/i);
+          const pvMatch = desc.match(/\+(\d+)\s*pv/i);
+          const shipAtkBonus = atkMatch ? parseInt(atkMatch[1]) : 0;
+          const shipDefBonus = defMatch ? parseInt(defMatch[1]) : 0;
+
+          for (const char of boardChars) {
+            // Check faction filter (e.g. "Mugiwara" or "Marines")
+            const charDef = getCardDef(char.defId);
+            const factionMatch =
+              (desc.includes("mugiwara") && charDef.tags?.includes("mugiwara")) ||
+              (desc.includes("marine") && charDef.tags?.includes("marine")) ||
+              (!desc.includes("mugiwara") && !desc.includes("marine"));
+
+            if (factionMatch) {
+              if (shipAtkBonus > 0) {
+                draft.cards[char.id].modifiers.push({
+                  id: `ship_passive_atk_${char.id}`,
+                  stat: "atk",
+                  amount: shipAtkBonus,
+                  source: `passive_ship_${shipDef.id}`,
+                  duration: "permanent",
+                });
+              }
+              if (shipDefBonus > 0) {
+                draft.cards[char.id].modifiers.push({
+                  id: `ship_passive_def_${char.id}`,
+                  stat: "def",
+                  amount: shipDefBonus,
+                  source: `passive_ship_${shipDef.id}`,
+                  duration: "permanent",
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
     // === Synergy bonuses ===
     for (const char of boardChars) {
       const def = getCardDef(char.defId);

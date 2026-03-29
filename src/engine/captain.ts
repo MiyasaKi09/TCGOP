@@ -3,7 +3,7 @@ import type { GameState, PlayerId, Slot, EntryEffect } from "@/types";
 import { getCaptainDef } from "./cardRegistry";
 import { canAfford, spendVolonte } from "./volonte";
 import { addLog, getOpponent } from "./gameState";
-import { getBoardCharacters, getEffectiveAtk } from "./board";
+import { getBoardCharacters, getEffectiveAtk, getEffectiveDef } from "./board";
 
 /**
  * Check if a player can flip their captain.
@@ -219,9 +219,6 @@ export function declareCaptainBaseAttack(
       if (mod.stat === "def") targetDefVal += mod.amount;
     }
   } else {
-    targetDefVal = getEffectiveAtk(state, targetInstanceId); // oops — should be DEF
-    // Fix: use getEffectiveDef
-    const { getEffectiveDef } = require("./board");
     targetDefVal = getEffectiveDef(state, targetInstanceId);
   }
 
