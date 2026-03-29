@@ -216,6 +216,7 @@ export const mugiwaraCards: CardDef[] = [
     id: "ST01-017", name: "Baril d'Eau", type: "object", subtype: "accessory", cost: 1,
     faction: "pirate", rarity: "C", set: "ST01",
     bonusAtk: 0,
+    grantsElement: "water",
     equipEffect: "Usage unique. Attaque gagne trait Eau (x2 vs Maudits, touche Logia).",
   },
   {

@@ -72,6 +72,18 @@ export function declareBaseAttack(
   const atk = getEffectiveAtk(state, attackerInstanceId);
   const attackTraits: AttackTrait[] = baseAction?.attackTraits ?? [];
 
+  // Check equipped objects for granted element (e.g. Baril d'Eau grants "water")
+  let attackElement = baseAction?.element;
+  for (const objId of attacker.attachedObjects) {
+    const objCard = state.cards[objId];
+    if (objCard) {
+      const objDef = getCardDef(objCard.defId);
+      if (objDef.grantsElement) {
+        attackElement = objDef.grantsElement;
+      }
+    }
+  }
+
   // Calculate raw damage against target
   let targetDef = 0;
   if (targetIsCaptain) {
@@ -97,12 +109,13 @@ export function declareBaseAttack(
 
   const rawDamage = Math.max(0, atk - targetDef);
 
-  // Check Haki (natural or from Armament Haki buff)
+  // Check Haki: natural, from Armament buff, automatic from T7+, or water element
   const hasArmamentBuff = attacker.modifiers.some((m) => m.source === "armament_haki");
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
-    (def.traits?.includes("logia") ?? false) ||
-    hasArmamentBuff;
+    hasArmamentBuff ||
+    state.turnNumber >= 7 ||
+    attackElement === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -110,7 +123,7 @@ export function declareBaseAttack(
     targetIsCaptain,
     isSpecial: false,
     rawDamage,
-    element: baseAction?.element,
+    element: attackElement,
     attackTraits,
     hasHaki: hasHaki ?? false,
   };
@@ -218,11 +231,12 @@ export function declareSpecialAttack(
 
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
-  // Check Haki (natural or from Armament Haki buff)
+  // Check Haki: natural, from Armament buff, or automatic from T7+
   const hasArmamentBuffSpec = attacker.modifiers.some((m) => m.source === "armament_haki");
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
-    hasArmamentBuffSpec;
+    hasArmamentBuffSpec ||
+    state.turnNumber >= 7;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -310,7 +324,7 @@ export function declareFruitSpecialAttack(
 
   const hasArmament = attacker.modifiers.some((m) => m.source === "armament_haki");
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) || hasArmament;
+    (def.naturalHaki && def.naturalHaki.length > 0) || hasArmament || next.turnNumber >= 7;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -464,6 +478,45 @@ export function resolveAttack(state: GameState): GameState {
   // Apply element effects
   next = applyElementEffects(next, pending);
 
+  // Check KO from element effects (thunder propagation, sand, water x2)
+  if (!pending.targetIsCaptain) {
+    const targetAfter = next.cards[pending.targetId];
+    if (targetAfter && targetAfter.zone === "board" && targetAfter.currentPv <= 0) {
+      const targetDefAfter = getCardDef(targetAfter.defId);
+      const atkOwner = getAttackerOwner(next, pending.attackerId);
+      next = addLog(next, targetAfter.owner, `${targetDefAfter.name} est KO (effet elementaire) !`);
+      next = grantKOBonus(next, atkOwner);
+      const koDefId = targetAfter.defId;
+      const koOwner = targetAfter.owner;
+      next = removeFromBoard(next, pending.targetId);
+      const { applyOnKOEffects } = require("./passives");
+      next = applyOnKOEffects(next, koOwner, atkOwner, koDefId);
+    }
+  }
+
+  // Check KO from thunder propagation on adjacent characters
+  if (pending.element === "thunder" && !pending.targetIsCaptain) {
+    const target = state.cards[pending.targetId];
+    if (target?.slot) {
+      const adj = getAdjacentSlots(target.slot);
+      const opponentId = getOpponent(getAttackerOwner(state, pending.attackerId));
+      for (const adjSlot of adj) {
+        const adjId = next.players[opponentId].board[adjSlot];
+        if (adjId) {
+          const adjCard = next.cards[adjId];
+          if (adjCard && adjCard.zone === "board" && adjCard.currentPv <= 0) {
+            const adjDef = getCardDef(adjCard.defId);
+            const atkOwner = getAttackerOwner(next, pending.attackerId);
+            next = addLog(next, adjCard.owner, `${adjDef.name} est KO (foudre) !`);
+            next = grantKOBonus(next, atkOwner);
+            next = removeFromBoard(next, adjId);
+          }
+          break;
+        }
+      }
+    }
+  }
+
   // Clear pending attack
   next = produce(next, (draft) => {
     draft.pendingAttack = null;
@@ -536,8 +589,8 @@ function applyCharacterDamage(
 
   const targetDef = getCardDef(target.defId);
 
-  // Logia check
-  const isLogia = targetDef.traits?.includes("logia") ?? false;
+  // Logia check (includes traits from equipped Devil Fruits)
+  const isLogia = hasTrait(state, pending.targetId, "logia");
   if (isLogia && !pending.hasHaki && pending.rawDamage > 0) {
     // Check if logia already used this turn
     if (!target.logiaUsedThisTurn) {

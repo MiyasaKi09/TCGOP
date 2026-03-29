@@ -152,6 +152,22 @@ export function startTurn(state: GameState): GameState {
   // 6. Process start-of-turn effects (burn, poison, etc.)
   next = processStartOfTurnEffects(next);
 
+  // 6b. Check for KO from burn/desiccation damage
+  const { removeFromBoard } = require("./board");
+  const { grantKOBonus } = require("./volonte");
+  const currentPlayerId = next.currentPlayer;
+  const currentPlayerState = next.players[currentPlayerId];
+  for (const slot of Object.values(currentPlayerState.board)) {
+    if (!slot) continue;
+    const card = next.cards[slot];
+    if (card && card.zone === "board" && card.currentPv <= 0) {
+      const cardDef = require("./cardRegistry").getCardDef(card.defId);
+      next = addLog(next, currentPlayerId, `${cardDef.name} est KO (brulure/effet) !`);
+      next = grantKOBonus(next, getOpponent(currentPlayerId));
+      next = removeFromBoard(next, slot);
+    }
+  }
+
   // 7. Apply start-of-turn passives (healAdjacent, etc.)
   const { applyStartOfTurnPassives, recalculatePassiveBuffs } = require("./passives");
   next = applyStartOfTurnPassives(next, next.currentPlayer);

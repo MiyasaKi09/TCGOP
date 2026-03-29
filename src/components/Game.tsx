@@ -24,11 +24,13 @@ type UIMode =
   | { type: "idle" }
   | { type: "selectingSlot"; cardId: string }
   | { type: "selectingTarget"; attackerId: string; isSpecial: boolean }
+  | { type: "selectingSupportTarget"; instanceId: string }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
   | { type: "cardDetail"; defId: string; instanceId?: string }
   | { type: "confirmEvent"; instanceId: string }
-  | { type: "confirmShip"; instanceId: string };
+  | { type: "confirmShip"; instanceId: string }
+  | { type: "selectingCaptainSlot" };
 
 export default function Game({ playerDeck, aiDeck }: GameProps) {
   const { state, validActions, dispatch, isAiTurn, humanPlayer } =
@@ -41,14 +43,23 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   const opponent = state.players[aiPlayer];
   const inCounterWindow = state.pendingAttack !== null;
 
-  // Deploy slots
+  // Deploy slots (characters and captain)
   const deploySlots = useMemo(() => {
-    if (uiMode.type !== "selectingSlot") return new Set<Slot>();
-    const slots = new Set<Slot>();
-    for (const a of validActions) {
-      if (a.type === "deployCharacter" && a.instanceId === uiMode.cardId) slots.add(a.slot);
+    if (uiMode.type === "selectingSlot") {
+      const slots = new Set<Slot>();
+      for (const a of validActions) {
+        if (a.type === "deployCharacter" && a.instanceId === uiMode.cardId) slots.add(a.slot);
+      }
+      return slots;
     }
-    return slots;
+    if (uiMode.type === "selectingCaptainSlot") {
+      const slots = new Set<Slot>();
+      for (const a of validActions) {
+        if (a.type === "flipCaptain") slots.add(a.slot);
+      }
+      return slots;
+    }
+    return new Set<Slot>();
   }, [uiMode, validActions]);
 
   // Equip targets
@@ -63,15 +74,33 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     return targets;
   }, [uiMode, validActions]);
 
-  // Attack targets
+  // Support targets (heal allies, immobilize/trap enemies)
+  const supportTargets = useMemo(() => {
+    if (uiMode.type !== "selectingSupportTarget") return new Set<string>();
+    const targets = new Set<string>();
+    for (const a of validActions) {
+      if (a.type === "baseSupportAction" && a.instanceId === uiMode.instanceId && a.targetInstanceId) {
+        targets.add(a.targetInstanceId);
+      }
+    }
+    return targets;
+  }, [uiMode, validActions]);
+
+  // Attack targets (includes captain attacks)
   const attackTargets = useMemo(() => {
     if (uiMode.type !== "selectingTarget") return new Set<string>();
     const targets = new Set<string>();
-    const actionType = uiMode.isSpecial ? "specialAttack" : "baseAttack";
+    const isCaptainAttack = uiMode.attackerId.startsWith("captain_");
+    const actionType = isCaptainAttack ? "captainAttack" : (uiMode.isSpecial ? "specialAttack" : "baseAttack");
     for (const a of validActions) {
-      if (a.type === actionType && "attackerInstanceId" in a && a.attackerInstanceId === uiMode.attackerId) {
-        if ("targetIsCaptain" in a && a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
-        else if ("targetInstanceId" in a) targets.add(a.targetInstanceId);
+      if (a.type === actionType) {
+        if (isCaptainAttack && a.type === "captainAttack") {
+          if (a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
+          else targets.add(a.targetInstanceId);
+        } else if ("attackerInstanceId" in a && a.attackerInstanceId === uiMode.attackerId) {
+          if ("targetIsCaptain" in a && a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
+          else if ("targetInstanceId" in a) targets.add(a.targetInstanceId);
+        }
       }
     }
     return targets;
@@ -107,6 +136,9 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     if (uiMode.type === "selectingSlot" && isPlayerSide && deploySlots.has(slot)) {
       dispatch({ type: "deployCharacter", instanceId: uiMode.cardId, slot });
       resetUI();
+    } else if (uiMode.type === "selectingCaptainSlot" && isPlayerSide && deploySlots.has(slot)) {
+      dispatch({ type: "flipCaptain", slot });
+      resetUI();
     } else if (uiMode.type === "selectingTarget" && !isPlayerSide) {
       const targetId = opponent.board[slot];
       if (targetId && attackTargets.has(targetId)) {
@@ -126,12 +158,22 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       resetUI();
       return;
     }
+    // Support action target (both ally and enemy targets)
+    if (uiMode.type === "selectingSupportTarget" && supportTargets.has(instanceId)) {
+      dispatch({ type: "baseSupportAction", instanceId: uiMode.instanceId, targetInstanceId: instanceId });
+      resetUI();
+      return;
+    }
     if (uiMode.type === "selectingTarget" && !isPlayerSide && attackTargets.has(instanceId)) {
-      dispatch({
-        type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
-        attackerInstanceId: uiMode.attackerId,
-        targetInstanceId: instanceId,
-      } as GameAction);
+      if (uiMode.attackerId.startsWith("captain_")) {
+        dispatch({ type: "captainAttack", targetInstanceId: instanceId } as GameAction);
+      } else {
+        dispatch({
+          type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
+          attackerInstanceId: uiMode.attackerId,
+          targetInstanceId: instanceId,
+        } as GameAction);
+      }
       resetUI();
       return;
     }
@@ -145,12 +187,16 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
 
   const handleCaptainClick = (playerId: PlayerId) => {
     if (uiMode.type === "selectingTarget" && playerId === aiPlayer && attackTargets.has(`captain_${aiPlayer}`)) {
-      dispatch({
-        type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
-        attackerInstanceId: uiMode.attackerId,
-        targetInstanceId: `captain_${aiPlayer}`,
-        targetIsCaptain: true,
-      } as GameAction);
+      if (uiMode.attackerId.startsWith("captain_")) {
+        dispatch({ type: "captainAttack", targetInstanceId: `captain_${aiPlayer}`, targetIsCaptain: true } as GameAction);
+      } else {
+        dispatch({
+          type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
+          attackerInstanceId: uiMode.attackerId,
+          targetInstanceId: `captain_${aiPlayer}`,
+          targetIsCaptain: true,
+        } as GameAction);
+      }
       resetUI();
     }
   };
@@ -174,7 +220,16 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
             return (
               <div
                 key={slot}
-                onClick={() => { if (isTarget) handleCaptainClick(playerId); }}
+                onClick={() => {
+                  if (isTarget) handleCaptainClick(playerId);
+                  else if (isPlayerSide && ps.captain.flipped && !ps.captain.tapped) {
+                    // Player clicks own verso captain → enter target selection for captain attack
+                    const canCaptainAttack = validActions.some((a) => a.type === "captainAttack");
+                    if (canCaptainAttack) {
+                      setUiMode({ type: "selectingTarget", attackerId: `captain_${playerId}`, isSpecial: false });
+                    }
+                  }
+                }}
                 className={`
                   w-[9.5rem] h-52 rounded-xl border-2 flex items-center justify-center transition-all duration-200 cursor-pointer
                   border-red-500/70 bg-gradient-to-b from-red-950/30 to-gray-900/60 rarity-glow-CAP
@@ -210,7 +265,8 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
           const instance = charId ? state.cards[charId] : null;
           const def = instance ? getCardDef(instance.defId) : null;
           const isValidDeploy = isPlayerSide && deploySlots.has(slot);
-          const isValidTarget = !isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!);
+          const isValidTarget = (!isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
+            || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
           const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
 
           return (
@@ -338,6 +394,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     if (isAiTurn) return { text: "Tour de l'adversaire...", color: "text-yellow-400", pulse: true };
     if (inCounterWindow) return { text: "Reaction !", color: "text-red-400", pulse: true };
     if (uiMode.type === "selectingTarget") return { text: "Choisissez une cible", color: "text-red-300", pulse: true };
+    if (uiMode.type === "selectingSupportTarget") return { text: "Choisissez une cible pour le pouvoir", color: "text-cyan-300", pulse: true };
     if (uiMode.type === "selectingSlot") return { text: "Choisissez un slot", color: "text-green-300", pulse: true };
     if (uiMode.type === "selectingEquipTarget") return { text: "Equipez un personnage", color: "text-amber-300", pulse: true };
     return { text: "Votre tour", color: "text-green-400", pulse: false };
@@ -385,7 +442,10 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
               <span className="text-gray-300 font-bold stat-badge">{opponent.deck.length}</span>
             </div>
             {opponent.activeShip && (
-              <div className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate">
+              <div
+                onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[opponent.activeShip!].defId, instanceId: opponent.activeShip! })}
+                className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate cursor-pointer hover:bg-cyan-800/25 transition-all"
+              >
                 🚢 {getCardDef(state.cards[opponent.activeShip].defId).name}
               </div>
             )}
@@ -410,7 +470,10 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
               <span className="text-gray-300 font-bold stat-badge">{player.deck.length}</span>
             </div>
             {player.activeShip && (
-              <div className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate">
+              <div
+                onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[player.activeShip!].defId, instanceId: player.activeShip! })}
+                className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate cursor-pointer hover:bg-cyan-800/25 transition-all"
+              >
                 🚢 {getCardDef(state.cards[player.activeShip].defId).name}
               </div>
             )}
@@ -427,10 +490,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
             )}
             {canFlip && (
               <button
-                onClick={() => {
-                  const slot = Object.entries(player.board).find(([, v]) => v === null)?.[0] as Slot | undefined;
-                  if (slot) dispatch({ type: "flipCaptain", slot });
-                }}
+                onClick={() => setUiMode({ type: "selectingCaptainSlot" })}
                 className="action-btn px-3 py-2 bg-red-700/60 hover:bg-red-600/60 rounded-xl text-xs font-bold border border-red-500/20 shadow-lg shadow-red-900/15 transition-all"
               >
                 ⚔ Engager Capitaine
@@ -513,6 +573,19 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
             instance={inst} def={def} state={state} validActions={validActions}
             onBaseAttack={() => setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: false })}
             onSpecialAttack={() => setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true })}
+            onSupportAction={() => {
+              // Check if this support has targets or is global (no target needed)
+              const hasSupportTargets = validActions.some(
+                (a) => a.type === "baseSupportAction" && a.instanceId === uiMode.instanceId && a.targetInstanceId
+              );
+              if (hasSupportTargets) {
+                setUiMode({ type: "selectingSupportTarget", instanceId: uiMode.instanceId });
+              } else {
+                // Global buff (Brook, Sengoku) — dispatch directly
+                dispatch({ type: "baseSupportAction", instanceId: uiMode.instanceId });
+                resetUI();
+              }
+            }}
             onViewDetail={() => setUiMode({ type: "cardDetail", defId: inst.defId, instanceId: uiMode.instanceId })}
             onClose={resetUI}
           />

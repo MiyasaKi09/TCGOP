@@ -10,6 +10,7 @@ interface ActionMenuProps {
   validActions: GameAction[];
   onBaseAttack: () => void;
   onSpecialAttack: () => void;
+  onSupportAction: () => void;
   onViewDetail: () => void;
   onClose: () => void;
 }
@@ -21,6 +22,7 @@ export default function ActionMenu({
   validActions,
   onBaseAttack,
   onSpecialAttack,
+  onSupportAction,
   onViewDetail,
   onClose,
 }: ActionMenuProps) {
@@ -133,7 +135,7 @@ export default function ActionMenu({
         <div className="flex flex-col gap-2">
           {/* Base Attack / Support Action */}
           <button
-            onClick={(canBaseAttack || canSupport) ? onBaseAttack : undefined}
+            onClick={(canBaseAttack || canSupport) ? (isSupport && canSupport ? onSupportAction : onBaseAttack) : undefined}
             className={`action-btn w-full text-left p-3 rounded-xl border transition-all ${
               (canBaseAttack || canSupport)
                 ? "border-green-600/40 bg-green-950/20 hover:bg-green-900/30 cursor-pointer"

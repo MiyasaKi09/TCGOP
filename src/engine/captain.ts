@@ -225,7 +225,8 @@ export function declareCaptainBaseAttack(
   const rawDamage = Math.max(0, atk - targetDefVal);
 
   const hasHaki =
-    (def.verso.naturalHaki && def.verso.naturalHaki.length > 0) ?? false;
+    ((def.verso.naturalHaki && def.verso.naturalHaki.length > 0) ?? false) ||
+    state.turnNumber >= 7;
 
   let next = produce(state, (draft) => {
     const cap = draft.players[playerId].captain;

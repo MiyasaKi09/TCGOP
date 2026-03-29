@@ -145,6 +145,8 @@ export interface CardDef {
   restriction?: string;
   /** Equipment grants traits */
   grantsTraits?: (Trait | AttackTrait)[];
+  /** Equipment grants an element to attacks */
+  grantsElement?: Element;
   /** Special equipment effect description */
   equipEffect?: string;
   /** Devil Fruit structured effects */

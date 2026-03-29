@@ -190,16 +190,17 @@ function resolveEventEffect(
         next = drawCard(next, playerId);
       }
       if (effect.discard && effect.discard > 0) {
-        // For simplicity, auto-discard the last drawn cards
-        // In a full implementation, the player would choose
+        // Auto-discard the oldest card(s) in hand (first in hand array, not the newly drawn ones)
         next = produce(next, (draft) => {
           const p = draft.players[playerId];
           for (let i = 0; i < (effect.discard ?? 0) && p.hand.length > 0; i++) {
-            const discarded = p.hand.pop()!;
+            const discarded = p.hand.shift()!; // discard oldest, not newest
             draft.cards[discarded].zone = "graveyard";
             p.graveyard.push(discarded);
           }
         });
+        const discardCount = Math.min(effect.discard, next.players[playerId].hand.length + effect.discard);
+        next = addLog(next, playerId, `Defausse automatique de ${effect.discard} carte(s) (plus ancienne en main).`);
       }
       break;
     }
