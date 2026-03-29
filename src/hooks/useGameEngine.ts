@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import type { GameState, GameAction, PlayerId, DeckDef } from "@/types";
 import { createGame } from "@/engine/init";
 import { executeAction, getValidActions } from "@/engine/turnManager";
@@ -23,192 +23,115 @@ export function useGameEngine(
   const [state, setState] = useState<GameState>(() =>
     createGame(humanDeck, aiDeck)
   );
-  const aiRunning = useRef(false);
   const aiPlayer: PlayerId = humanPlayer === "player1" ? "player2" : "player1";
 
-  // Dispatch human actions
-  const dispatch = useCallback(
-    (action: GameAction) => {
-      setState((prev) => {
-        try {
-          return executeAction(prev, action);
-        } catch (err) {
-          console.error("Action failed:", err);
-          return prev;
-        }
-      });
-    },
-    []
-  );
+  // Human dispatch
+  const dispatch = useCallback((action: GameAction) => {
+    setState((prev) => {
+      try {
+        return executeAction(prev, action);
+      } catch (err) {
+        console.error("Action failed:", err);
+        return prev;
+      }
+    });
+  }, []);
 
-  // AI main turn: runs when it's AI's turn and no pending attack
-  const shouldAiAct =
-    !state.winner &&
-    state.currentPlayer === aiPlayer &&
-    !state.pendingAttack;
+  // Determine what needs to happen automatically
+  const needsAutoAction = useMemo(() => {
+    if (state.winner) return "none" as const;
 
+    // Case A: Human attacked, AI must defend (counter or pass)
+    if (state.pendingAttack && state.currentPlayer === humanPlayer) {
+      return "ai_defend" as const;
+    }
+
+    // Case B: AI attacked, human has no real counters → auto pass
+    if (state.pendingAttack && state.currentPlayer === aiPlayer) {
+      const humanActions = getValidActions(state, humanPlayer);
+      const hasRealCounter = humanActions.some((a) => a.type !== "passCounter");
+      if (!hasRealCounter) return "auto_pass" as const;
+      return "none" as const; // Human has counters, show UI
+    }
+
+    // Case C: AI's turn, no pending attack
+    if (state.currentPlayer === aiPlayer && !state.pendingAttack) {
+      return "ai_turn" as const;
+    }
+
+    return "none" as const;
+  }, [state, humanPlayer, aiPlayer]);
+
+  // Execute automatic actions with a delay
   useEffect(() => {
-    if (!shouldAiAct || aiRunning.current) return;
-    aiRunning.current = true;
+    if (needsAutoAction === "none") return;
 
-    const runOneAction = () => {
-      setState((prev) => {
-        if (prev.winner || prev.currentPlayer !== aiPlayer || prev.pendingAttack) {
-          aiRunning.current = false;
-          return prev;
-        }
-        try {
-          const action = aiChooseAction(prev, aiPlayer);
-          const next = executeAction(prev, action);
-          if (action.type === "endTurn" || next.winner) {
-            aiRunning.current = false;
-            return next;
-          }
-          if (next.pendingAttack) {
-            // AI attacked — need to wait for counter resolution
-            aiRunning.current = false;
-            return next;
-          }
-          setTimeout(runOneAction, 500);
-          return next;
-        } catch {
-          try {
-            const ended = executeAction(prev, { type: "endTurn" });
-            aiRunning.current = false;
-            return ended;
-          } catch {
-            aiRunning.current = false;
-            return prev;
-          }
-        }
-      });
-    };
-
-    const timer = setTimeout(runOneAction, 700);
-    return () => clearTimeout(timer);
-  }, [shouldAiAct, aiPlayer]);
-
-  // Auto-resolve pending attacks when AI is the defender
-  // (human attacked, AI needs to counter or pass)
-  const aiIsDefender =
-    !state.winner &&
-    state.pendingAttack !== null &&
-    state.currentPlayer === humanPlayer; // human is attacking, so AI defends
-
-  useEffect(() => {
-    if (!aiIsDefender) return;
+    const delay = needsAutoAction === "auto_pass" ? 300 :
+                  needsAutoAction === "ai_defend" ? 500 : 600;
 
     const timer = setTimeout(() => {
       setState((prev) => {
-        if (!prev.pendingAttack) return prev;
+        // Re-check conditions inside setState to avoid stale state
+        if (prev.winner) return prev;
 
-        // Check if AI has counters
-        const aiActions = getValidActions(prev, aiPlayer);
-        const surviveCounter = aiActions.find((a) => {
-          if (a.type !== "playCounter") return false;
-          try {
-            const card = prev.cards[a.instanceId];
-            const def = getCardDef(card.defId);
-            return def.counterEffect?.type === "survive";
-          } catch { return false; }
-        });
-        const reduceCounter = aiActions.find((a) => a.type === "playCounter");
+        if (needsAutoAction === "ai_defend") {
+          if (!prev.pendingAttack) return prev;
+          // AI tries to play counter
+          const aiActions = getValidActions(prev, aiPlayer);
+          const survive = aiActions.find((a) => {
+            if (a.type !== "playCounter") return false;
+            try {
+              const card = prev.cards[a.instanceId];
+              const def = getCardDef(card.defId);
+              return def.counterEffect?.type === "survive";
+            } catch { return false; }
+          });
+          const reduce = aiActions.find((a) => a.type === "playCounter");
+          const action: GameAction = survive ?? reduce ?? { type: "passCounter" };
+          try { return executeAction(prev, action); }
+          catch {
+            try { return executeAction(prev, { type: "passCounter" }); }
+            catch { return prev; }
+          }
+        }
 
-        const action = surviveCounter ?? reduceCounter ?? { type: "passCounter" as const };
-        try {
-          return executeAction(prev, action);
-        } catch {
+        if (needsAutoAction === "auto_pass") {
+          if (!prev.pendingAttack) return prev;
           try { return executeAction(prev, { type: "passCounter" }); }
           catch { return prev; }
         }
-      });
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [aiIsDefender, aiPlayer]);
 
-  // Auto-resolve pending attacks when HUMAN is the defender
-  // but has no counters available — auto-pass
-  const humanIsDefender =
-    !state.winner &&
-    state.pendingAttack !== null &&
-    state.currentPlayer === aiPlayer; // AI is attacking, so human defends
-
-  const humanCounterActions = useMemo(() => {
-    if (!humanIsDefender) return [];
-    return getValidActions(state, humanPlayer);
-  }, [humanIsDefender, state, humanPlayer]);
-
-  // If human has no counters (only passCounter), auto-resolve after brief delay
-  useEffect(() => {
-    if (!humanIsDefender) return;
-    // Only auto-pass if human has no real counter options (just passCounter)
-    const realCounters = humanCounterActions.filter((a) => a.type !== "passCounter");
-    if (realCounters.length > 0) return; // Human has options, show counter window
-
-    const timer = setTimeout(() => {
-      setState((prev) => {
-        if (!prev.pendingAttack) return prev;
-        try { return executeAction(prev, { type: "passCounter" }); }
-        catch { return prev; }
-      });
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [humanIsDefender, humanCounterActions]);
-
-  // Resume AI turn after a pending attack resolves
-  const aiShouldResume =
-    !state.winner &&
-    state.currentPlayer === aiPlayer &&
-    !state.pendingAttack &&
-    !aiRunning.current;
-
-  useEffect(() => {
-    if (!aiShouldResume) return;
-    // Check if AI still has actions to do (not just endTurn)
-    const actions = getValidActions(state, aiPlayer);
-    const hasRealActions = actions.some((a) => a.type !== "endTurn");
-    if (!hasRealActions) return;
-
-    aiRunning.current = true;
-    const timer = setTimeout(() => {
-      setState((prev) => {
-        if (prev.winner || prev.currentPlayer !== aiPlayer || prev.pendingAttack) {
-          aiRunning.current = false;
-          return prev;
-        }
-        try {
-          const action = aiChooseAction(prev, aiPlayer);
-          const next = executeAction(prev, action);
-          if (action.type === "endTurn" || next.winner || next.pendingAttack) {
-            aiRunning.current = false;
-            return next;
-          }
-          // More actions to do — will be picked up by the main AI effect
-          aiRunning.current = false;
-          return next;
-        } catch {
+        if (needsAutoAction === "ai_turn") {
+          if (prev.currentPlayer !== aiPlayer || prev.pendingAttack) return prev;
           try {
-            const ended = executeAction(prev, { type: "endTurn" });
-            aiRunning.current = false;
-            return ended;
+            const action = aiChooseAction(prev, aiPlayer);
+            return executeAction(prev, action);
           } catch {
-            aiRunning.current = false;
-            return prev;
+            try { return executeAction(prev, { type: "endTurn" }); }
+            catch { return prev; }
           }
         }
-      });
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [aiShouldResume, aiPlayer, state]);
 
-  // Compute valid actions for the human
+        return prev;
+      });
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [needsAutoAction, aiPlayer]);
+
+  // Valid actions for human
   const validActions = useMemo(() => {
     if (state.winner) return [];
-    if (humanIsDefender) return humanCounterActions;
-    if (state.pendingAttack) return []; // AI defending — no human actions
-    if (state.currentPlayer !== humanPlayer) return [];
-    return getValidActions(state, humanPlayer);
-  }, [state, humanPlayer, humanIsDefender, humanCounterActions]);
+    // Human defending against AI attack
+    if (state.pendingAttack && state.currentPlayer === aiPlayer) {
+      return getValidActions(state, humanPlayer);
+    }
+    // Human's turn
+    if (!state.pendingAttack && state.currentPlayer === humanPlayer) {
+      return getValidActions(state, humanPlayer);
+    }
+    return [];
+  }, [state, humanPlayer, aiPlayer]);
 
   const isAiTurn = state.currentPlayer === aiPlayer && !state.pendingAttack;
 
