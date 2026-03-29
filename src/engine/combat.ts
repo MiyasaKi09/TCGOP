@@ -346,12 +346,22 @@ export function resolveAttack(state: GameState): GameState {
   return next;
 }
 
+function getAttackerOwner(state: GameState, attackerId: string): PlayerId {
+  // Captain attacker IDs look like "captain_player1" or "captain_player2"
+  if (attackerId.startsWith("captain_")) {
+    return attackerId.replace("captain_", "") as PlayerId;
+  }
+  const card = state.cards[attackerId];
+  if (!card) throw new Error(`Attacker not found: ${attackerId}`);
+  return card.owner;
+}
+
 function applyCaptainDamage(
   state: GameState,
   pending: PendingAttack & { survivePlayed?: boolean }
 ): GameState {
-  const attacker = state.cards[pending.attackerId];
-  const opponentId = getOpponent(attacker.owner);
+  const attackerOwner = getAttackerOwner(state, pending.attackerId);
+  const opponentId = getOpponent(attackerOwner);
   const cap = state.players[opponentId].captain;
 
   // Logia check on captain
@@ -377,7 +387,7 @@ function applyCaptainDamage(
     }
     draft.log.push({
       turn: draft.turnNumber,
-      player: attacker.owner,
+      player: attackerOwner,
       message: `Capitaine ${getCaptainDef(targetCap.defId).name} subit ${damage} degats (PV: ${targetCap.currentPv})`,
     });
   });
@@ -418,16 +428,17 @@ function applyCharacterDamage(
     }
   });
 
+  const attackerOwner = getAttackerOwner(state, pending.attackerId);
   next = addLog(
     next,
-    state.cards[pending.attackerId].owner,
+    attackerOwner,
     `${targetDef.name} subit ${damage} degats (PV: ${next.cards[pending.targetId].currentPv})`
   );
 
   // Check KO
   if (next.cards[pending.targetId].currentPv <= 0) {
     next = addLog(next, target.owner, `${targetDef.name} est KO !`);
-    next = grantKOBonus(next, state.cards[pending.attackerId].owner);
+    next = grantKOBonus(next, attackerOwner);
     next = removeFromBoard(next, pending.targetId);
   }
 
@@ -481,7 +492,7 @@ function applyElementEffects(
       // Propagate damage to 1 adjacent
       if (target.slot) {
         const adj = getAdjacentSlots(target.slot);
-        const opponent = getOpponent(state.cards[pending.attackerId].owner);
+        const opponent = getOpponent(getAttackerOwner(state, pending.attackerId));
         for (const adjSlot of adj) {
           const adjId = state.players[opponent].board[adjSlot];
           if (adjId) {
@@ -539,8 +550,8 @@ function applyElementToCaptain(
   state: GameState,
   pending: PendingAttack
 ): GameState {
-  const attacker = state.cards[pending.attackerId];
-  const opponentId = getOpponent(attacker.owner);
+  const attackerOwner = getAttackerOwner(state, pending.attackerId);
+  const opponentId = getOpponent(attackerOwner);
 
   let next = state;
 
