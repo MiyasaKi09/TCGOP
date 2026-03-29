@@ -394,13 +394,15 @@ export function getValidActions(
     }
   }
 
-  // Base attacks (only characters with non-support base actions)
+  // Base attacks — ALL characters with ATK > 0 can base attack
+  // (even support chars like Chopper ATK 1 — they do their effect + attack)
   for (const char of boardChars) {
     if (char.tapped || char.usedBaseAction) continue;
     if (hasSummoningSickness(state, char.instanceId)) continue;
 
     const def = getCardDef(char.defId);
-    if (!def.baseAction || def.baseAction.isSupport) continue;
+    // Must have ATK > 0 to attack
+    if (!def.atk || def.atk <= 0) continue;
 
     if (char.statusEffects.some((e) => e.type === "freeze")) continue;
 

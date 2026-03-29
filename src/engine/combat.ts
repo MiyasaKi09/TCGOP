@@ -43,13 +43,13 @@ export function declareBaseAttack(
   }
 
   const def = getCardDef(attacker.defId);
-  const baseAction = def.baseAction;
-  if (!baseAction || baseAction.isSupport) {
-    throw new Error("Character has no base attack");
+  if (!def.atk || def.atk <= 0) {
+    throw new Error("Character has 0 ATK — cannot attack");
   }
 
+  const baseAction = def.baseAction;
   const atk = getEffectiveAtk(state, attackerInstanceId);
-  const attackTraits: AttackTrait[] = baseAction.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = baseAction?.attackTraits ?? [];
 
   // Calculate raw damage against target
   let targetDef = 0;
@@ -87,7 +87,7 @@ export function declareBaseAttack(
     targetIsCaptain,
     isSpecial: false,
     rawDamage,
-    element: baseAction.element,
+    element: baseAction?.element,
     attackTraits,
     hasHaki: hasHaki ?? false,
   };
