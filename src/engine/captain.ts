@@ -19,7 +19,8 @@ export function canFlipCaptain(
   const condition = def.flipCondition;
 
   // Check auto-flip condition (allies <= N)
-  if (condition.autoIfAlliesLte !== undefined) {
+  // Only available from turn 4+ to prevent early abuse
+  if (condition.autoIfAlliesLte !== undefined && state.turnNumber >= 4) {
     const allyCount = getBoardCharacters(state, playerId).length;
     if (allyCount <= condition.autoIfAlliesLte) return true;
   }
@@ -58,6 +59,7 @@ export function flipCaptain(
   const allyCount = getBoardCharacters(state, playerId).length;
   const autoFlip =
     condition.autoIfAlliesLte !== undefined &&
+    state.turnNumber >= 4 &&
     allyCount <= condition.autoIfAlliesLte;
 
   if (!autoFlip) {

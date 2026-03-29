@@ -185,9 +185,12 @@ function scoreCaptainFlip(
   playerId: PlayerId
 ): number {
   const boardCount = getBoardCharacters(state, playerId).length;
-  // Flip when few allies or late game
-  if (boardCount <= 1) return 30;
-  if (state.turnNumber >= 6) return 20;
-  if (state.turnNumber >= 4 && boardCount <= 3) return 15;
-  return 5;
+  // Never flip before turn 4
+  if (state.turnNumber < 4) return -10;
+  // Flip when desperate (0-1 allies) and late game
+  if (boardCount === 0 && state.turnNumber >= 5) return 30;
+  if (boardCount <= 1 && state.turnNumber >= 6) return 25;
+  if (state.turnNumber >= 7) return 15;
+  if (state.turnNumber >= 5 && boardCount <= 2) return 10;
+  return -5;
 }
