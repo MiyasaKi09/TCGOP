@@ -147,6 +147,26 @@ export interface CardDef {
   grantsTraits?: (Trait | AttackTrait)[];
   /** Special equipment effect description */
   equipEffect?: string;
+  /** Devil Fruit structured effects */
+  fruitEffects?: {
+    base: {
+      grantsTraits?: Trait[];
+      passiveDescription?: string;
+      atkBonus?: number;
+      defBonus?: number;
+    };
+    awakening?: {
+      porteurLegitime: string; // character name that can awaken
+      minTurns: number;
+      volCost: number;
+      grantsTraits?: Trait[];
+      atkBonus?: number;
+      defBonus?: number;
+      passiveDescription?: string;
+      specialAttack?: { name: string; cost: number; atkBonus: number; description: string; oncePerGame?: boolean };
+    };
+  };
+  /** Is this fruit awakened? (runtime, set on CardInstance not CardDef) */
 
   // --- Ship fields ---
   shipPassive?: string;
@@ -281,6 +301,8 @@ export interface CardInstance {
   logiaUsedThisTurn?: boolean;
   /** 1x/game abilities already used */
   usedOnceAbilities: string[];
+  /** Is this a Devil Fruit that has been awakened? */
+  isAwakened?: boolean;
 }
 
 export interface CaptainInstance {
@@ -376,4 +398,5 @@ export type GameAction =
   | { type: "useHaki"; hakiType: HakiType; targetInstanceId?: string }
   | { type: "moveCharacter"; instanceId: string; targetSlot: Slot }
   | { type: "activateShip"; shipInstanceId: string }
+  | { type: "awakenFruit"; fruitInstanceId: string }
   | { type: "endTurn" };

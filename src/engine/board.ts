@@ -76,13 +76,18 @@ export function getAdjacentSlots(slot: Slot): Slot[] {
   return (ADJACENCY[slot] ?? []) as Slot[];
 }
 
-/** Check if a player has any front-row characters */
+/** Check if a player has any front-row characters (including verso captain) */
 export function hasFrontRow(
   state: GameState,
   playerId: PlayerId
 ): boolean {
   const player = state.players[playerId];
-  return FRONT_SLOTS.some((s) => player.board[s] !== null);
+  const hasCharInFront = FRONT_SLOTS.some((s) => player.board[s] !== null);
+  // Captain verso in front row also counts
+  if (player.captain.flipped && player.captain.slot && isFrontSlot(player.captain.slot)) {
+    return true;
+  }
+  return hasCharInFront;
 }
 
 /** Get the effective ATK of a character (base + equipment + modifiers) */
@@ -139,7 +144,7 @@ export function getEffectiveDef(
   return Math.max(0, defVal);
 }
 
-/** Check if a character has a specific trait */
+/** Check if a character has a specific trait (including from Devil Fruits) */
 export function hasTrait(
   state: GameState,
   instanceId: string,
@@ -148,7 +153,18 @@ export function hasTrait(
   const card = state.cards[instanceId];
   if (!card) return false;
   const def = getCardDef(card.defId);
-  return def.traits?.includes(trait) ?? false;
+  if (def.traits?.includes(trait)) return true;
+
+  // Check traits from equipped Devil Fruits
+  for (const objId of card.attachedObjects) {
+    const objCard = state.cards[objId];
+    if (!objCard) continue;
+    const objDef = getCardDef(objCard.defId);
+    if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
+    if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
+  }
+
+  return false;
 }
 
 /** Check if character has summoning sickness (deployed this turn, no Rush) */
@@ -296,6 +312,17 @@ export function equipObject(
     playerId,
     `Equipe ${objDef.name} sur ${getCardDef(targetCard.defId).name}`
   );
+
+  // Apply Devil Fruit effects if it's a fruit
+  if (objDef.subtype === "fruit" && objDef.fruitEffects) {
+    const { applyFruitBaseEffects } = require("./fruits");
+    next = applyFruitBaseEffects(next, objectInstanceId, targetInstanceId);
+  }
+
+  // Recalculate passive buffs
+  const { recalculatePassiveBuffs } = require("./passives");
+  next = recalculatePassiveBuffs(next, playerId);
+
   return next;
 }
 

@@ -98,9 +98,13 @@ export function executeAction(
     case "moveCharacter":
       return moveCharacter(state, state.currentPlayer, action.instanceId, action.targetSlot);
 
+    case "awakenFruit": {
+      const { awakenFruit } = require("./fruits");
+      return awakenFruit(state, state.currentPlayer, action.fruitInstanceId);
+    }
+
     case "endTurn": {
       const next = endTurn(state);
-      // Start the next player's turn
       return startTurn(next);
     }
 

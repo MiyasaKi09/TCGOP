@@ -154,19 +154,61 @@ export const mugiwaraCards: CardDef[] = [
     id: "ST01-014", name: "Gomu Gomu no Mi", type: "object", subtype: "fruit", cost: 3,
     faction: "pirate", rarity: "SR", set: "ST01",
     bonusAtk: 0, restriction: "Luffy",
-    equipEffect: "Maudit, Immunite Impact, Portee. Eveil: Joy Boy.",
+    equipEffect: "Maudit, Immunite Impact, Portee sur les attaques.",
+    fruitEffects: {
+      base: {
+        grantsTraits: ["cursed"],
+        passiveDescription: "Immunite Impact. Portee sur les attaques.",
+      },
+      awakening: {
+        porteurLegitime: "Luffy",
+        minTurns: 5,
+        volCost: 5,
+        atkBonus: 4,
+        passiveDescription: "JOY BOY — 1x/tour annule 1 attaque subie. Ennemis -1 DEF.",
+        specialAttack: { name: "Bajrang Gun", cost: 6, atkBonus: 14, description: "1x/partie. Ignore tout.", oncePerGame: true },
+      },
+    },
   },
   {
     id: "ST01-015", name: "Hana Hana no Mi", type: "object", subtype: "fruit", cost: 2,
     faction: "pirate", rarity: "R", set: "ST01",
     bonusAtk: 0, restriction: "Robin",
     equipEffect: "Maudit, Portee. Immobilise 1 ennemi/tour.",
+    fruitEffects: {
+      base: {
+        grantsTraits: ["cursed"],
+        passiveDescription: "Portee illimitee. Peut immobiliser 1 ennemi/tour.",
+      },
+      awakening: {
+        porteurLegitime: "Robin",
+        minTurns: 5,
+        volCost: 4,
+        atkBonus: 3,
+        defBonus: 4,
+        passiveDescription: "Gigante Fleur — immobilise 2 ennemis/tour. +3 ATK.",
+        specialAttack: { name: "Demonio Fleur", cost: 4, atkBonus: 9, description: "Portee. Ignore Furtif.", oncePerGame: true },
+      },
+    },
   },
   {
     id: "ST01-016", name: "Yomi Yomi no Mi", type: "object", subtype: "fruit", cost: 2,
     faction: "pirate", rarity: "R", set: "ST01",
     bonusAtk: 0, restriction: "Brook",
     equipEffect: "Maudit. Resurrection 1x/partie.",
+    fruitEffects: {
+      base: {
+        grantsTraits: ["cursed"],
+        passiveDescription: "Resurrection 1x/partie (revient 3 PV).",
+      },
+      awakening: {
+        porteurLegitime: "Brook",
+        minTurns: 5,
+        volCost: 4,
+        atkBonus: 5,
+        passiveDescription: "Monde des ames — ignore Avant/Arriere. Attaques gagnent Glace.",
+      },
+    },
   },
 
   // === OBJETS - ACCESSOIRES ===

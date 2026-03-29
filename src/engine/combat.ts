@@ -371,8 +371,8 @@ function applyCaptainDamage(
     if (isLogia && !pending.hasHaki && pending.rawDamage > 0) {
       return addLog(
         state,
-        opponentId,
-        `Intangibilite Logia ! L'attaque ne fait aucun degat.`
+        attackerOwner,
+        `⚠ ${capDef.name} : INTANGIBILITE LOGIA ! L'attaque passe a travers. Utilisez le Haki (T7+) ou l'Eau pour le toucher.`
       );
     }
   }
@@ -412,8 +412,8 @@ function applyCharacterDamage(
       });
       return addLog(
         next,
-        target.owner,
-        `${targetDef.name} : Intangibilite Logia ! Degats ignores.`
+        getAttackerOwner(state, pending.attackerId),
+        `⚠ ${targetDef.name} : INTANGIBILITE LOGIA ! Utilisez le Haki (T7+) ou l'Eau.`
       );
     }
   }

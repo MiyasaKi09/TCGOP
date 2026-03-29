@@ -138,12 +138,40 @@ export const marinesCards: CardDef[] = [
     faction: "marine", rarity: "SR", set: "ST02",
     bonusAtk: 0, restriction: "Akainu",
     equipEffect: "Maudit, Intangibilite Logia. Attaques gagnent Feu.",
+    fruitEffects: {
+      base: {
+        grantsTraits: ["cursed", "logia"],
+        passiveDescription: "Intangibilite Logia. Attaques gagnent Feu. Immunite Feu/Brulure.",
+      },
+      awakening: {
+        porteurLegitime: "Akainu",
+        minTurns: 5,
+        volCost: 5,
+        atkBonus: 4,
+        passiveDescription: "Terre Brulee — toutes attaques Feu gagnent Zone. Ennemis -1 DEF.",
+        specialAttack: { name: "Monde de Magma", cost: 6, atkBonus: 12, description: "Zone totale. 1x/partie.", oncePerGame: true },
+      },
+    },
   },
   {
     id: "ST02-012", name: "Moku Moku no Mi", type: "object", subtype: "fruit", cost: 2,
     faction: "marine", rarity: "R", set: "ST02",
     bonusAtk: 0, restriction: "Smoker",
     equipEffect: "Maudit, Intangibilite Logia.",
+    fruitEffects: {
+      base: {
+        grantsTraits: ["cursed", "logia"],
+        passiveDescription: "Intangibilite Logia. Immobilise 1 ennemi 1 tour.",
+      },
+      awakening: {
+        porteurLegitime: "Smoker",
+        minTurns: 5,
+        volCost: 4,
+        atkBonus: 3,
+        defBonus: 2,
+        passiveDescription: "White Monster — Immobilise 2 ennemis/tour. +3 ATK, +2 DEF.",
+      },
+    },
   },
 
   // === OBJETS - ARMES ===
