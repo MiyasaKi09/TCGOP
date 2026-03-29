@@ -434,7 +434,8 @@ export function removeFromBoard(
  */
 export function getValidTargets(
   state: GameState,
-  attackerInstanceId: string
+  attackerInstanceId: string,
+  forSpecial?: boolean
 ): { characterTargets: string[]; canTargetCaptain: boolean } {
   const attacker = state.cards[attackerInstanceId];
   if (!attacker) return { characterTargets: [], canTargetCaptain: false };
@@ -446,8 +447,15 @@ export function getValidTargets(
   const opponentId = getOpponent(attacker.owner);
   const opponent = state.players[opponentId];
 
-  const hasRange = attackerDef.traits?.includes("range") ?? false;
-  const attackerInFront = isFrontSlot(attackerSlot);
+  // Check range from character trait OR from the specific attack's traits
+  let hasRange = attackerDef.traits?.includes("range") ?? false;
+  if (!hasRange && forSpecial && attackerDef.specialAttack?.attackTraits?.includes("range")) {
+    hasRange = true;
+  }
+  if (!hasRange && !forSpecial && attackerDef.baseAction?.attackTraits?.includes("range")) {
+    hasRange = true;
+  }
+
   const attackerInBack = isBackSlot(attackerSlot);
 
   // Back row without Range can't melee attack

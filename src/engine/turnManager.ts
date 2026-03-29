@@ -394,7 +394,7 @@ export function getValidActions(
     }
   }
 
-  // Base attacks
+  // Base attacks (only characters with non-support base actions)
   for (const char of boardChars) {
     if (char.tapped || char.usedBaseAction) continue;
     if (hasSummoningSickness(state, char.instanceId)) continue;
@@ -402,10 +402,9 @@ export function getValidActions(
     const def = getCardDef(char.defId);
     if (!def.baseAction || def.baseAction.isSupport) continue;
 
-    // Check freeze status
     if (char.statusEffects.some((e) => e.type === "freeze")) continue;
 
-    const targets = getValidTargets(state, char.instanceId);
+    const targets = getValidTargets(state, char.instanceId, false);
     for (const targetId of targets.characterTargets) {
       actions.push({
         type: "baseAttack",
@@ -423,19 +422,21 @@ export function getValidActions(
     }
   }
 
-  // Special attacks
+  // Special attacks (all characters with specials, including support chars)
   for (const char of boardChars) {
     if (char.usedSpecialAttack) continue;
     if (hasSummoningSickness(state, char.instanceId)) continue;
 
     const def = getCardDef(char.defId);
     if (!def.specialAttack) continue;
+    // Support specials (heal, buff) don't need attack targets — skip for now
+    if (def.specialAttack.isSupport) continue;
     if (def.specialAttack.oncePerGame && char.usedOnceAbilities.includes(def.specialAttack.name)) continue;
     if (!canAfford(state, playerId, def.specialAttack.cost)) continue;
 
     if (char.statusEffects.some((e) => e.type === "freeze")) continue;
 
-    const targets = getValidTargets(state, char.instanceId);
+    const targets = getValidTargets(state, char.instanceId, true);
     for (const targetId of targets.characterTargets) {
       actions.push({
         type: "specialAttack",
