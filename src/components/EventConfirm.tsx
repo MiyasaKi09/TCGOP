@@ -43,35 +43,41 @@ export default function EventConfirm({ def, playerVol, onConfirm, onCancel }: Ev
     ? (EFFECT_DESCRIPTIONS[effect.type]?.(effect) ?? JSON.stringify(effect))
     : "Effet inconnu";
 
+  const isShip = def.type === "ship";
+
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onCancel}>
-      <div className="bg-gray-900 border-2 border-amber-600 rounded-xl p-5 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-lg font-bold text-amber-400 mb-1">
-          {def.type === "ship" ? "🚢 Deployer navire" : "⚡ Jouer evenement"}
-        </h3>
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50" onClick={onCancel}>
+      <div className="glass rounded-2xl p-5 max-w-md w-full mx-4 border border-amber-600/30 shadow-2xl shadow-amber-900/10 animate-modal-enter" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xl">{isShip ? "🚢" : "⚡"}</span>
+          <h3 className="text-sm font-bold text-amber-400/80 uppercase tracking-wider">
+            {isShip ? "Deployer navire" : "Jouer evenement"}
+          </h3>
+        </div>
         <h2 className="text-xl font-bold text-white mb-3">{def.name}</h2>
 
-        <div className="flex items-center gap-2 mb-3">
-          <span className="px-2 py-1 rounded bg-blue-800 text-blue-200 text-sm font-bold">
-            Cout : {def.cost} Vol.
-          </span>
-          <span className={`text-sm ${canAfford ? "text-green-400" : "text-red-400"}`}>
-            (vous avez {playerVol} Vol.)
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-900/30 border border-blue-700/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+            <span className="text-blue-200 text-sm font-bold stat-badge">{def.cost} Vol.</span>
+          </div>
+          <span className={`text-xs ${canAfford ? "text-green-400/80" : "text-red-400/80"}`}>
+            ({playerVol} disponible)
           </span>
         </div>
 
         {/* Effect description */}
         {def.eventEffect && (
-          <div className="p-3 rounded bg-yellow-900/30 border border-yellow-800/50 mb-3">
-            <div className="text-sm font-semibold text-yellow-300 mb-1">Effet :</div>
-            <div className="text-sm text-gray-200">{description}</div>
+          <div className="p-3 rounded-xl bg-yellow-950/15 border border-yellow-800/20 mb-3">
+            <div className="text-[9px] font-bold text-yellow-400/70 uppercase tracking-wider mb-1">Effet</div>
+            <div className="text-sm text-gray-200 leading-relaxed">{description}</div>
           </div>
         )}
 
         {/* Counter info */}
         {def.counterEffect && (
-          <div className="p-3 rounded bg-blue-900/30 border border-blue-800/50 mb-3">
-            <div className="text-sm font-semibold text-blue-300 mb-1">Effet (Counter) :</div>
+          <div className="p-3 rounded-xl bg-blue-950/15 border border-blue-800/20 mb-3">
+            <div className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mb-1">Effet Counter</div>
             <div className="text-sm text-gray-200">
               {def.counterEffect.type === "survive"
                 ? def.counterEffect.description
@@ -81,32 +87,40 @@ export default function EventConfirm({ def, playerVol, onConfirm, onCancel }: Ev
         )}
 
         {/* Ship info */}
-        {def.type === "ship" && (
-          <div className="p-3 rounded bg-cyan-900/30 border border-cyan-800/50 mb-3">
-            {def.shipPassive && <div className="text-sm text-gray-200 mb-1">{def.shipPassive}</div>}
+        {isShip && (
+          <div className="p-3 rounded-xl bg-cyan-950/15 border border-cyan-800/20 mb-3 space-y-1.5">
+            {def.shipPassive && (
+              <div>
+                <div className="text-[9px] font-bold text-cyan-400/70 uppercase tracking-wider">Passif</div>
+                <div className="text-sm text-gray-200">{def.shipPassive}</div>
+              </div>
+            )}
             {def.shipActive && (
-              <div className="text-sm text-cyan-300">
-                {def.shipActive.name} ({def.shipActive.cost} Vol.) : {def.shipActive.description}
+              <div>
+                <div className="text-[9px] font-bold text-cyan-400/70 uppercase tracking-wider">Actif</div>
+                <div className="text-sm text-cyan-300">
+                  {def.shipActive.name} <span className="text-gray-500">({def.shipActive.cost}V)</span> — {def.shipActive.description}
+                </div>
               </div>
             )}
           </div>
         )}
 
-        <div className="flex gap-3 mt-4">
+        <div className="flex gap-2 mt-4">
           <button
             onClick={canAfford ? onConfirm : undefined}
             disabled={!canAfford}
-            className={`flex-1 px-4 py-3 rounded-lg text-base font-semibold ${
+            className={`action-btn flex-1 px-4 py-3 rounded-xl text-sm font-bold transition-all ${
               canAfford
-                ? "bg-amber-600 hover:bg-amber-500 text-white cursor-pointer"
-                : "bg-gray-700 text-gray-500 cursor-not-allowed"
+                ? "bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white border border-amber-500/20 shadow-lg shadow-amber-900/20"
+                : "bg-gray-800/40 text-gray-600 cursor-not-allowed border border-gray-700/20"
             }`}
           >
-            {canAfford ? "Jouer" : "Pas assez de Vol."}
+            {canAfford ? "Confirmer" : "Volonte insuffisante"}
           </button>
           <button
             onClick={onCancel}
-            className="flex-1 px-4 py-3 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-base"
+            className="flex-1 px-4 py-3 rounded-xl bg-gray-800/30 hover:bg-gray-700/30 text-gray-400 text-sm border border-gray-700/20 transition-all"
           >
             Annuler
           </button>

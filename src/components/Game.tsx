@@ -87,7 +87,6 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       setSelectedHandCard(instanceId);
       setUiMode({ type: "selectingSlot", cardId: instanceId });
     } else if (def.type === "object") {
-      // Select equipment target among board characters
       setSelectedHandCard(instanceId);
       setUiMode({ type: "selectingEquipTarget", objectId: instanceId });
     } else if (def.type === "event") {
@@ -122,13 +121,11 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   };
 
   const handleBoardCharClick = (instanceId: string, isPlayerSide: boolean) => {
-    // Equip target selection
     if (uiMode.type === "selectingEquipTarget" && isPlayerSide && equipTargets.has(instanceId)) {
       dispatch({ type: "equipObject", objectInstanceId: uiMode.objectId, targetInstanceId: instanceId });
       resetUI();
       return;
     }
-    // Attack target selection
     if (uiMode.type === "selectingTarget" && !isPlayerSide && attackTargets.has(instanceId)) {
       dispatch({
         type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
@@ -138,11 +135,9 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       resetUI();
       return;
     }
-    // Own character → action menu
     if (isPlayerSide) {
       setUiMode({ type: "actionMenu", instanceId });
     } else {
-      // Enemy → view detail
       const card = state.cards[instanceId];
       if (card) setUiMode({ type: "cardDetail", defId: card.defId, instanceId });
     }
@@ -164,43 +159,53 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   const renderRow = (slots: readonly string[], playerId: PlayerId) => {
     const isPlayerSide = playerId === humanPlayer;
     const ps = state.players[playerId];
-    // Check if captain verso is in one of these slots
     const captainSlot = ps.captain.flipped ? ps.captain.slot : null;
 
     return (
-      <div className="flex gap-3 justify-center">
+      <div className="flex gap-2 justify-center">
         {slots.map((s) => {
           const slot = s as Slot;
 
-          // Captain verso in this slot?
+          // Captain verso in this slot
           if (captainSlot === slot) {
             const capDef = getCaptainDef(ps.captain.defId);
             const isTarget = !isPlayerSide && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+            const pvPercent = Math.max(0, (ps.captain.currentPv / capDef.verso.pv) * 100);
             return (
               <div
                 key={slot}
-                onClick={() => {
-                  if (isTarget) handleCaptainClick(playerId);
-                }}
-                className={`w-36 h-48 rounded-lg border-2 flex items-center justify-center transition-all cursor-pointer
-                  border-red-600 bg-red-950/20
-                  ${isTarget ? "ring-2 ring-red-400 animate-pulse" : ""}
+                onClick={() => { if (isTarget) handleCaptainClick(playerId); }}
+                className={`
+                  w-[9.5rem] h-52 rounded-xl border-2 flex items-center justify-center transition-all duration-200 cursor-pointer
+                  border-red-500/70 bg-gradient-to-b from-red-950/30 to-gray-900/60 rarity-glow-CAP
+                  ${isTarget ? "ring-2 ring-red-400/80 shadow-lg shadow-red-500/30 animate-pulse" : "hover:brightness-110"}
                 `}
               >
-                <div className="text-center p-1">
-                  <div className="text-[11px] font-bold text-red-300">{capDef.name}</div>
-                  <div className="text-[10px] text-red-400">VERSO</div>
-                  <div className="text-xs mt-1">
-                    <span className="text-red-400">⚔{capDef.verso.atk}</span>{" "}
-                    <span className="text-blue-400">🛡{capDef.verso.def}</span>
+                <div className="text-center p-2 w-full">
+                  <div className="text-[10px] uppercase tracking-widest text-red-400/80 font-bold mb-1">Verso</div>
+                  <div className="text-[12px] font-bold text-white mb-1.5">{capDef.name}</div>
+                  <div className="flex justify-center gap-3 text-[11px] mb-1.5">
+                    <span className="text-red-400 font-bold stat-badge">⚔{capDef.verso.atk}</span>
+                    <span className="text-blue-400 font-bold stat-badge">🛡{capDef.verso.def}</span>
                   </div>
-                  <div className={`text-xs font-bold mt-0.5 ${ps.captain.currentPv <= capDef.verso.pv / 3 ? "text-red-400" : "text-green-400"}`}>
-                    ❤{ps.captain.currentPv}/{capDef.verso.pv}
+                  <div className="w-full h-1.5 rounded-full bg-gray-800/80 overflow-hidden mx-auto">
+                    <div
+                      className="h-full rounded-full health-bar"
+                      style={{
+                        width: `${pvPercent}%`,
+                        ["--hp-color" as string]: pvPercent > 50 ? "#22c55e" : pvPercent > 25 ? "#eab308" : "#ef4444",
+                        ["--hp-color-light" as string]: pvPercent > 50 ? "#4ade80" : pvPercent > 25 ? "#facc15" : "#f87171",
+                      }}
+                    />
+                  </div>
+                  <div className={`text-[10px] font-bold mt-1 stat-badge ${pvPercent <= 25 ? "text-red-400" : "text-green-400"}`}>
+                    {ps.captain.currentPv}/{capDef.verso.pv}
                   </div>
                 </div>
               </div>
             );
           }
+
           const charId = ps.board[slot];
           const instance = charId ? state.cards[charId] : null;
           const def = instance ? getCardDef(instance.defId) : null;
@@ -237,40 +242,55 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     );
     if (counterActions.length === 0) return null;
 
+    const attackerName = pending.attackerId.startsWith("captain_")
+      ? getCaptainDef(state.players[pending.attackerId.replace("captain_", "") as PlayerId].captain.defId).name
+      : getCardDef(state.cards[pending.attackerId].defId).name;
+    const targetName = pending.targetIsCaptain
+      ? "votre Capitaine"
+      : getCardDef(state.cards[pending.targetId].defId).name;
+
     return (
-      <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-        <div className="bg-gray-900 rounded-xl p-6 border-2 border-red-500 max-w-lg">
-          <h3 className="text-xl font-bold text-red-400 mb-3">Attaque entrante !</h3>
-          <p className="text-base text-yellow-300 mb-2 font-semibold">
-            {pending.attackerId.startsWith("captain_")
-              ? getCaptainDef(state.players[pending.attackerId.replace("captain_", "") as PlayerId].captain.defId).name
-              : getCardDef(state.cards[pending.attackerId].defId).name}
-            {" "}attaque{" "}
-            {pending.targetIsCaptain
-              ? "votre Capitaine"
-              : getCardDef(state.cards[pending.targetId].defId).name}
-          </p>
-          <p className="text-base text-gray-300 mb-4">
-            Degats : <span className="text-red-300 font-bold text-2xl">{pending.rawDamage}</span>
-            {pending.element && <span className="ml-2 text-gray-400">({pending.element})</span>}
-            {pending.hasHaki && <span className="ml-2 text-purple-300">[Haki]</span>}
-          </p>
-          <div className="flex gap-3 flex-wrap">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="glass rounded-2xl p-6 border border-red-500/50 max-w-lg shadow-2xl shadow-red-900/20 animate-modal-enter">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <h3 className="text-lg font-bold text-red-400 uppercase tracking-wider">Attaque entrante</h3>
+          </div>
+
+          <div className="bg-gray-800/50 rounded-xl p-4 mb-4 border border-gray-700/30">
+            <p className="text-sm text-gray-400 mb-1">
+              <span className="text-red-300 font-bold">{attackerName}</span>
+              {" "}attaque{" "}
+              <span className="text-blue-300 font-bold">{targetName}</span>
+            </p>
+            <div className="flex items-baseline gap-3 mt-2">
+              <span className="text-3xl font-black text-red-400 stat-badge">{pending.rawDamage}</span>
+              <span className="text-sm text-gray-500">degats</span>
+              {pending.element && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-300 capitalize">{pending.element}</span>
+              )}
+              {pending.hasHaki && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300">Haki</span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-2 flex-wrap">
             {counterActions.map((action, i) => {
               if (action.type === "playCounter") {
                 const card = state.cards[action.instanceId];
                 const def = getCardDef(card.defId);
                 return (
                   <button key={i} onClick={() => dispatch(action)}
-                    className="px-5 py-3 bg-blue-700 hover:bg-blue-600 rounded-lg text-base font-semibold">
-                    🛡 {def.name} ({def.cost} Vol.)
+                    className="action-btn px-4 py-2.5 bg-blue-600/80 hover:bg-blue-500/80 rounded-xl text-sm font-bold border border-blue-400/20 shadow-lg shadow-blue-900/20 transition-all">
+                    🛡 {def.name} <span className="text-blue-200/70 text-xs">({def.cost}V)</span>
                   </button>
                 );
               }
               if (action.type === "useHaki") {
                 return (
                   <button key={i} onClick={() => dispatch(action)}
-                    className="px-5 py-3 bg-purple-700 hover:bg-purple-600 rounded-lg text-base font-semibold">
+                    className="action-btn px-4 py-2.5 bg-purple-600/80 hover:bg-purple-500/80 rounded-xl text-sm font-bold border border-purple-400/20 shadow-lg shadow-purple-900/20 transition-all">
                     👁 Haki Observation
                   </button>
                 );
@@ -278,7 +298,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
               if (action.type === "passCounter") {
                 return (
                   <button key={i} onClick={() => dispatch(action)}
-                    className="px-5 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-base">
+                    className="action-btn px-4 py-2.5 bg-gray-700/60 hover:bg-gray-600/60 rounded-xl text-sm border border-gray-600/20 transition-all text-gray-300">
                     Subir les degats
                   </button>
                 );
@@ -295,13 +315,13 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   if (state.winner) {
     const won = state.winner === humanPlayer;
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-6">
-        <h1 className={`text-5xl font-bold ${won ? "text-green-400" : "text-red-400"}`}>
+      <div className="game-bg min-h-screen flex flex-col items-center justify-center gap-8">
+        <div className={`text-6xl font-black tracking-tight ${won ? "text-green-400" : "text-red-400"}`}>
           {won ? "VICTOIRE !" : "DEFAITE..."}
-        </h1>
-        <p className="text-gray-400 text-xl">Tour {state.turnNumber}</p>
+        </div>
+        <div className="text-gray-500 text-lg">Tour {state.turnNumber}</div>
         <button onClick={() => window.location.reload()}
-          className="px-8 py-4 bg-amber-600 hover:bg-amber-500 rounded-lg text-xl font-semibold">
+          className="action-btn px-10 py-4 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 rounded-xl text-lg font-bold shadow-xl shadow-amber-900/30 border border-amber-500/20 transition-all">
           Rejouer
         </button>
       </div>
@@ -311,98 +331,135 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   const playerCaptainDef = getCaptainDef(player.captain.defId);
   const opponentCaptainDef = getCaptainDef(opponent.captain.defId);
   const canFlip = validActions.some((a) => a.type === "flipCaptain");
+  const canActivateShip = validActions.some((a) => a.type === "activateShip");
 
-  // Status bar text
+  // Status bar
   const statusText = (() => {
-    if (isAiTurn) return { text: "Tour de l'IA...", color: "text-yellow-400", pulse: true };
-    if (inCounterWindow) return { text: "⚠ Reaction !", color: "text-red-400", pulse: false };
-    if (uiMode.type === "selectingTarget") return { text: "Choisissez une cible ennemie", color: "text-red-300", pulse: true };
-    if (uiMode.type === "selectingSlot") return { text: "Choisissez un slot pour deployer", color: "text-green-300", pulse: true };
-    if (uiMode.type === "selectingEquipTarget") return { text: "Choisissez un personnage a equiper", color: "text-amber-300", pulse: true };
+    if (isAiTurn) return { text: "Tour de l'adversaire...", color: "text-yellow-400", pulse: true };
+    if (inCounterWindow) return { text: "Reaction !", color: "text-red-400", pulse: true };
+    if (uiMode.type === "selectingTarget") return { text: "Choisissez une cible", color: "text-red-300", pulse: true };
+    if (uiMode.type === "selectingSlot") return { text: "Choisissez un slot", color: "text-green-300", pulse: true };
+    if (uiMode.type === "selectingEquipTarget") return { text: "Equipez un personnage", color: "text-amber-300", pulse: true };
     return { text: "Votre tour", color: "text-green-400", pulse: false };
   })();
 
   return (
-    <div className="min-h-screen flex flex-col p-3 gap-3">
+    <div className="game-bg min-h-screen flex flex-col p-4 gap-3">
       {/* Header */}
-      <div className="flex justify-between items-center px-5 py-3 bg-gray-900 rounded-lg">
-        <div>
-          <span className="text-gray-400 text-base">Tour</span>{" "}
-          <span className="font-bold text-2xl">{state.turnNumber}</span>
+      <div className="flex justify-between items-center px-5 py-3 glass rounded-xl border border-gray-700/30">
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-gray-500 uppercase tracking-widest">Tour</div>
+          <div className="text-2xl font-black text-white stat-badge">{state.turnNumber}</div>
         </div>
-        <div>
-          <span className="text-blue-400 font-bold text-xl">⭐ {player.volonte} Vol.</span>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-blue-500 shadow-lg shadow-blue-500/50" />
+          <span className="text-blue-400 font-bold text-lg stat-badge">{player.volonte}</span>
+          <span className="text-blue-400/60 text-sm">Volonte</span>
         </div>
-        <div className={`text-base font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
+        <div className={`text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
           {statusText.text}
         </div>
       </div>
 
       {/* Opponent area */}
-      <div className="flex justify-center gap-5 items-start">
+      <div className="flex justify-center gap-4 items-start">
         <div
           onClick={() => handleCaptainClick(aiPlayer)}
-          className={uiMode.type === "selectingTarget" && attackTargets.has(`captain_${aiPlayer}`) ? "ring-2 ring-red-500 rounded-xl cursor-pointer" : ""}
+          className={`transition-all duration-200 ${uiMode.type === "selectingTarget" && attackTargets.has(`captain_${aiPlayer}`) ? "ring-2 ring-red-500/70 rounded-xl cursor-pointer shadow-lg shadow-red-500/20 animate-pulse" : ""}`}
         >
           <CaptainCard captain={opponent.captain} def={opponentCaptainDef} isOpponent />
         </div>
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2">
           {renderRow(BACK_SLOTS, aiPlayer)}
           {renderRow(FRONT_SLOTS, aiPlayer)}
         </div>
-        <div className="text-sm text-gray-500 min-w-[90px]">
-          <p>Main: {opponent.hand.length}</p>
-          <p>Deck: {opponent.deck.length}</p>
-          {opponent.activeShip && (
-            <p className="text-blue-300">🚢 {getCardDef(state.cards[opponent.activeShip].defId).name}</p>
-          )}
+        <div className="glass-light rounded-xl p-3 min-w-[100px] border border-gray-700/20">
+          <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Adversaire</div>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-gray-500">Main</span>
+              <span className="text-gray-300 font-bold stat-badge">{opponent.hand.length}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">Deck</span>
+              <span className="text-gray-300 font-bold stat-badge">{opponent.deck.length}</span>
+            </div>
+            {opponent.activeShip && (
+              <div className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate">
+                🚢 {getCardDef(state.cards[opponent.activeShip].defId).name}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="border-t border-gray-700" />
+      {/* Board divider */}
+      <div className="board-divider mx-8" />
 
       {/* Player area */}
-      <div className="flex justify-center gap-5 items-start">
+      <div className="flex justify-center gap-4 items-start">
         <CaptainCard captain={player.captain} def={playerCaptainDef} />
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2">
           {renderRow(FRONT_SLOTS, humanPlayer)}
           {renderRow(BACK_SLOTS, humanPlayer)}
         </div>
-        <div className="flex flex-col gap-2 min-w-[130px]">
-          <p className="text-sm text-gray-500">Deck: {player.deck.length}</p>
-          {player.activeShip && (
-            <p className="text-sm text-blue-300">🚢 {getCardDef(state.cards[player.activeShip].defId).name}</p>
-          )}
-          {canFlip && (
+        <div className="flex flex-col gap-2 min-w-[140px]">
+          <div className="glass-light rounded-xl p-3 border border-gray-700/20 space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-gray-500">Deck</span>
+              <span className="text-gray-300 font-bold stat-badge">{player.deck.length}</span>
+            </div>
+            {player.activeShip && (
+              <div className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate">
+                🚢 {getCardDef(state.cards[player.activeShip].defId).name}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            {canActivateShip && player.activeShip && (
+              <button
+                onClick={() => dispatch({ type: "activateShip", shipInstanceId: player.activeShip! })}
+                className="action-btn px-3 py-2 bg-cyan-700/60 hover:bg-cyan-600/60 rounded-xl text-xs font-bold border border-cyan-500/20 shadow-lg shadow-cyan-900/15 transition-all"
+              >
+                🚢 Activer navire
+              </button>
+            )}
+            {canFlip && (
+              <button
+                onClick={() => {
+                  const slot = Object.entries(player.board).find(([, v]) => v === null)?.[0] as Slot | undefined;
+                  if (slot) dispatch({ type: "flipCaptain", slot });
+                }}
+                className="action-btn px-3 py-2 bg-red-700/60 hover:bg-red-600/60 rounded-xl text-xs font-bold border border-red-500/20 shadow-lg shadow-red-900/15 transition-all"
+              >
+                ⚔ Engager Capitaine
+              </button>
+            )}
             <button
-              onClick={() => {
-                const slot = Object.entries(player.board).find(([, v]) => v === null)?.[0] as Slot | undefined;
-                if (slot) dispatch({ type: "flipCaptain", slot });
-              }}
-              className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded text-sm font-semibold"
+              onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }}
+              disabled={isAiTurn || inCounterWindow}
+              className="action-btn px-3 py-3 bg-gradient-to-r from-amber-700/80 to-amber-600/80 hover:from-amber-600/80 hover:to-amber-500/80 disabled:opacity-30 disabled:cursor-not-allowed rounded-xl text-sm font-bold border border-amber-500/20 shadow-lg shadow-amber-900/20 transition-all"
             >
-              ⚔ Engager Capitaine
+              Fin de tour ➡
             </button>
-          )}
-          <button
-            onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }}
-            disabled={isAiTurn || inCounterWindow}
-            className="px-4 py-3 bg-amber-700 hover:bg-amber-600 disabled:opacity-50 rounded text-base font-semibold"
-          >
-            Fin de tour ➡
-          </button>
-          {uiMode.type !== "idle" && (
-            <button onClick={resetUI} className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">
-              ✕ Annuler
-            </button>
-          )}
+            {uiMode.type !== "idle" && (
+              <button onClick={resetUI} className="px-3 py-1.5 bg-gray-800/60 hover:bg-gray-700/60 rounded-lg text-xs text-gray-400 border border-gray-700/20 transition-all">
+                ✕ Annuler
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Hand */}
       <div className="mt-1">
-        <div className="text-sm text-gray-500 mb-1 px-4">Main ({player.hand.length} cartes)</div>
-        <div className="flex gap-3 overflow-x-auto px-4 pb-3">
+        <div className="flex items-center gap-2 mb-2 px-4">
+          <div className="text-[10px] text-gray-500 uppercase tracking-widest">Main</div>
+          <div className="text-xs text-gray-600 font-bold stat-badge">{player.hand.length}</div>
+          <div className="flex-1 h-px bg-gray-800" />
+        </div>
+        <div className="flex gap-2.5 overflow-x-auto px-4 pb-3">
           {player.hand.map((id) => {
             const card = state.cards[id];
             if (!card) return null;
@@ -431,11 +488,12 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       </div>
 
       {/* Log */}
-      <div className="bg-gray-900 rounded-lg p-3 max-h-40 overflow-y-auto text-sm text-gray-400">
+      <div className="glass rounded-xl p-3 max-h-36 overflow-y-auto border border-gray-700/20">
+        <div className="text-[9px] text-gray-600 uppercase tracking-widest mb-1.5">Journal</div>
         {state.log.slice(-15).reverse().map((entry, i) => (
-          <div key={i} className="py-0.5">
-            <span className="text-gray-600">T{entry.turn}</span>{" "}
-            <span className={entry.player === humanPlayer ? "text-green-400" : "text-red-400"}>
+          <div key={i} className={`py-0.5 text-xs ${i === 0 ? "text-gray-300" : "text-gray-500"}`}>
+            <span className="text-gray-700 font-mono text-[10px]">T{entry.turn}</span>{" "}
+            <span className={entry.player === humanPlayer ? "text-green-500/80" : "text-red-500/80"}>
               {entry.player === humanPlayer ? "►" : "◄"}
             </span>{" "}
             {entry.message}
@@ -467,7 +525,6 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         return <CardDetail def={def} instance={inst} state={state} onClose={resetUI} />;
       })()}
 
-      {/* Event confirmation */}
       {(uiMode.type === "confirmEvent" || uiMode.type === "confirmShip") && (() => {
         const card = state.cards[uiMode.instanceId];
         if (!card) return null;

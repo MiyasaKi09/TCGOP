@@ -28,21 +28,37 @@ export default function BoardSlot({
     <div
       onClick={onClick}
       className={`
-        w-36 h-48 rounded-lg border-2 flex items-center justify-center transition-all
-        ${instance ? "border-gray-600" : "border-dashed border-gray-700"}
-        ${isValidTarget ? "border-red-500 bg-red-500/10 ring-2 ring-red-400 animate-pulse" : ""}
-        ${isValidDeploy ? "border-green-500 bg-green-500/10 ring-2 ring-green-400" : ""}
-        ${!instance && !isValidDeploy && !isValidTarget ? "bg-gray-900/30" : ""}
-        cursor-pointer hover:brightness-110
+        w-[9.5rem] h-52 rounded-xl border-2 flex items-center justify-center transition-all duration-200 relative
+        ${instance
+          ? "border-gray-600/60 bg-gray-900/40"
+          : "border-dashed border-gray-700/40"
+        }
+        ${isValidTarget
+          ? "border-red-500 bg-red-500/10 ring-2 ring-red-400/70 shadow-lg shadow-red-500/20 animate-pulse"
+          : ""
+        }
+        ${isValidDeploy
+          ? "border-green-500 bg-green-500/8 ring-2 ring-green-400/60 shadow-lg shadow-green-500/15"
+          : ""
+        }
+        ${!instance && !isValidDeploy && !isValidTarget
+          ? "bg-gray-900/20 hover:bg-gray-800/20 hover:border-gray-600/30"
+          : ""
+        }
+        cursor-pointer
       `}
     >
       {instance && def ? (
-        <Card instance={instance} def={def} small />
+        <div className="w-full h-full p-0.5 animate-card-enter">
+          <Card instance={instance} def={def} small />
+        </div>
       ) : (
-        <div className="text-center">
-          <span className="text-sm text-gray-600 font-mono">{slot}</span>
+        <div className="text-center select-none">
+          <span className="text-sm text-gray-600/60 font-mono font-bold">{slot}</span>
           <br />
-          <span className="text-xs text-gray-700">{isFront ? "Avant" : "Arriere"}</span>
+          <span className={`text-[10px] uppercase tracking-widest ${isFront ? "text-red-900/40" : "text-blue-900/40"}`}>
+            {isFront ? "Avant" : "Arriere"}
+          </span>
         </div>
       )}
     </div>

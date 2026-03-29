@@ -529,10 +529,8 @@ export function getValidTargets(
       canTargetCaptain = true;
     }
   } else {
-    // Recto captain — targetable only if no front row
-    if (!opponentHasFront || hasRange) {
-      canTargetCaptain = true;
-    }
+    // Recto captain is off-board (on the ship) — never directly targetable
+    canTargetCaptain = false;
   }
 
   return {
