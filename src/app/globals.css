@@ -166,3 +166,61 @@
 .action-btn:hover::before {
   opacity: 1;
 }
+
+/* ============================================================ */
+/* === "NAVIRES" REDESIGN — One Piece editorial-arena theme === */
+/* ============================================================ */
+
+/* Font utilities (wired to next/font CSS variables) */
+.font-cinzel { font-family: var(--font-cinzel), Georgia, serif; }
+.font-oswald { font-family: var(--font-oswald), system-ui, sans-serif; }
+.font-spectral { font-family: var(--font-spectral), Georgia, serif; }
+.font-bangers { font-family: var(--font-bangers), system-ui, sans-serif; }
+
+:root {
+  --gold: #e8b84b;
+  --gold-deep: #d9a434;
+}
+
+.text-gold { color: var(--gold); }
+
+/* Ship bobbing on the swell */
+@keyframes ship-bob {
+  0%, 100% { transform: translateY(0) rotate(-0.4deg); }
+  50% { transform: translateY(-5px) rotate(0.4deg); }
+}
+@keyframes ship-bob2 {
+  0%, 100% { transform: translateY(0) rotate(0.4deg); }
+  50% { transform: translateY(-5px) rotate(-0.4deg); }
+}
+.animate-ship-bob { animation: ship-bob 7s ease-in-out infinite; }
+.animate-ship-bob2 { animation: ship-bob2 7s ease-in-out infinite; }
+
+/* Targetable pulse (red) and selected (gold) for board tokens */
+@keyframes target-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px #e0463f, 0 0 16px 2px rgba(224,70,63,0.55); }
+  50% { box-shadow: 0 0 0 2px #ff6b63, 0 0 22px 4px rgba(224,70,63,0.8); }
+}
+.ring-target { animation: target-pulse 1.3s ease-in-out infinite; }
+.ring-select { box-shadow: 0 0 0 2px var(--gold), 0 0 18px 2px rgba(232,184,75,0.5); }
+.ring-deploy { box-shadow: 0 0 0 2px #5bc46a, 0 0 16px 2px rgba(91,196,106,0.4); }
+
+/* Sea board backdrop */
+.sea-bg {
+  background:
+    linear-gradient(rgba(5,11,19,0.42), rgba(5,11,19,0.58)),
+    url("/decks/sea.png") center / cover no-repeat;
+  background-color: #0a1c2e;
+}
+
+/* Gold gradient surface (buttons, banners) */
+.gold-surface {
+  background: linear-gradient(180deg, #f0c760, #d9a434);
+  color: #0a0d12;
+}
+
+/* Thin vertical divider line for the VS column */
+.vs-line {
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(232,184,75,0.5), transparent);
+}

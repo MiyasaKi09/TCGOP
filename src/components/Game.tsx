@@ -12,6 +12,8 @@ import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
 import EventConfirm from "./EventConfirm";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
+import { faction } from "@/data/cardArt";
+import { Bolt, SkullCross, Crest } from "./icons";
 
 initializeRegistry();
 
@@ -158,7 +160,6 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       resetUI();
       return;
     }
-    // Support action target (both ally and enemy targets)
     if (uiMode.type === "selectingSupportTarget" && supportTargets.has(instanceId)) {
       dispatch({ type: "baseSupportAction", instanceId: uiMode.instanceId, targetInstanceId: instanceId });
       resetUI();
@@ -201,90 +202,117 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     }
   };
 
-  // Board row render
-  const renderRow = (slots: readonly string[], playerId: PlayerId) => {
+  // Render the 3 slots of one line (front or back) as a vertical column of tokens.
+  const renderLine = (slots: readonly string[], playerId: PlayerId) => {
     const isPlayerSide = playerId === humanPlayer;
     const ps = state.players[playerId];
     const captainSlot = ps.captain.flipped ? ps.captain.slot : null;
 
-    return (
+    return slots.map((s) => {
+      const slot = s as Slot;
+
+      // Captain verso occupying this slot
+      if (captainSlot === slot) {
+        const capDef = getCaptainDef(ps.captain.defId);
+        const isTarget = !isPlayerSide && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+        const pvPercent = Math.max(0, (ps.captain.currentPv / capDef.verso.pv) * 100);
+        return (
+          <div
+            key={slot}
+            onClick={() => {
+              if (isTarget) handleCaptainClick(playerId);
+              else if (isPlayerSide && ps.captain.flipped && !ps.captain.tapped) {
+                const canCaptainAttack = validActions.some((a) => a.type === "captainAttack");
+                if (canCaptainAttack) {
+                  setUiMode({ type: "selectingTarget", attackerId: `captain_${playerId}`, isSpecial: false });
+                }
+              }
+            }}
+            className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex flex-col items-center justify-center p-1 cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"}`}
+            style={{ background: "radial-gradient(120% 80% at 50% 6%, #3a1414 0%, #1a0c0c 70%)", boxShadow: "inset 0 0 0 2px #E0463F" }}
+          >
+            <div className="font-oswald text-[8px] uppercase tracking-widest text-red-300/80 font-bold">★ Verso</div>
+            <div className="font-cinzel text-[11px] font-bold text-white text-center leading-tight truncate w-full">{capDef.name}</div>
+            <div className="flex justify-center gap-2 text-[11px] my-1 font-oswald font-bold">
+              <span style={{ color: "#FF7062" }}>⚔{capDef.verso.atk}</span>
+              <span style={{ color: "#7FB0E8" }}>🛡{capDef.verso.def}</span>
+            </div>
+            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(8,12,18,.7)" }}>
+              <div className="h-full rounded-full" style={{ width: `${pvPercent}%`, background: pvPercent > 50 ? "#5BC46A" : pvPercent > 25 ? "#E8C53B" : "#FF7062" }} />
+            </div>
+            <div className="font-oswald text-[10px] font-bold mt-0.5" style={{ color: pvPercent <= 25 ? "#FF7062" : "#5BC46A" }}>{ps.captain.currentPv}/{capDef.verso.pv}</div>
+          </div>
+        );
+      }
+
+      const charId = ps.board[slot];
+      const instance = charId ? state.cards[charId] : null;
+      const def = instance ? getCardDef(instance.defId) : null;
+      const isValidDeploy = isPlayerSide && deploySlots.has(slot);
+      const isValidTarget = (!isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
+        || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
+      const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
+
+      return (
+        <BoardSlot
+          key={slot}
+          slot={slot}
+          instance={instance}
+          def={def}
+          isPlayerSide={isPlayerSide}
+          isValidTarget={isValidTarget}
+          isValidDeploy={isValidDeploy || isEquipTarget}
+          onClick={() => {
+            if (isValidDeploy) handleSlotClick(slot, isPlayerSide);
+            else if (charId) handleBoardCharClick(charId, isPlayerSide);
+          }}
+        />
+      );
+    });
+  };
+
+  // One ship (deck art + captain at the prow + front/back columns).
+  const renderShip = (playerId: PlayerId, isYou: boolean) => {
+    const ps = state.players[playerId];
+    const capDef = getCaptainDef(ps.captain.defId);
+    const fac = faction(capDef.faction);
+    const front = <div className="flex flex-col gap-2">{renderLine(FRONT_SLOTS, playerId)}</div>;
+    const back = <div className="flex flex-col gap-2">{renderLine(BACK_SLOTS, playerId)}</div>;
+    // Front line toward the centre (battle line): your front on the right, foe's front on the left.
+    const columns = (
       <div className="flex gap-2 justify-center">
-        {slots.map((s) => {
-          const slot = s as Slot;
+        {isYou ? <>{back}{front}</> : <>{front}{back}</>}
+      </div>
+    );
 
-          // Captain verso in this slot
-          if (captainSlot === slot) {
-            const capDef = getCaptainDef(ps.captain.defId);
-            const isTarget = !isPlayerSide && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
-            const pvPercent = Math.max(0, (ps.captain.currentPv / capDef.verso.pv) * 100);
-            return (
-              <div
-                key={slot}
-                onClick={() => {
-                  if (isTarget) handleCaptainClick(playerId);
-                  else if (isPlayerSide && ps.captain.flipped && !ps.captain.tapped) {
-                    // Player clicks own verso captain → enter target selection for captain attack
-                    const canCaptainAttack = validActions.some((a) => a.type === "captainAttack");
-                    if (canCaptainAttack) {
-                      setUiMode({ type: "selectingTarget", attackerId: `captain_${playerId}`, isSpecial: false });
-                    }
-                  }
-                }}
-                className={`
-                  w-[9.5rem] h-52 rounded-xl border-2 flex items-center justify-center transition-all duration-200 cursor-pointer
-                  border-red-500/70 bg-gradient-to-b from-red-950/30 to-gray-900/60 rarity-glow-CAP
-                  ${isTarget ? "ring-2 ring-red-400/80 shadow-lg shadow-red-500/30 animate-pulse" : "hover:brightness-110"}
-                `}
-              >
-                <div className="text-center p-2 w-full">
-                  <div className="text-[10px] uppercase tracking-widest text-red-400/80 font-bold mb-1">Verso</div>
-                  <div className="text-[12px] font-bold text-white mb-1.5">{capDef.name}</div>
-                  <div className="flex justify-center gap-3 text-[11px] mb-1.5">
-                    <span className="text-red-400 font-bold stat-badge">⚔{capDef.verso.atk}</span>
-                    <span className="text-blue-400 font-bold stat-badge">🛡{capDef.verso.def}</span>
-                  </div>
-                  <div className="w-full h-1.5 rounded-full bg-gray-800/80 overflow-hidden mx-auto">
-                    <div
-                      className="h-full rounded-full health-bar"
-                      style={{
-                        width: `${pvPercent}%`,
-                        ["--hp-color" as string]: pvPercent > 50 ? "#22c55e" : pvPercent > 25 ? "#eab308" : "#ef4444",
-                        ["--hp-color-light" as string]: pvPercent > 50 ? "#4ade80" : pvPercent > 25 ? "#facc15" : "#f87171",
-                      }}
-                    />
-                  </div>
-                  <div className={`text-[10px] font-bold mt-1 stat-badge ${pvPercent <= 25 ? "text-red-400" : "text-green-400"}`}>
-                    {ps.captain.currentPv}/{capDef.verso.pv}
-                  </div>
-                </div>
-              </div>
-            );
-          }
+    const captainTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+    const captainBlock = (
+      <div className="flex flex-col items-center gap-1">
+        <div
+          onClick={!isYou ? () => handleCaptainClick(playerId) : undefined}
+          className={`rounded-xl transition-all ${captainTarget ? "ring-target cursor-pointer" : ""}`}
+        >
+          <CaptainCard captain={ps.captain} def={capDef} isOpponent={!isYou} />
+        </div>
+        {isYou && (
+          <div className="flex items-center gap-2 px-3 py-1 rounded-full" style={{ background: "rgba(6,12,20,.66)" }}>
+            <Bolt size={13} />
+            <span className="font-cinzel font-bold text-[13px]" style={{ color: "#E8B84B" }}>{ps.volonte}</span>
+            <span className="font-oswald text-[9px] uppercase tracking-wider text-white/45">Volonté</span>
+          </div>
+        )}
+      </div>
+    );
 
-          const charId = ps.board[slot];
-          const instance = charId ? state.cards[charId] : null;
-          const def = instance ? getCardDef(instance.defId) : null;
-          const isValidDeploy = isPlayerSide && deploySlots.has(slot);
-          const isValidTarget = (!isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
-            || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
-          const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
-
-          return (
-            <BoardSlot
-              key={slot}
-              slot={slot}
-              instance={instance}
-              def={def}
-              isPlayerSide={isPlayerSide}
-              isValidTarget={isValidTarget}
-              isValidDeploy={isValidDeploy || isEquipTarget}
-              onClick={() => {
-                if (isValidDeploy) handleSlotClick(slot, isPlayerSide);
-                else if (charId) handleBoardCharClick(charId, isPlayerSide);
-              }}
-            />
-          );
-        })}
+    return (
+      <div className={`relative h-full ${isYou ? "animate-ship-bob" : "animate-ship-bob2"}`} style={{ aspectRatio: "941 / 1672", maxWidth: "340px", width: "100%" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={fac.shipImg} alt="" draggable={false}
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
+          style={{ transform: isYou ? undefined : "scaleY(-1)", filter: "drop-shadow(0 8px 20px rgba(0,0,0,.55))" }} />
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-2">
+          {isYou ? <>{captainBlock}{columns}</> : <>{columns}{captainBlock}</>}
+        </div>
       </div>
     );
   };
@@ -307,55 +335,44 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
 
     return (
       <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
-        <div className="glass rounded-2xl p-6 border border-red-500/50 max-w-lg shadow-2xl shadow-red-900/20 animate-modal-enter">
+        <div className="rounded-2xl p-6 max-w-lg shadow-2xl animate-modal-enter" style={{ background: "rgba(12,16,22,.92)", boxShadow: "inset 0 0 0 1px rgba(224,70,63,.5), 0 20px 60px rgba(0,0,0,.6)" }}>
           <div className="flex items-center gap-2 mb-4">
             <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-            <h3 className="text-lg font-bold text-red-400 uppercase tracking-wider">Attaque entrante</h3>
+            <h3 className="font-cinzel text-lg font-bold text-red-400 uppercase tracking-wider">Attaque entrante</h3>
           </div>
-
-          <div className="bg-gray-800/50 rounded-xl p-4 mb-4 border border-gray-700/30">
-            <p className="text-sm text-gray-400 mb-1">
-              <span className="text-red-300 font-bold">{attackerName}</span>
-              {" "}attaque{" "}
-              <span className="text-blue-300 font-bold">{targetName}</span>
+          <div className="rounded-xl p-4 mb-4" style={{ background: "rgba(255,255,255,.04)" }}>
+            <p className="font-spectral text-sm text-white/70 mb-1">
+              <span className="text-red-300 font-bold">{attackerName}</span> attaque <span className="text-blue-300 font-bold">{targetName}</span>
             </p>
             <div className="flex items-baseline gap-3 mt-2">
-              <span className="text-3xl font-black text-red-400 stat-badge">{pending.rawDamage}</span>
-              <span className="text-sm text-gray-500">degats</span>
-              {pending.element && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-300 capitalize">{pending.element}</span>
-              )}
-              {pending.hasHaki && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300">Haki</span>
-              )}
+              <span className="font-oswald text-3xl font-black text-red-400">{pending.rawDamage}</span>
+              <span className="text-sm text-white/40">dégâts</span>
+              {pending.element && <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/70 capitalize">{pending.element}</span>}
+              {pending.hasHaki && <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300">Haki</span>}
             </div>
           </div>
-
           <div className="flex gap-2 flex-wrap">
             {counterActions.map((action, i) => {
               if (action.type === "playCounter") {
                 const card = state.cards[action.instanceId];
                 const def = getCardDef(card.defId);
                 return (
-                  <button key={i} onClick={() => dispatch(action)}
-                    className="action-btn px-4 py-2.5 bg-blue-600/80 hover:bg-blue-500/80 rounded-xl text-sm font-bold border border-blue-400/20 shadow-lg shadow-blue-900/20 transition-all">
+                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-blue-600/80 hover:bg-blue-500/80 rounded-xl text-sm font-bold transition-all">
                     🛡 {def.name} <span className="text-blue-200/70 text-xs">({def.cost}V)</span>
                   </button>
                 );
               }
               if (action.type === "useHaki") {
                 return (
-                  <button key={i} onClick={() => dispatch(action)}
-                    className="action-btn px-4 py-2.5 bg-purple-600/80 hover:bg-purple-500/80 rounded-xl text-sm font-bold border border-purple-400/20 shadow-lg shadow-purple-900/20 transition-all">
+                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-purple-600/80 hover:bg-purple-500/80 rounded-xl text-sm font-bold transition-all">
                     👁 Haki Observation
                   </button>
                 );
               }
               if (action.type === "passCounter") {
                 return (
-                  <button key={i} onClick={() => dispatch(action)}
-                    className="action-btn px-4 py-2.5 bg-gray-700/60 hover:bg-gray-600/60 rounded-xl text-sm border border-gray-600/20 transition-all text-gray-300">
-                    Subir les degats
+                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-white/10 hover:bg-white/20 rounded-xl text-sm transition-all text-white/80">
+                    Subir les dégâts
                   </button>
                 );
               }
@@ -371,195 +388,140 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   if (state.winner) {
     const won = state.winner === humanPlayer;
     return (
-      <div className="game-bg min-h-screen flex flex-col items-center justify-center gap-8">
-        <div className={`text-6xl font-black tracking-tight ${won ? "text-green-400" : "text-red-400"}`}>
-          {won ? "VICTOIRE !" : "DEFAITE..."}
+      <div className="sea-bg min-h-screen flex flex-col items-center justify-center gap-8">
+        <div className={`font-cinzel text-6xl font-black tracking-tight ${won ? "text-green-400" : "text-red-400"}`} style={{ textShadow: "0 4px 24px rgba(0,0,0,.6)" }}>
+          {won ? "VICTOIRE !" : "DÉFAITE…"}
         </div>
-        <div className="text-gray-500 text-lg">Tour {state.turnNumber}</div>
-        <button onClick={() => window.location.reload()}
-          className="action-btn px-10 py-4 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 rounded-xl text-lg font-bold shadow-xl shadow-amber-900/30 border border-amber-500/20 transition-all">
+        <div className="font-oswald text-white/50 text-lg uppercase tracking-widest">Tour {state.turnNumber}</div>
+        <button onClick={() => window.location.reload()} className="action-btn gold-surface font-oswald font-bold px-10 py-4 rounded-xl text-lg shadow-xl transition-all">
           Rejouer
         </button>
       </div>
     );
   }
 
-  const playerCaptainDef = getCaptainDef(player.captain.defId);
   const opponentCaptainDef = getCaptainDef(opponent.captain.defId);
+  const foeFac = faction(opponentCaptainDef.faction);
   const canFlip = validActions.some((a) => a.type === "flipCaptain");
   const canActivateShip = validActions.some((a) => a.type === "activateShip");
 
-  // Status bar
   const statusText = (() => {
-    if (isAiTurn) return { text: "Tour de l'adversaire...", color: "text-yellow-400", pulse: true };
-    if (inCounterWindow) return { text: "Reaction !", color: "text-red-400", pulse: true };
+    if (isAiTurn) return { text: "Tour de l'adversaire…", color: "text-yellow-400", pulse: true };
+    if (inCounterWindow) return { text: "Réaction !", color: "text-red-400", pulse: true };
     if (uiMode.type === "selectingTarget") return { text: "Choisissez une cible", color: "text-red-300", pulse: true };
-    if (uiMode.type === "selectingSupportTarget") return { text: "Choisissez une cible pour le pouvoir", color: "text-cyan-300", pulse: true };
-    if (uiMode.type === "selectingSlot") return { text: "Choisissez un slot", color: "text-green-300", pulse: true };
-    if (uiMode.type === "selectingEquipTarget") return { text: "Equipez un personnage", color: "text-amber-300", pulse: true };
+    if (uiMode.type === "selectingSupportTarget") return { text: "Cible du pouvoir", color: "text-cyan-300", pulse: true };
+    if (uiMode.type === "selectingSlot") return { text: "Choisissez un emplacement", color: "text-green-300", pulse: true };
+    if (uiMode.type === "selectingCaptainSlot") return { text: "Placez le capitaine", color: "text-amber-300", pulse: true };
+    if (uiMode.type === "selectingEquipTarget") return { text: "Équipez un personnage", color: "text-amber-300", pulse: true };
     return { text: "Votre tour", color: "text-green-400", pulse: false };
   })();
 
   return (
-    <div className="game-bg min-h-screen flex flex-col p-4 gap-3">
-      {/* Header */}
-      <div className="flex justify-between items-center px-5 py-3 glass rounded-xl border border-gray-700/30">
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-gray-500 uppercase tracking-widest">Tour</div>
-          <div className="text-2xl font-black text-white stat-badge">{state.turnNumber}</div>
+    <div className="sea-bg h-screen flex flex-col overflow-hidden text-white">
+      {/* HEADER */}
+      <header className="shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "1px solid rgba(232,184,75,.18)", background: "linear-gradient(180deg,rgba(8,12,18,.9),rgba(6,9,14,.6))" }}>
+        <span className="font-cinzel font-extrabold text-[16px] tracking-wider" style={{ color: "#E8B84B" }}>TCGOP</span>
+        <span className="font-oswald text-[9px] uppercase tracking-[.18em] text-white/40 hidden sm:inline">Grand Line</span>
+        <div className={`ml-auto font-oswald text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>{statusText.text}</div>
+        <div className="flex items-center gap-2 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
+          <Crest which={foeFac.crest} size={13} color={foeFac.accent} />
+          <span className="font-oswald text-[11px] text-white/55">Main {opponent.hand.length} · Deck {opponent.deck.length}</span>
+          {opponent.activeShip && (
+            <button onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[opponent.activeShip!].defId, instanceId: opponent.activeShip! })}
+              className="font-oswald text-[10px] text-cyan-200/80 bg-cyan-900/20 rounded px-1.5 py-0.5 hover:bg-cyan-800/30 transition-all truncate max-w-[120px]">
+              ⚓ {getCardDef(state.cards[opponent.activeShip].defId).name}
+            </button>
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-blue-500 shadow-lg shadow-blue-500/50" />
-          <span className="text-blue-400 font-bold text-lg stat-badge">{player.volonte}</span>
-          <span className="text-blue-400/60 text-sm">Volonte</span>
-        </div>
-        <div className={`text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
-          {statusText.text}
-        </div>
-      </div>
+      </header>
 
-      {/* Opponent area */}
-      <div className="flex justify-center gap-4 items-start">
-        <div
-          onClick={() => handleCaptainClick(aiPlayer)}
-          className={`transition-all duration-200 ${uiMode.type === "selectingTarget" && attackTargets.has(`captain_${aiPlayer}`) ? "ring-2 ring-red-500/70 rounded-xl cursor-pointer shadow-lg shadow-red-500/20 animate-pulse" : ""}`}
-        >
-          <CaptainCard captain={opponent.captain} def={opponentCaptainDef} isOpponent />
-        </div>
-        <div className="flex flex-col gap-2">
-          {renderRow(BACK_SLOTS, aiPlayer)}
-          {renderRow(FRONT_SLOTS, aiPlayer)}
-        </div>
-        <div className="glass-light rounded-xl p-3 min-w-[100px] border border-gray-700/20">
-          <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Adversaire</div>
-          <div className="space-y-1.5 text-xs">
-            <div className="flex justify-between">
-              <span className="text-gray-500">Main</span>
-              <span className="text-gray-300 font-bold stat-badge">{opponent.hand.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-500">Deck</span>
-              <span className="text-gray-300 font-bold stat-badge">{opponent.deck.length}</span>
-            </div>
-            {opponent.activeShip && (
-              <div
-                onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[opponent.activeShip!].defId, instanceId: opponent.activeShip! })}
-                className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate cursor-pointer hover:bg-cyan-800/25 transition-all"
-              >
-                🚢 {getCardDef(state.cards[opponent.activeShip].defId).name}
-              </div>
-            )}
+      {/* BOARD — two ships broadside */}
+      <main className="flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
+        <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(humanPlayer, true)}</section>
+
+        <div className="shrink-0 flex flex-col items-center justify-center gap-2 px-0.5">
+          <div className="vs-line flex-1 w-px" />
+          <div className="flex flex-col items-center gap-1 py-3 px-1.5 rounded-full" style={{ background: "rgba(6,18,30,.8)", border: "1px solid rgba(232,184,75,.45)" }}>
+            <SkullCross size={15} color="#E8B84B" />
+            <span className="font-cinzel font-bold text-[10px] tracking-widest" style={{ color: "#E8B84B", writingMode: "vertical-rl" }}>TOUR {state.turnNumber}</span>
           </div>
+          <div className="vs-line flex-1 w-px" />
         </div>
-      </div>
 
-      {/* Board divider */}
-      <div className="board-divider mx-8" />
+        <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(aiPlayer, false)}</section>
+      </main>
 
-      {/* Player area */}
-      <div className="flex justify-center gap-4 items-start">
-        <CaptainCard captain={player.captain} def={playerCaptainDef} />
-        <div className="flex flex-col gap-2">
-          {renderRow(FRONT_SLOTS, humanPlayer)}
-          {renderRow(BACK_SLOTS, humanPlayer)}
-        </div>
-        <div className="flex flex-col gap-2 min-w-[140px]">
-          <div className="glass-light rounded-xl p-3 border border-gray-700/20 space-y-1.5 text-xs">
-            <div className="flex justify-between">
-              <span className="text-gray-500">Deck</span>
-              <span className="text-gray-300 font-bold stat-badge">{player.deck.length}</span>
+      {/* FOOTER — hand + actions */}
+      <footer className="shrink-0 px-3 pb-2 pt-1 flex flex-col gap-1.5" style={{ background: "linear-gradient(0deg,rgba(6,9,14,.75),transparent)" }}>
+        <div className="flex items-end gap-3">
+          {/* Hand */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Main</span>
+              <span className="font-oswald text-[11px] font-bold text-white/60">{player.hand.length}</span>
+              <div className="flex-1 h-px bg-white/10" />
             </div>
-            {player.activeShip && (
-              <div
-                onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[player.activeShip!].defId, instanceId: player.activeShip! })}
-                className="text-cyan-300/80 text-[10px] mt-1 bg-cyan-900/15 rounded-md px-1.5 py-1 truncate cursor-pointer hover:bg-cyan-800/25 transition-all"
-              >
-                🚢 {getCardDef(state.cards[player.activeShip].defId).name}
-              </div>
-            )}
+            <div className="flex gap-2 overflow-x-auto pb-1 items-end" style={{ minHeight: "170px" }}>
+              {player.hand.map((id) => {
+                const card = state.cards[id];
+                if (!card) return null;
+                const def = getCardDef(card.defId);
+                const canPlay = validActions.some((a) => {
+                  if ("instanceId" in a && a.instanceId === id) return true;
+                  if ("objectInstanceId" in a && a.objectInstanceId === id) return true;
+                  return false;
+                });
+                return (
+                  <Card
+                    key={id}
+                    instance={card}
+                    def={def}
+                    width={118}
+                    selected={selectedHandCard === id}
+                    highlight={canPlay}
+                    onClick={() => {
+                      if (canPlay) handleHandCardClick(id);
+                      else setUiMode({ type: "cardDetail", defId: card.defId, instanceId: id });
+                    }}
+                  />
+                );
+              })}
+              {player.hand.length === 0 && <div className="font-spectral italic text-white/30 text-sm px-2">Main vide</div>}
+            </div>
           </div>
 
-          <div className="flex flex-col gap-1.5">
+          {/* Actions */}
+          <div className="shrink-0 w-40 flex flex-col gap-1.5">
+            <div className="flex items-center justify-between font-oswald text-[10px] text-white/50 px-1">
+              <span>Deck</span><span className="font-bold text-white/70">{player.deck.length}</span>
+            </div>
             {canActivateShip && player.activeShip && (
-              <button
-                onClick={() => dispatch({ type: "activateShip", shipInstanceId: player.activeShip! })}
-                className="action-btn px-3 py-2 bg-cyan-700/60 hover:bg-cyan-600/60 rounded-xl text-xs font-bold border border-cyan-500/20 shadow-lg shadow-cyan-900/15 transition-all"
-              >
-                🚢 Activer navire
-              </button>
+              <button onClick={() => dispatch({ type: "activateShip", shipInstanceId: player.activeShip! })}
+                className="action-btn font-oswald px-3 py-2 bg-cyan-700/60 hover:bg-cyan-600/60 rounded-xl text-xs font-bold transition-all">⚓ Activer navire</button>
             )}
             {canFlip && (
-              <button
-                onClick={() => setUiMode({ type: "selectingCaptainSlot" })}
-                className="action-btn px-3 py-2 bg-red-700/60 hover:bg-red-600/60 rounded-xl text-xs font-bold border border-red-500/20 shadow-lg shadow-red-900/15 transition-all"
-              >
-                ⚔ Engager Capitaine
-              </button>
+              <button onClick={() => setUiMode({ type: "selectingCaptainSlot" })}
+                className="action-btn font-oswald px-3 py-2 bg-red-700/60 hover:bg-red-600/60 rounded-xl text-xs font-bold transition-all">⚔ Engager Capitaine</button>
             )}
-            <button
-              onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }}
-              disabled={isAiTurn || inCounterWindow}
-              className="action-btn px-3 py-3 bg-gradient-to-r from-amber-700/80 to-amber-600/80 hover:from-amber-600/80 hover:to-amber-500/80 disabled:opacity-30 disabled:cursor-not-allowed rounded-xl text-sm font-bold border border-amber-500/20 shadow-lg shadow-amber-900/20 transition-all"
-            >
-              Fin de tour ➡
-            </button>
+            <button onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }} disabled={isAiTurn || inCounterWindow}
+              className="action-btn gold-surface font-oswald px-3 py-3 rounded-xl text-sm font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all">Fin de tour ➡</button>
             {uiMode.type !== "idle" && (
-              <button onClick={resetUI} className="px-3 py-1.5 bg-gray-800/60 hover:bg-gray-700/60 rounded-lg text-xs text-gray-400 border border-gray-700/20 transition-all">
-                ✕ Annuler
-              </button>
+              <button onClick={resetUI} className="font-oswald px-3 py-1.5 bg-white/8 hover:bg-white/15 rounded-lg text-xs text-white/55 transition-all">✕ Annuler</button>
             )}
           </div>
         </div>
-      </div>
 
-      {/* Hand */}
-      <div className="mt-1">
-        <div className="flex items-center gap-2 mb-2 px-4">
-          <div className="text-[10px] text-gray-500 uppercase tracking-widest">Main</div>
-          <div className="text-xs text-gray-600 font-bold stat-badge">{player.hand.length}</div>
-          <div className="flex-1 h-px bg-gray-800" />
+        {/* Log */}
+        <div className="rounded-lg px-2.5 py-1.5 max-h-[68px] overflow-y-auto" style={{ background: "rgba(8,12,18,.6)", border: "1px solid rgba(255,255,255,.06)" }}>
+          {state.log.slice(-12).reverse().map((entry, i) => (
+            <div key={i} className={`font-spectral py-0.5 text-xs ${i === 0 ? "text-white/80" : "text-white/45"}`}>
+              <span className="font-mono text-[10px] text-white/30">T{entry.turn}</span>{" "}
+              <span className={entry.player === humanPlayer ? "text-green-500/80" : "text-red-500/80"}>{entry.player === humanPlayer ? "►" : "◄"}</span>{" "}
+              {entry.message}
+            </div>
+          ))}
         </div>
-        <div className="flex gap-2.5 overflow-x-auto px-4 pb-3">
-          {player.hand.map((id) => {
-            const card = state.cards[id];
-            if (!card) return null;
-            const def = getCardDef(card.defId);
-            const canPlay = validActions.some((a) => {
-              if ("instanceId" in a && a.instanceId === id) return true;
-              if ("objectInstanceId" in a && a.objectInstanceId === id) return true;
-              return false;
-            });
-            return (
-              <div key={id} className="flex-shrink-0">
-                <Card
-                  instance={card}
-                  def={def}
-                  selected={selectedHandCard === id}
-                  highlight={canPlay}
-                  onClick={() => {
-                    if (canPlay) handleHandCardClick(id);
-                    else setUiMode({ type: "cardDetail", defId: card.defId, instanceId: id });
-                  }}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Log */}
-      <div className="glass rounded-xl p-3 max-h-36 overflow-y-auto border border-gray-700/20">
-        <div className="text-[9px] text-gray-600 uppercase tracking-widest mb-1.5">Journal</div>
-        {state.log.slice(-15).reverse().map((entry, i) => (
-          <div key={i} className={`py-0.5 text-xs ${i === 0 ? "text-gray-300" : "text-gray-500"}`}>
-            <span className="text-gray-700 font-mono text-[10px]">T{entry.turn}</span>{" "}
-            <span className={entry.player === humanPlayer ? "text-green-500/80" : "text-red-500/80"}>
-              {entry.player === humanPlayer ? "►" : "◄"}
-            </span>{" "}
-            {entry.message}
-          </div>
-        ))}
-      </div>
+      </footer>
 
       {/* Overlays */}
       {renderCounterWindow()}
@@ -574,14 +536,12 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
             onBaseAttack={() => setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: false })}
             onSpecialAttack={() => setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true })}
             onSupportAction={() => {
-              // Check if this support has targets or is global (no target needed)
               const hasSupportTargets = validActions.some(
                 (a) => a.type === "baseSupportAction" && a.instanceId === uiMode.instanceId && a.targetInstanceId
               );
               if (hasSupportTargets) {
                 setUiMode({ type: "selectingSupportTarget", instanceId: uiMode.instanceId });
               } else {
-                // Global buff (Brook, Sengoku) — dispatch directly
                 dispatch({ type: "baseSupportAction", instanceId: uiMode.instanceId });
                 resetUI();
               }

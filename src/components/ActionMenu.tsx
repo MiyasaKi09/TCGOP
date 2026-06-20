@@ -84,8 +84,8 @@ export default function ActionMenu({
         <div className="mb-4">
           <div className="flex justify-between items-start">
             <div>
-              <h3 className="font-bold text-white text-lg leading-tight">{def.name}</h3>
-              <div className="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">
+              <h3 className="font-cinzel font-bold text-white text-lg leading-tight">{def.name}</h3>
+              <div className="font-oswald text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">
                 {def.type}{def.subtype ? ` — ${def.subtype}` : ""}
               </div>
             </div>

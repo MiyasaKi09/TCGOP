@@ -39,13 +39,14 @@ export default function CardDetail({ def, instance, state, onClose }: CardDetail
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-gray-900 border border-gray-600 rounded-xl p-5 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
+        className="rounded-xl p-5 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
+        style={{ background: "#0c1016", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.28), 0 20px 60px rgba(0,0,0,.55)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex justify-between items-start mb-3">
           <div>
-            <h2 className="text-lg font-bold text-white">{def.name}</h2>
+            <h2 className="font-cinzel text-lg font-bold text-white">{def.name}</h2>
             <div className="flex gap-2 text-xs text-gray-400 mt-1">
               <span className="px-1.5 py-0.5 rounded bg-blue-800">{def.cost} Vol.</span>
               <span className="px-1.5 py-0.5 rounded bg-gray-700">{def.type}</span>

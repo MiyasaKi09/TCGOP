@@ -17,47 +17,33 @@ export default function BoardSlot({
   slot,
   instance,
   def,
-  isPlayerSide,
   isValidTarget,
   isValidDeploy,
   onClick,
 }: BoardSlotProps) {
   const isFront = slot.startsWith("V");
+  const ring = isValidTarget ? "ring-target" : isValidDeploy ? "ring-deploy" : "";
 
   return (
     <div
       onClick={onClick}
-      className={`
-        w-[9.5rem] h-52 rounded-xl border-2 flex items-center justify-center transition-all duration-200 relative
-        ${instance
-          ? "border-gray-600/60 bg-gray-900/40"
-          : "border-dashed border-gray-700/40"
-        }
-        ${isValidTarget
-          ? "border-red-500 bg-red-500/10 ring-2 ring-red-400/70 shadow-lg shadow-red-500/20 animate-pulse"
-          : ""
-        }
-        ${isValidDeploy
-          ? "border-green-500 bg-green-500/8 ring-2 ring-green-400/60 shadow-lg shadow-green-500/15"
-          : ""
-        }
-        ${!instance && !isValidDeploy && !isValidTarget
-          ? "bg-gray-900/20 hover:bg-gray-800/20 hover:border-gray-600/30"
-          : ""
-        }
-        cursor-pointer
-      `}
+      className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${ring}`}
+      style={
+        instance
+          ? undefined
+          : { border: "1.5px dashed rgba(255,255,255,.16)", background: "rgba(6,10,16,.28)" }
+      }
     >
       {instance && def ? (
-        <div className="w-full h-full p-0.5 animate-card-enter">
+        <div className="w-full h-full animate-card-enter">
           <Card instance={instance} def={def} small />
         </div>
       ) : (
-        <div className="text-center select-none">
-          <span className="text-sm text-gray-600/60 font-mono font-bold">{slot}</span>
+        <div className="text-center select-none leading-tight">
+          <span className="font-oswald text-[11px] text-white/30 font-bold">{slot}</span>
           <br />
-          <span className={`text-[10px] uppercase tracking-widest ${isFront ? "text-red-900/40" : "text-blue-900/40"}`}>
-            {isFront ? "Avant" : "Arriere"}
+          <span className="font-oswald text-[8px] uppercase tracking-widest" style={{ color: isFront ? "rgba(232,149,74,.4)" : "rgba(91,151,216,.4)" }}>
+            {isFront ? "Avant" : "Arrière"}
           </span>
         </div>
       )}
