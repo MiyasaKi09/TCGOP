@@ -224,3 +224,11 @@
   width: 1px;
   background: linear-gradient(180deg, transparent, rgba(232,184,75,0.5), transparent);
 }
+
+/* Clickable attack rows on a card */
+.card-action {
+  transition: background 0.15s ease;
+}
+.card-action:hover {
+  background: rgba(232, 184, 75, 0.16) !important;
+}

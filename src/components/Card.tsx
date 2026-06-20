@@ -1,5 +1,6 @@
 "use client";
 
+import type { DragEvent } from "react";
 import type { CardInstance, CardDef } from "@/types";
 import {
   CARD_ART, CARD_ART_FOCUS, faction, TRAIT_COLOR, RARITY_BORDER, hpColor,
@@ -16,13 +17,16 @@ interface CardProps {
   small?: boolean;
   /** Full-card width in px (hand). Defaults to 168. */
   width?: number;
+  draggable?: boolean;
+  onDragStart?: (e: DragEvent) => void;
+  onDragEnd?: (e: DragEvent) => void;
 }
 
 const STATUS_ICON: Record<string, string> = {
   burn: "🔥", poison: "☠", freeze: "❄", desiccation: "🏜", trap: "💣", immobilize: "🌸",
 };
 
-export default function Card({ instance, def, onClick, selected, highlight, small, width = 168 }: CardProps) {
+export default function Card({ instance, def, onClick, selected, highlight, small, width = 168, draggable, onDragStart, onDragEnd }: CardProps) {
   const art = CARD_ART[def.id];
   const fac = faction(def.faction);
   const isCharacter = def.type === "character";
@@ -109,8 +113,11 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
   return (
     <div
       onClick={onClick}
-      className={`relative flex-shrink-0 cursor-pointer transition-all duration-200 ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
-      style={{ width, borderRadius: radius, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 3px rgba(232,184,75,.55)" : undefined }}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      className={`relative flex-shrink-0 cursor-grab active:cursor-grabbing transition-all duration-200 ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
+      style={{ width, borderRadius: radius, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 3px rgba(232,184,75,.55)" : undefined, WebkitUserSelect: "none", userSelect: "none" }}
     >
       <FullCard def={def} instance={instance} width={width} />
       {highlight && <div className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse z-10" />}

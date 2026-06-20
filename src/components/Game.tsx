@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import type { DragEvent } from "react";
 import type { GameAction, Slot, PlayerId, DeckDef } from "@/types";
 import { useGameEngine } from "@/hooks/useGameEngine";
 import { getCardDef, getCaptainDef } from "@/engine/cardRegistry";
@@ -134,6 +135,22 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     setSelectedHandCard(null);
   };
 
+  // Drag a hand card → enter the matching placement mode (slots/targets light up).
+  const handleHandDragStart = (e: DragEvent, instanceId: string) => {
+    const card = state.cards[instanceId];
+    if (!card) return;
+    const def = getCardDef(card.defId);
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", instanceId); } catch { /* some browsers */ }
+    if (def.type === "character") {
+      setSelectedHandCard(instanceId);
+      setUiMode({ type: "selectingSlot", cardId: instanceId });
+    } else if (def.type === "object") {
+      setSelectedHandCard(instanceId);
+      setUiMode({ type: "selectingEquipTarget", objectId: instanceId });
+    }
+  };
+
   const handleSlotClick = (slot: Slot, isPlayerSide: boolean) => {
     if (uiMode.type === "selectingSlot" && isPlayerSide && deploySlots.has(slot)) {
       dispatch({ type: "deployCharacter", instanceId: uiMode.cardId, slot });
@@ -253,6 +270,10 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
       const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
 
+      const act = () => {
+        if (isValidDeploy) handleSlotClick(slot, isPlayerSide);
+        else if (charId) handleBoardCharClick(charId, isPlayerSide);
+      };
       return (
         <BoardSlot
           key={slot}
@@ -262,10 +283,8 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
           isPlayerSide={isPlayerSide}
           isValidTarget={isValidTarget}
           isValidDeploy={isValidDeploy || isEquipTarget}
-          onClick={() => {
-            if (isValidDeploy) handleSlotClick(slot, isPlayerSide);
-            else if (charId) handleBoardCharClick(charId, isPlayerSide);
-          }}
+          onClick={act}
+          onDrop={act}
         />
       );
     });
@@ -417,7 +436,11 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   })();
 
   return (
-    <div className="sea-bg h-screen flex flex-col overflow-hidden text-white">
+    <div
+      className="sea-bg h-screen flex flex-col overflow-hidden text-white"
+      style={{ userSelect: "none", WebkitUserSelect: "none" }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {/* HEADER */}
       <header className="shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "1px solid rgba(232,184,75,.18)", background: "linear-gradient(180deg,rgba(8,12,18,.9),rgba(6,9,14,.6))" }}>
         <span className="font-cinzel font-extrabold text-[16px] tracking-wider" style={{ color: "#E8B84B" }}>TCGOP</span>
@@ -471,6 +494,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
                   if ("objectInstanceId" in a && a.objectInstanceId === id) return true;
                   return false;
                 });
+                const dragType = def.type === "character" || def.type === "object";
                 return (
                   <Card
                     key={id}
@@ -479,6 +503,8 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
                     width={118}
                     selected={selectedHandCard === id}
                     highlight={canPlay}
+                    draggable={canPlay && dragType}
+                    onDragStart={(e) => handleHandDragStart(e, id)}
                     onClick={() => {
                       if (canPlay) handleHandCardClick(id);
                       else setUiMode({ type: "cardDetail", defId: card.defId, instanceId: id });

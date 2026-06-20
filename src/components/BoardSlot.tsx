@@ -11,6 +11,7 @@ interface BoardSlotProps {
   isValidTarget?: boolean;
   isValidDeploy?: boolean;
   onClick?: () => void;
+  onDrop?: () => void;
 }
 
 export default function BoardSlot({
@@ -20,6 +21,7 @@ export default function BoardSlot({
   isValidTarget,
   isValidDeploy,
   onClick,
+  onDrop,
 }: BoardSlotProps) {
   const isFront = slot.startsWith("V");
   const ring = isValidTarget ? "ring-target" : isValidDeploy ? "ring-deploy" : "";
@@ -27,6 +29,8 @@ export default function BoardSlot({
   return (
     <div
       onClick={onClick}
+      onDragOver={(e) => { if (onDrop) e.preventDefault(); }}
+      onDrop={(e) => { e.preventDefault(); onDrop?.(); }}
       className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${ring}`}
       style={
         instance
