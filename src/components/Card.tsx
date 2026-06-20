@@ -5,6 +5,7 @@ import {
   CARD_ART, CARD_ART_FOCUS, faction, TRAIT_COLOR, RARITY_BORDER, hpColor,
 } from "@/data/cardArt";
 import { Sword, Shield, Heart, Crest } from "./icons";
+import FullCard from "./FullCard";
 
 interface CardProps {
   instance: CardInstance;
@@ -103,73 +104,16 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
     );
   }
 
-  // ===================== HAND — FULL ILLUSTRATION =====================
-  if (art) {
-    return (
-      <div
-        onClick={onClick}
-        className={`relative rounded-xl overflow-hidden flex-shrink-0 cursor-pointer transition-all duration-200
-          ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
-        style={{ width, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 2px rgba(232,184,75,.5)" : `0 0 0 1.5px ${borderColor}, 0 10px 24px rgba(0,0,0,.5)` }}
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={art} alt={def.name} className="block w-full h-auto select-none" draggable={false} />
-        {highlight && <div className="absolute -bottom-0 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse" />}
-      </div>
-    );
-  }
-
-  // ===================== HAND — RECREATED FRAME =====================
+  // ===================== HAND / FULL — unified Claude-Design frame =====================
+  const radius = Math.round((16 * width) / 300);
   return (
     <div
       onClick={onClick}
-      className={`relative rounded-xl overflow-hidden flex-shrink-0 cursor-pointer transition-all duration-200 p-3 flex flex-col
-        ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
-      style={{ width, height: Math.round(width * 1.39), background: fac.frame, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 2px rgba(232,184,75,.5)" : `0 0 0 1.5px ${borderColor}, 0 10px 24px rgba(0,0,0,.5)` }}
+      className={`relative flex-shrink-0 cursor-pointer transition-all duration-200 ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
+      style={{ width, borderRadius: radius, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 3px rgba(232,184,75,.55)" : undefined }}
     >
-      <div className="absolute inset-0 flex items-center justify-center opacity-[0.12] pointer-events-none">
-        <Crest which={fac.crest} size={150} color="#fff" />
-      </div>
-
-      {/* cost + rarity */}
-      <div className="flex justify-between items-start relative">
-        <span className="font-oswald font-bold text-[34px] leading-none" style={{ color: "#E8B84B", textShadow: "0 2px 4px rgba(0,0,0,.85)" }}>{def.cost}</span>
-        <span className="font-oswald text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: borderColor, color: "#fff" }}>{def.rarity}</span>
-      </div>
-
-      <div className="relative mt-auto">
-        <div className="font-oswald font-bold text-[16px] text-white leading-tight" style={{ textShadow: "0 1px 4px rgba(0,0,0,.9)" }}>{def.name}</div>
-        <div className="font-spectral italic text-[10px] text-white/55 capitalize">{def.type}{def.subtype ? ` — ${def.subtype}` : ""}</div>
-
-        {isCharacter && (
-          <div className="flex items-center gap-3 mt-1.5 font-oswald font-bold text-[15px]">
-            <span className="flex items-center gap-1" style={{ color: "#FF7062" }}><Sword size={13} />{def.atk}</span>
-            <span className="flex items-center gap-1" style={{ color: "#7FB0E8" }}><Shield size={13} />{def.def}</span>
-            <span className="flex items-center gap-1" style={{ color: "#5BC46A" }}><Heart size={14} color="#5BC46A" />{def.pv}</span>
-          </div>
-        )}
-
-        {traits.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1.5">
-            {traits.map((t) => (
-              <span key={t} className="font-oswald text-[9px] px-1.5 py-0.5 rounded-full text-white" style={{ background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.18)" }}>{t}</span>
-            ))}
-          </div>
-        )}
-
-        {def.baseAction && <div className="font-spectral italic text-[10px] text-white/80 mt-1.5 truncate">{def.baseAction.isSupport ? "✦" : "⚔"} {def.baseAction.name}</div>}
-        {def.specialAttack && <div className="font-spectral italic text-[10px] mt-0.5 truncate" style={{ color: "#E8B84B" }}>★ {def.specialAttack.name} ({def.specialAttack.cost}V)</div>}
-        {def.type === "object" && (
-          <div className="font-oswald text-[10px] mt-1.5 px-1.5 py-0.5 rounded" style={{ background: "rgba(232,184,75,.15)", color: "#E8B84B" }}>
-            {def.bonusAtk ? `+${def.bonusAtk} ATK ` : ""}{def.bonusDef ? `+${def.bonusDef} DEF` : ""}{def.subtype === "fruit" ? " 🍎" : ""}
-          </div>
-        )}
-        {def.type === "ship" && <div className="font-oswald text-[10px] mt-1.5 px-1.5 py-0.5 rounded text-cyan-200" style={{ background: "rgba(34,180,200,.15)" }}>⚓ Navire</div>}
-        {def.type === "counter" && <div className="font-oswald text-[10px] mt-1.5 px-1.5 py-0.5 rounded text-blue-200" style={{ background: "rgba(80,140,220,.18)" }}>🛡 Contre</div>}
-        {def.type === "event" && <div className="font-oswald text-[10px] mt-1.5 px-1.5 py-0.5 rounded" style={{ background: "rgba(232,184,75,.12)", color: "#E8C53B" }}>✦ Événement</div>}
-      </div>
-
-      {highlight && <div className="absolute bottom-1 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse" />}
+      <FullCard def={def} instance={instance} width={width} />
+      {highlight && <div className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse z-10" />}
     </div>
   );
 }
