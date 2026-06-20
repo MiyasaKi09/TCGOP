@@ -43,6 +43,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
   const base = def.baseAction;
   const spec = def.specialAttack;
 
+  // Compact, clickable action row — sized like the design examples (no big box).
   const actionRow = (
     icon: string, name: string, accent: string, rightTop: string, rightBot: string | null,
     desc: string | undefined, act: CardActions["base"] | undefined,
@@ -54,25 +55,24 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         onClick={clickable && !disabled ? act!.onClick : undefined}
         className={clickable && !disabled ? "card-action" : undefined}
         style={{
-          display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8,
-          borderRadius: 9, padding: clickable ? "5px 7px" : "1px 0",
+          display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6,
+          borderRadius: 6, padding: "2px 5px", margin: "0 -5px",
           cursor: clickable ? (disabled ? "not-allowed" : "pointer") : "default",
           opacity: disabled ? 0.5 : 1,
-          background: clickable && !disabled ? "rgba(255,255,255,.07)" : "transparent",
-          boxShadow: clickable && !disabled ? `inset 0 0 0 1px ${accent}66` : "none",
         }}
       >
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ color: accent, fontSize: 12 }}>{icon}</span>
-            <span style={{ fontFamily: "var(--font-spectral)", fontWeight: 600, fontVariant: "small-caps", fontSize: 14, color: "#fff" }}>{name}</span>
+            <span style={{ color: accent, fontSize: 11 }}>{icon}</span>
+            <span style={{ fontFamily: "var(--font-spectral)", fontWeight: 600, fontVariant: "small-caps", fontSize: 13, color: "#fff" }}>{name}</span>
+            {clickable && !disabled && <span style={{ color: accent, fontSize: 10, fontWeight: 700 }}>▸</span>}
           </div>
-          {desc && <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, lineHeight: 1.2, color: "rgba(255,255,255,.8)" }}>{desc}</div>}
-          {disabled && act?.reason && <div style={{ fontFamily: "var(--font-oswald)", fontSize: 9.5, color: "#FF8A80", marginTop: 1 }}>• {act.reason}</div>}
+          {desc && <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, lineHeight: 1.15, color: "rgba(255,255,255,.75)" }}>{desc}</div>}
+          {disabled && act?.reason && <div style={{ fontFamily: "var(--font-oswald)", fontSize: 9, color: "#FF8A80" }}>• {act.reason}</div>}
         </div>
         <div style={{ textAlign: "right", flex: "none" }}>
-          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 11, color: "rgba(255,255,255,.9)" }}>{rightTop}</div>
-          {rightBot && <div style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 11, color: "#E8B84B" }}>{rightBot}</div>}
+          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 10, color: "rgba(255,255,255,.9)" }}>{rightTop}</div>
+          {rightBot && <div style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#E8B84B" }}>{rightBot}</div>}
         </div>
       </div>
     );
@@ -81,9 +81,9 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
   return (
     <div style={{ width, height: Math.round(H * scale), flex: "none" }}>
       <div style={{ position: "absolute", width: W, height: H, transform: `scale(${scale})`, transformOrigin: "top left", borderRadius: 16, overflow: "hidden", background: "#0b0e13", boxShadow: "0 10px 30px rgba(0,0,0,.5)" }}>
-        {/* art */}
+        {/* illustration */}
         {art ? (
-          <div style={{ position: "absolute", inset: 0, backgroundImage: `url('${art}')`, backgroundSize: "cover", backgroundPosition: "center top" }} />
+          <div style={{ position: "absolute", inset: 0, backgroundImage: `url('${art}')`, backgroundSize: "cover", backgroundPosition: "center 18%" }} />
         ) : (
           <>
             <div style={{ position: "absolute", inset: 0, background: fac.frame }} />
@@ -94,26 +94,26 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         )}
 
         {/* top scrim + cost + PV */}
-        <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 78, background: "linear-gradient(180deg,rgba(6,9,14,.72),transparent)" }} />
-        <div style={{ position: "absolute", top: 6, left: 14, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 46, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{def.cost}</div>
+        <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 64, background: "linear-gradient(180deg,rgba(6,9,14,.66),transparent)" }} />
+        <div style={{ position: "absolute", top: 5, left: 13, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 42, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{def.cost}</div>
         {isChar && (
-          <div style={{ position: "absolute", top: 10, right: 13, display: "flex", alignItems: "flex-start", gap: 3 }}>
-            <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 38, color: hpc, textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
-            <Heart size={16} color={hpc} style={{ marginTop: 4 }} />
+          <div style={{ position: "absolute", top: 9, right: 12, display: "flex", alignItems: "flex-start", gap: 2 }}>
+            <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 34, color: hpc, textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
+            <Heart size={14} color={hpc} style={{ marginTop: 4 }} />
           </div>
         )}
 
-        {/* bottom panel — single flowing column, anchored to bottom (no overlap) */}
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "16px 14px 12px", display: "flex", flexDirection: "column", gap: 5, background: "linear-gradient(180deg,transparent,rgba(7,9,13,.86) 18%,rgba(7,9,13,.98))" }}>
+        {/* bottom text box — compact, leaves the upper half for the illustration */}
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "20px 13px 10px", display: "flex", flexDirection: "column", gap: 3, background: "linear-gradient(180deg,transparent,rgba(7,9,13,.74) 26%,rgba(7,9,13,.97))" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 8 }}>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 22, color: "#fff", lineHeight: 1.05, textShadow: "0 1px 4px rgba(0,0,0,.9)" }}>{def.name}</div>
-              <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, color: "rgba(255,255,255,.6)" }}>{fac.label} · {def.type}{def.subtype ? ` · ${def.subtype}` : ""} · {def.rarity}</div>
+              <div style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 18, color: "#fff", lineHeight: 1.05, textShadow: "0 1px 4px rgba(0,0,0,.95)" }}>{def.name}</div>
+              <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, color: "rgba(255,255,255,.6)" }}>{fac.label} · {def.type}{def.subtype ? ` · ${def.subtype}` : ""} · {def.rarity}</div>
             </div>
             {isChar && (
-              <div style={{ display: "flex", gap: 10, flex: "none" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 3, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 17, color: "#FF7062" }}><Sword size={14} />{atk}</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 3, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 17, color: "#7FB0E8" }}><Shield size={14} />{dfv}</span>
+              <div style={{ display: "flex", gap: 8, flex: "none" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 2, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 15, color: "#FF7062" }}><Sword size={12} />{atk}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 2, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 15, color: "#7FB0E8" }}><Shield size={12} />{dfv}</span>
               </div>
             )}
           </div>
@@ -121,25 +121,25 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
           {traits.length > 0 && (
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {traits.map((t) => (
-                <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 8px" }}>{TRAIT_LABEL[t] ?? t}</span>
+                <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 9, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 7px" }}>{TRAIT_LABEL[t] ?? t}</span>
               ))}
             </div>
           )}
 
           {def.passive && (
             <div>
-              <div style={{ fontFamily: "var(--font-spectral)", fontWeight: 600, fontVariant: "small-caps", fontSize: 14, color: "#fff" }}>{def.passive.name}</div>
-              <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, lineHeight: 1.25, color: "rgba(255,255,255,.8)" }}>{def.passive.description}</div>
+              <div style={{ fontFamily: "var(--font-spectral)", fontWeight: 600, fontVariant: "small-caps", fontSize: 12.5, color: "#fff", lineHeight: 1.1 }}>{def.passive.name}</div>
+              <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, lineHeight: 1.18, color: "rgba(255,255,255,.78)" }}>{def.passive.description}</div>
             </div>
           )}
 
-          {(base || spec) && <div style={{ height: 1, background: "linear-gradient(90deg,rgba(255,255,255,.4),transparent)" }} />}
+          {(base || spec) && <div style={{ height: 1, margin: "1px 0", background: "linear-gradient(90deg,rgba(255,255,255,.35),transparent)" }} />}
 
           {base && actionRow(base.isSupport ? "✦" : "⚔", base.name, "#5BC46A", "Gratuit", base.isSupport ? null : `${atk} ATK`, base.element ? `${base.description ?? ""} (${ELEMENT_LABEL[base.element]})` : base.description, actions?.base)}
           {spec && actionRow("★", spec.name, "#FF7062", `${spec.cost} Vol.`, `+${spec.atkBonus} ATK`, spec.element ? `${spec.description ?? ""} (${ELEMENT_LABEL[spec.element]})` : spec.description, actions?.special)}
 
           {!isChar && (
-            <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 12, lineHeight: 1.3, color: "rgba(255,255,255,.85)" }}>
+            <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, lineHeight: 1.25, color: "rgba(255,255,255,.82)" }}>
               {def.type === "object" && <>{def.bonusAtk ? `+${def.bonusAtk} ATK ` : ""}{def.bonusDef ? `+${def.bonusDef} DEF ` : ""}{def.equipEffect ?? ""}</>}
               {def.type === "ship" && <>{def.shipPassive}{def.shipActive ? ` — ${def.shipActive.name} (${def.shipActive.cost}V)` : ""}</>}
               {def.type === "counter" && def.counterEffect && (def.counterEffect.type === "survive" ? def.counterEffect.description : `Réduit ${def.counterEffect.amount} dégâts.`)}
@@ -147,9 +147,8 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
             </div>
           )}
 
-          {/* hidden element pill colour reference to keep ELEMENT_COLOR used */}
-          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, letterSpacing: ".06em", color: "rgba(255,255,255,.45)", textAlign: "right" }}>
-            {(base?.element || spec?.element) && <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: 99, marginRight: 5, verticalAlign: "middle", background: ELEMENT_COLOR[(spec?.element || base?.element)!] ?? "#888" }} />}
+          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 8, letterSpacing: ".06em", color: "rgba(255,255,255,.4)", textAlign: "right" }}>
+            {(base?.element || spec?.element) && <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: 99, marginRight: 4, verticalAlign: "middle", background: ELEMENT_COLOR[(spec?.element || base?.element)!] ?? "#888" }} />}
             {def.set}
           </div>
         </div>
