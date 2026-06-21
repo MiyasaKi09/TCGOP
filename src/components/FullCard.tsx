@@ -137,7 +137,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* DEF (right) */}
         {isChar && (
-          <div style={{ position: "absolute", right: 12, top: "48%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
+          <div style={{ position: "absolute", right: 12, top: "60%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
             <ShieldOutline size={22} />
             <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 22, color: "#fff", textShadow: SHADOW }}>{dfv}</span>
           </div>
@@ -145,7 +145,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* traits (right, below DEF) */}
         {traits.length > 0 && (
-          <div style={{ position: "absolute", right: 10, top: "55%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
+          <div style={{ position: "absolute", right: 10, top: "66%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
             {traits.map((t) => (
               <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 8px", boxShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{TRAIT_LABEL[t] ?? t}</span>
             ))}
