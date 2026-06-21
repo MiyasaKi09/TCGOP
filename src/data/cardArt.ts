@@ -110,3 +110,32 @@ export const RARITY_BORDER: Record<string, string> = {
 export function hpColor(ratio: number): string {
   return ratio > 0.5 ? "#5BC46A" : ratio > 0.25 ? "#E8C53B" : "#FF7062";
 }
+
+/** Flavour quotes shown vertically next to the name (from the reference cards). */
+export const QUOTE: Record<string, string> = {
+  "ST01-001": "Plus jamais je ne perdrai !",
+  "ST01-002": "La Jambe Noire",
+  "ST01-003": "La sorcière des mers",
+  "ST01-004": "Le valeureux guerrier des mers",
+  "ST01-005": "Je serai un monstre pour toi !",
+  "ST01-006": "Je veux vivre !",
+};
+
+const ROLE_BY_ID: Record<string, string> = { "ST01-006": "Archéologue" };
+const TAG_ROLE: Record<string, string> = {
+  bretteur: "Bretteur", cuisinier: "Cuisinier", navigateur: "Navigateur", tireur: "Tireur",
+  medecin: "Médecin", charpentier: "Charpentier", musicien: "Musicien", archeologue: "Archéologue",
+  amiral: "Amiral", capitaine: "Capitaine", sabreur: "Sabreur",
+};
+
+/** Job/role shown in the card footer (e.g. "Cuisinier"). */
+export function roleOf(def: { id: string; tags?: string[]; faction: string }): string {
+  if (ROLE_BY_ID[def.id]) return ROLE_BY_ID[def.id];
+  for (const t of def.tags ?? []) if (TAG_ROLE[t]) return TAG_ROLE[t];
+  return faction(def.faction).label;
+}
+
+/** Set/collection code shown in the footer. */
+export function setCode(factionKey: string): string {
+  return faction(factionKey) === faction("marine") ? "MR-001" : "MG-001";
+}
