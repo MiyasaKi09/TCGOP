@@ -54,8 +54,8 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
     let partner = s.partnerId;
     try { partner = getCardDef(s.partnerId).name; } catch { /* keep id */ }
     const short = partner.split(" ").pop()!.toUpperCase();
-    synLines = [`COMBO — RIVALITÉ (${short})`, `+${s.atkBonus} ATK si ${short} est en jeu`];
-    if (s.onPartnerKO) synLines.push(`+${s.onPartnerKO} ATK au tour suivant si ${short} est KO`);
+    synLines = [`COMBO · ${short}`, `+${s.atkBonus} ATK si en jeu`];
+    if (s.onPartnerKO) synLines.push(`+${s.onPartnerKO} ATK si KO`);
   }
 
   // a clickable / static action row
@@ -128,7 +128,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* synergy (vertical, right) */}
         {synLines && (
-          <div style={{ position: "absolute", right: 7, top: "12%", display: "flex", flexDirection: "row", gap: 6, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4, maxHeight: "56%" }}>
+          <div style={{ position: "absolute", right: 7, top: "13%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4 }}>
             {synLines.map((l, i) => (
               <span key={i} style={{ fontFamily: i === 0 ? "var(--font-oswald)" : "var(--font-spectral)", fontStyle: i === 0 ? "normal" : "italic", fontVariant: i === 0 ? "small-caps" : "normal", fontSize: i === 0 ? 11 : 10, fontWeight: i === 0 ? 700 : 400, color: "rgba(255,255,255,.88)", textShadow: SHADOW, whiteSpace: "nowrap" }}>{l}</span>
             ))}
@@ -137,7 +137,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* DEF (right) */}
         {isChar && (
-          <div style={{ position: "absolute", right: 12, top: "60%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
+          <div style={{ position: "absolute", right: 12, top: "56%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
             <ShieldOutline size={22} />
             <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 22, color: "#fff", textShadow: SHADOW }}>{dfv}</span>
           </div>
@@ -145,7 +145,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* traits (right, below DEF) */}
         {traits.length > 0 && (
-          <div style={{ position: "absolute", right: 10, top: "66%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
+          <div style={{ position: "absolute", right: 10, top: "62%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
             {traits.map((t) => (
               <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 8px", boxShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{TRAIT_LABEL[t] ?? t}</span>
             ))}
@@ -155,7 +155,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         {/* soft long fade behind the text — no hard box */}
         <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: "62%", background: "linear-gradient(180deg, transparent 0%, rgba(7,9,13,.4) 44%, rgba(7,9,13,.85) 76%, rgba(7,9,13,.95) 100%)", zIndex: 1, pointerEvents: "none" }} />
         {/* text content — side padding = margin, no box */}
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "0 15px 11px", display: "flex", flexDirection: "column", gap: 1, zIndex: 2 }}>
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "0 14px 11px 40px", display: "flex", flexDirection: "column", gap: 1, zIndex: 2 }}>
           {def.passive && (
             <div>
               <div style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 12.5, color: "#fff", letterSpacing: ".02em" }}>{def.passive.name}</div>
