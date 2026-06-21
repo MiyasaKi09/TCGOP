@@ -4,6 +4,7 @@ import type { CardDef, CardInstance, GameState, GameAction } from "@/types";
 import { getEffectiveAtk } from "@/engine/board";
 import { getCardDef } from "@/engine/cardRegistry";
 import FullCard, { type CardActions } from "./FullCard";
+import { useFlipZoom } from "@/lib/useFlipZoom";
 
 interface ActionMenuProps {
   instance: CardInstance;
@@ -15,12 +16,14 @@ interface ActionMenuProps {
   onSupportAction: () => void;
   onViewDetail: () => void;
   onClose: () => void;
+  originRect?: DOMRect | null;
 }
 
 export default function ActionMenu({
   instance, def, state, validActions,
-  onBaseAttack, onSpecialAttack, onSupportAction, onViewDetail, onClose,
+  onBaseAttack, onSpecialAttack, onSupportAction, onViewDetail, onClose, originRect,
 }: ActionMenuProps) {
+  const zoomRef = useFlipZoom<HTMLDivElement>(originRect);
   const effectiveAtk = getEffectiveAtk(state, instance.instanceId);
 
   const canBaseAttack = validActions.some((a) => a.type === "baseAttack" && "attackerInstanceId" in a && a.attackerInstanceId === instance.instanceId);
@@ -66,13 +69,13 @@ export default function ActionMenu({
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-40 p-4" onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
-      <div className="rounded-2xl p-4 flex flex-col gap-3 animate-modal-enter" style={{ background: "rgba(10,14,20,.94)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.3), 0 24px 70px rgba(0,0,0,.6)", userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
+      <div className="rounded-2xl p-4 flex flex-col gap-3 animate-fade-in" style={{ background: "rgba(10,14,20,.94)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.3), 0 24px 70px rgba(0,0,0,.6)", userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Cliquez une attaque sur la carte</span>
           <span className="font-oswald font-bold text-sm" style={{ color: "#E8B84B" }}>{playerVol} Vol.</span>
         </div>
 
-        <FullCard def={def} instance={instance} state={state} width={360} actions={actions} />
+        <div ref={zoomRef} style={{ willChange: "transform" }}><FullCard def={def} instance={instance} state={state} width={360} actions={actions} /></div>
 
         {(isTapped || hasSickness || isFrozen || isImmobilized) && (
           <div className="flex gap-1.5 flex-wrap">

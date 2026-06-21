@@ -40,6 +40,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
     return (
       <div
         onClick={onClick}
+        data-zoomsrc=""
         className={`relative w-full h-full rounded-xl overflow-hidden cursor-pointer transition-all duration-150 ${instance.tapped ? "saturate-[.7] brightness-90" : "hover:brightness-110"}`}
         style={{ background: "#0b0e13", boxShadow: "0 5px 16px rgba(0,0,0,.5)" }}
       >

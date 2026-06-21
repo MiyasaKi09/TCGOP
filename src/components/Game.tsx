@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import type { DragEvent } from "react";
 import type { GameAction, Slot, PlayerId, DeckDef } from "@/types";
 import { useGameEngine } from "@/hooks/useGameEngine";
@@ -40,6 +40,17 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     useGameEngine(playerDeck, aiDeck);
   const [uiMode, setUiMode] = useState<UIMode>({ type: "idle" });
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
+
+  // Remember the rect of the last-clicked card, to zoom the detail/action panel from it.
+  const zoomFromRef = useRef<DOMRect | null>(null);
+  useEffect(() => {
+    const handler = (e: PointerEvent) => {
+      const el = (e.target as HTMLElement | null)?.closest?.("[data-zoomsrc]") as HTMLElement | null;
+      zoomFromRef.current = el ? el.getBoundingClientRect() : null;
+    };
+    document.addEventListener("pointerdown", handler, true);
+    return () => document.removeEventListener("pointerdown", handler, true);
+  }, []);
 
   const aiPlayer: PlayerId = humanPlayer === "player1" ? "player2" : "player1";
   const player = state.players[humanPlayer];
@@ -558,7 +569,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         const def = getCardDef(inst.defId);
         return (
           <ActionMenu
-            instance={inst} def={def} state={state} validActions={validActions}
+            instance={inst} def={def} state={state} validActions={validActions} originRect={zoomFromRef.current}
             onBaseAttack={() => setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: false })}
             onSpecialAttack={() => setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true })}
             onSupportAction={() => {
@@ -581,7 +592,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
       {uiMode.type === "cardDetail" && (() => {
         const def = getCardDef(uiMode.defId);
         const inst = uiMode.instanceId ? state.cards[uiMode.instanceId] : undefined;
-        return <CardDetail def={def} instance={inst} state={state} onClose={resetUI} />;
+        return <CardDetail def={def} instance={inst} state={state} onClose={resetUI} originRect={zoomFromRef.current} />;
       })()}
 
       {(uiMode.type === "confirmEvent" || uiMode.type === "confirmShip") && (() => {

@@ -95,7 +95,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
   };
 
   return (
-    <div style={{ width, height: Math.round(H * scale), flex: "none" }}>
+    <div data-zoomsrc="" style={{ width, height: Math.round(H * scale), flex: "none" }}>
       <div style={{ position: "absolute", width: W, height: H, transform: `scale(${scale})`, transformOrigin: "top left", borderRadius: 16, overflow: "hidden", background: "#0b0e13", boxShadow: "0 10px 30px rgba(0,0,0,.5)" }}>
         {/* illustration */}
         {art ? (

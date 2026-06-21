@@ -225,6 +225,9 @@
   background: linear-gradient(180deg, transparent, rgba(232,184,75,0.5), transparent);
 }
 
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+.animate-fade-in { animation: fade-in 0.2s ease-out forwards; }
+
 /* Clickable attack rows on a card */
 .card-action {
   transition: background 0.15s ease;
