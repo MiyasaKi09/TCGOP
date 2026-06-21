@@ -3,7 +3,7 @@
 import type { CardDef, CardInstance, GameState } from "@/types";
 import { getEffectiveAtk, getEffectiveDef } from "@/engine/board";
 import { getCardDef } from "@/engine/cardRegistry";
-import { CARD_ART, faction, TRAIT_COLOR, TRAIT_LABEL, QUOTE, roleOf, setCode } from "@/data/cardArt";
+import { CARD_ART, CARD_ART_VERSO, faction, TRAIT_COLOR, TRAIT_LABEL, QUOTE, roleOf, setCode } from "@/data/cardArt";
 import { Heart, Crest } from "./icons";
 
 export interface CardActions {
@@ -34,7 +34,8 @@ function ShieldOutline({ size = 22 }: { size?: number }) {
 export default function FullCard({ def, instance, state, width = 300, actions }: FullCardProps) {
   const W = 300, H = 419;
   const scale = width / W;
-  const art = CARD_ART[def.id];
+  // Awakened fruits show their verso art.
+  const art = (instance?.isAwakened && CARD_ART_VERSO[def.id]) ? CARD_ART_VERSO[def.id] : CARD_ART[def.id];
   const fac = faction(def.faction);
   const isChar = def.type === "character";
 
@@ -178,7 +179,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
             </div>
           )}
           <div style={{ fontFamily: "var(--font-oswald)", fontSize: 8, letterSpacing: ".05em", color: "rgba(255,255,255,.5)", textAlign: "right", marginTop: 1 }}>
-            {setCode(def.faction)} · {fac.label} · {roleOf(def)}
+            {setCode(def.id)} · {fac.label} · {roleOf(def)}
           </div>
         </div>
       </div>

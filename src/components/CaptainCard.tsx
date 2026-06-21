@@ -1,7 +1,7 @@
 "use client";
 
 import type { CaptainInstance, CaptainDef } from "@/types";
-import { faction, hpColor, TRAIT_LABEL } from "@/data/cardArt";
+import { faction, hpColor, TRAIT_LABEL, CARD_ART, CARD_ART_VERSO, CARD_ART_FOCUS } from "@/data/cardArt";
 import { Sword, Shield, Crest } from "./icons";
 
 interface CaptainCardProps {
@@ -21,6 +21,7 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
   const pct = ratio * 100;
   const hpc = hpColor(ratio);
   const edge = captain.flipped ? "#E0463F" : "#E8B84B";
+  const art = captain.flipped ? (CARD_ART_VERSO[def.id] ?? CARD_ART[def.id]) : CARD_ART[def.id];
 
   return (
     <div
@@ -28,9 +29,16 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
       className={`relative rounded-xl overflow-hidden w-40 p-2.5 transition-all duration-300 cursor-pointer ${captain.tapped ? "saturate-50 opacity-70" : isOpponent ? "" : "hover:brightness-110"}`}
       style={{ background: fac.frame, boxShadow: `inset 0 0 0 2px ${edge}, 0 8px 22px rgba(0,0,0,.5)` }}
     >
-      <div className="absolute inset-0 flex items-center justify-center opacity-[0.12] pointer-events-none">
-        <Crest which={fac.crest} size={120} color="#fff" />
-      </div>
+      {art ? (
+        <>
+          <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: `url('${art}')`, backgroundSize: "cover", backgroundPosition: CARD_ART_FOCUS[def.id] ?? "50% 24%" }} />
+          <div className="absolute inset-0 pointer-events-none" style={{ background: "linear-gradient(180deg, rgba(8,10,14,.42) 0%, rgba(8,10,14,.78) 56%, rgba(8,10,14,.93) 100%)" }} />
+        </>
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center opacity-[0.12] pointer-events-none">
+          <Crest which={fac.crest} size={120} color="#fff" />
+        </div>
+      )}
 
       {/* header */}
       <div className="relative flex justify-between items-start gap-1">

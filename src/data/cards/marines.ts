@@ -3,27 +3,27 @@ import type { CardDef } from "@/types";
 export const marinesCards: CardDef[] = [
   // === PERSONNAGES ===
   {
-    id: "ST02-001", name: "Coby", type: "character", cost: 2,
+    id: "MR-001", name: "Coby", type: "character", cost: 2,
     faction: "marine", rarity: "C", set: "ST02",
     atk: 2, def: 1, pv: 4,
     traits: ["stealth"], tags: ["marine", "soldat"],
     preferredRow: "back",
-    synergies: [{ partnerId: "ST02-002", atkBonus: 1 }],
+    synergies: [{ partnerId: "MR-002", atkBonus: 1 }],
     baseAction: { name: "Encouragement", atk: 0, isSupport: true, healAmount: 2, description: "+2 PV a 1 allie adjacent." },
     specialAttack: { name: "Soru", cost: 2, atkBonus: 1, description: "Deplace 1 allie vers slot adjacent vide." },
   },
   {
-    id: "ST02-002", name: "Helmeppo", type: "character", cost: 2,
+    id: "MR-002", name: "Helmeppo", type: "character", cost: 2,
     faction: "marine", rarity: "C", set: "ST02",
     atk: 3, def: 2, pv: 4,
     tags: ["marine", "soldat"],
     preferredRow: "front",
-    synergies: [{ partnerId: "ST02-001", atkBonus: 1 }],
+    synergies: [{ partnerId: "MR-001", atkBonus: 1 }],
     baseAction: { name: "Kukri Slash", atk: 3, description: "La lame du fils prodigue." },
     specialAttack: { name: "Justice Slash", cost: 2, atkBonus: 2, description: "Si cible a Prime : +2 bonus." },
   },
   {
-    id: "ST02-003", name: "Tashigi", type: "character", cost: 3,
+    id: "MR-003", name: "Tashigi", type: "character", cost: 3,
     faction: "marine", rarity: "U", set: "ST02",
     atk: 4, def: 2, pv: 5,
     tags: ["marine", "capitaine_marine", "bretteur"],
@@ -32,7 +32,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "Shigure Soen Ryu", cost: 2, atkBonus: 3, description: "Si cible Maudite : +2 bonus." },
   },
   {
-    id: "ST02-004", name: "Smoker", type: "character", cost: 4,
+    id: "MR-004", name: "Smoker", type: "character", cost: 4,
     faction: "marine", rarity: "R", set: "ST02",
     atk: 5, def: 3, pv: 7,
     traits: ["range", "cursed", "logia"], tags: ["marine", "capitaine_marine"],
@@ -46,7 +46,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "White Out", cost: 3, atkBonus: 3, attackTraits: ["range", "zone"], description: "Ennemis adjacents perdent Furtif." },
   },
   {
-    id: "ST02-005", name: "Sentomaru", type: "character", cost: 3,
+    id: "MR-005", name: "Sentomaru", type: "character", cost: 3,
     faction: "marine", rarity: "U", set: "ST02",
     atk: 4, def: 4, pv: 7,
     traits: ["shield"], tags: ["marine", "garde"],
@@ -60,7 +60,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "Ashigara Dokkoi", cost: 3, atkBonus: 3, description: "Repousse la cible de 2 slots." },
   },
   {
-    id: "ST02-006", name: "Momonga", type: "character", cost: 3,
+    id: "MR-006", name: "Momonga", type: "character", cost: 3,
     faction: "marine", rarity: "U", set: "ST02",
     atk: 5, def: 3, pv: 6,
     tags: ["marine", "vice_amiral", "bretteur"],
@@ -75,7 +75,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "Tranchant Precis", cost: 2, atkBonus: 3, ignoreDef: 1, description: "Ignore 1 DEF." },
   },
   {
-    id: "ST02-007", name: "Garp", type: "character", cost: 5,
+    id: "MR-007", name: "Garp", type: "character", cost: 5,
     faction: "marine", rarity: "SR", set: "ST02",
     atk: 7, def: 4, pv: 10,
     traits: ["shield", "conqueror"], tags: ["marine", "vice_amiral"],
@@ -90,7 +90,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "Galaxy Impact", cost: 5, atkBonus: 8, attackTraits: ["zone"], oncePerGame: true, ignoreDef: 99, description: "Le poing qui ebranle la terre." },
   },
   {
-    id: "ST02-008", name: "Kizaru", type: "character", cost: 5,
+    id: "MR-008", name: "Kizaru", type: "character", cost: 5,
     faction: "marine", rarity: "SR", set: "ST02",
     atk: 6, def: 2, pv: 8,
     traits: ["rush", "range", "cursed", "logia"], tags: ["marine", "amiral"],
@@ -104,7 +104,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "Yasakani no Magatama", cost: 4, atkBonus: 5, attackTraits: ["range", "zone"], description: "La pluie de lasers." },
   },
   {
-    id: "ST02-009", name: "Aokiji (Kuzan)", type: "character", cost: 5,
+    id: "MR-009", name: "Aokiji (Kuzan)", type: "character", cost: 5,
     faction: "marine", rarity: "SR", set: "ST02",
     atk: 6, def: 3, pv: 9,
     traits: ["range", "cursed", "logia"], tags: ["marine", "amiral"],
@@ -118,7 +118,7 @@ export const marinesCards: CardDef[] = [
     specialAttack: { name: "Ice Age", cost: 4, atkBonus: 4, element: "ice", attackTraits: ["zone"], description: "Gele tous ennemis Avant." },
   },
   {
-    id: "ST02-010", name: "Sengoku", type: "character", cost: 5,
+    id: "MR-010", name: "Sengoku", type: "character", cost: 5,
     faction: "marine", rarity: "SR", set: "ST02",
     atk: 6, def: 4, pv: 9,
     traits: ["range", "cursed"], tags: ["marine", "amiral_en_chef"],
@@ -134,7 +134,7 @@ export const marinesCards: CardDef[] = [
 
   // === OBJETS - FRUITS ===
   {
-    id: "ST02-011", name: "Magu Magu no Mi", type: "object", subtype: "fruit", cost: 3,
+    id: "MR-011", name: "Magu Magu no Mi", type: "object", subtype: "fruit", cost: 3,
     faction: "marine", rarity: "SR", set: "ST02",
     bonusAtk: 0, restriction: "Akainu",
     equipEffect: "Maudit, Intangibilite Logia. Attaques gagnent Feu.",
@@ -154,7 +154,7 @@ export const marinesCards: CardDef[] = [
     },
   },
   {
-    id: "ST02-012", name: "Moku Moku no Mi", type: "object", subtype: "fruit", cost: 2,
+    id: "MR-012", name: "Moku Moku no Mi", type: "object", subtype: "fruit", cost: 2,
     faction: "marine", rarity: "R", set: "ST02",
     bonusAtk: 0, restriction: "Smoker",
     equipEffect: "Maudit, Intangibilite Logia.",
@@ -176,13 +176,13 @@ export const marinesCards: CardDef[] = [
 
   // === OBJETS - ARMES ===
   {
-    id: "ST02-013", name: "Shigure", type: "object", subtype: "weapon", cost: 1,
+    id: "MR-013", name: "Shigure", type: "object", subtype: "weapon", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     bonusAtk: 2, bonusDef: 0, restriction: "bretteur",
     equipEffect: "Si equipee par Tashigi : +1 DEF.",
   },
   {
-    id: "ST02-014", name: "Jitte Granit Marin", type: "object", subtype: "weapon", cost: 1,
+    id: "MR-014", name: "Jitte Granit Marin", type: "object", subtype: "weapon", cost: 1,
     faction: "marine", rarity: "U", set: "ST02",
     bonusAtk: 1, restriction: "Smoker",
     equipEffect: "Granit Marin : desactive les pouvoirs de Fruit de la cible pour 1 tour.",
@@ -190,19 +190,19 @@ export const marinesCards: CardDef[] = [
 
   // === OBJETS - ACCESSOIRES ===
   {
-    id: "ST02-015", name: "Menottes G. Marin", type: "object", subtype: "accessory", cost: 2,
+    id: "MR-015", name: "Menottes G. Marin", type: "object", subtype: "accessory", cost: 2,
     faction: "marine", rarity: "R", set: "ST02",
     bonusAtk: 0,
     equipEffect: "1x/partie : 1 ennemi Maudit perd ses pouvoirs de Fruit 2 tours. ATK -2.",
   },
   {
-    id: "ST02-016", name: "Canon Marine", type: "object", subtype: "accessory", cost: 1,
+    id: "MR-016", name: "Canon Marine", type: "object", subtype: "accessory", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     bonusAtk: 0,
     equipEffect: "1x/partie : 3 deg. Portee a 1 cible.",
   },
   {
-    id: "ST02-017", name: "Boulet G. Marin", type: "object", subtype: "accessory", cost: 1,
+    id: "MR-017", name: "Boulet G. Marin", type: "object", subtype: "accessory", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     bonusAtk: 0,
     equipEffect: "Usage unique. Attaque gagne Granit Marin ce tour.",
@@ -210,13 +210,13 @@ export const marinesCards: CardDef[] = [
 
   // === NAVIRES ===
   {
-    id: "ST02-018", name: "Navire de Guerre Marine", type: "ship", cost: 2,
+    id: "MR-018", name: "Navire de Guerre Marine", type: "ship", cost: 2,
     faction: "marine", rarity: "U", set: "ST02",
     shipPassive: "Marines +1 DEF au deploiement. Couts de deploiement Marines -1 (min 1).",
     shipActive: { name: "Bombardement", cost: 3, description: "1x/partie : 3 deg. a toute la Ligne Avant ennemie.", oncePerGame: true },
   },
   {
-    id: "ST02-019", name: "Navire de Justice", type: "ship", cost: 1,
+    id: "MR-019", name: "Navire de Justice", type: "ship", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     shipPassive: "Marines +1 PV au deploiement.",
     shipActive: { name: "Dernier Bastion", cost: 0, description: "Si detruit : tous Marines +2 ATK et +1 DEF ce tour.", oncePerGame: true },
@@ -224,49 +224,49 @@ export const marinesCards: CardDef[] = [
 
   // === EVENEMENTS ===
   {
-    id: "ST02-020", name: "Buster Call", type: "event", cost: 5,
+    id: "MR-020", name: "Buster Call", type: "event", cost: 5,
     faction: "marine", rarity: "SR", set: "ST02",
     eventEffect: { type: "damageEnemies", amount: 5, target: "allFront" },
   },
   {
-    id: "ST02-021", name: "Promotion", type: "event", cost: 1,
+    id: "MR-021", name: "Promotion", type: "event", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     eventEffect: { type: "custom", id: "promotion", description: "1 allie gagne le rang superieur ce tour." },
   },
   {
-    id: "ST02-022", name: "Justice Absolue", type: "event", cost: 2,
+    id: "MR-022", name: "Justice Absolue", type: "event", cost: 2,
     faction: "marine", rarity: "U", set: "ST02",
     eventEffect: { type: "buffAllies", stat: "atk", amount: 2, filter: { faction: "marine" }, duration: "turn" },
   },
   {
-    id: "ST02-023", name: "Renforts", type: "event", cost: 1,
+    id: "MR-023", name: "Renforts", type: "event", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     eventEffect: { type: "draw", amount: 2, discard: 1 },
   },
   {
-    id: "ST02-024", name: "Ordre de Tir", type: "event", cost: 2,
+    id: "MR-024", name: "Ordre de Tir", type: "event", cost: 2,
     faction: "marine", rarity: "U", set: "ST02",
     eventEffect: { type: "damageEnemies", amount: 3, target: "single" },
   },
   {
-    id: "ST02-027", name: "Embargo", type: "event", cost: 2,
+    id: "MR-027", name: "Embargo", type: "event", cost: 2,
     faction: "marine", rarity: "U", set: "ST02",
     eventEffect: { type: "custom", id: "embargo", description: "1 ennemi Maudit ne peut pas utiliser ses pouvoirs ce tour." },
   },
   {
-    id: "ST02-028", name: "Execution Publique", type: "event", cost: 3,
+    id: "MR-028", name: "Execution Publique", type: "event", cost: 3,
     faction: "marine", rarity: "R", set: "ST02",
     eventEffect: { type: "custom", id: "execution", description: "1 ennemi avec <=3 PV est KO. Si Pirate : pioche 2." },
   },
 
   // === COUNTERS ===
   {
-    id: "ST02-025", name: "Manteau de Justice", type: "counter", cost: 0,
+    id: "MR-025", name: "Manteau de Justice", type: "counter", cost: 0,
     faction: "marine", rarity: "R", set: "ST02",
     counterEffect: { type: "survive", description: "Un allie Marine survit avec 1 PV." },
   },
   {
-    id: "ST02-026", name: "Mur d'Acier", type: "counter", cost: 1,
+    id: "MR-026", name: "Mur d'Acier", type: "counter", cost: 1,
     faction: "marine", rarity: "C", set: "ST02",
     counterEffect: { type: "reduceDamage", amount: 4, captainBonus: 6 },
   },
