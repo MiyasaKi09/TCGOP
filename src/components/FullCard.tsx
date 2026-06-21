@@ -114,11 +114,13 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         {/* cost (top-left, gold) */}
         <div style={{ position: "absolute", top: 4, left: 13, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1, zIndex: 5 }}>{def.cost}</div>
 
-        {/* PV (top-right, gold + heart) */}
-        <div style={{ position: "absolute", top: 6, right: 12, display: "flex", alignItems: "flex-start", gap: 3, zIndex: 5 }}>
-          <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
-          <Heart size={18} color="#D8453C" style={{ marginTop: 7 }} />
-        </div>
+        {/* PV (top-right, gold + heart) — characters only */}
+        {isChar && (
+          <div style={{ position: "absolute", top: 6, right: 12, display: "flex", alignItems: "flex-start", gap: 3, zIndex: 5 }}>
+            <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
+            <Heart size={18} color="#D8453C" style={{ marginTop: 7 }} />
+          </div>
+        )}
 
         {/* name + quote — two parallel vertical columns (left) */}
         <div style={{ position: "absolute", left: 6, top: "19%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4 }}>
