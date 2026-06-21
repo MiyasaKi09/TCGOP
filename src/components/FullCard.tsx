@@ -73,22 +73,22 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
       <div
         onClick={clickable && !disabled ? act!.onClick : undefined}
         className={clickable && !disabled ? "card-action" : undefined}
-        style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, borderRadius: 6, padding: "2px 5px", margin: "0 -5px", cursor: clickable ? (disabled ? "not-allowed" : "pointer") : "default", opacity: disabled ? 0.5 : 1 }}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, borderRadius: 6, padding: "1px 5px", margin: "0 -5px", cursor: clickable ? (disabled ? "not-allowed" : "pointer") : "default", opacity: disabled ? 0.5 : 1 }}
       >
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
             <span style={{ color: accent, fontSize: 11 }}>{icon}</span>
-            <span style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 13.5, color: "#fff", letterSpacing: ".02em" }}>{a.name}</span>
+            <span style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 12.5, color: "#fff", letterSpacing: ".02em" }}>{a.name}</span>
             {el && <span style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, color: "#fff", background: el[1], borderRadius: 99, padding: "0 6px" }}>{el[0]}</span>}
             {a.attackTraits?.map((t) => <span key={t} style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, color: "#fff", background: "rgba(255,255,255,.22)", borderRadius: 99, padding: "0 6px" }}>{ATK_TRAIT[t] ?? t}</span>)}
             {clickable && !disabled && <span style={{ color: accent, fontSize: 10, fontWeight: 700 }}>▸</span>}
           </div>
-          {a.description && <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, lineHeight: 1.15, color: "rgba(255,255,255,.78)" }}>{a.description}</div>}
+          {a.description && <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 9.5, lineHeight: 1.12, color: "rgba(255,255,255,.78)" }}>{a.description}</div>}
           {disabled && act?.reason && <div style={{ fontFamily: "var(--font-oswald)", fontSize: 9, color: "#FF8A80" }}>• {act.reason}</div>}
         </div>
         <div style={{ textAlign: "right", flex: "none" }}>
-          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 10.5, color: "rgba(255,255,255,.92)" }}>{cost}</div>
-          {atkVal && <div style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10.5, color: "rgba(255,255,255,.92)" }}>{atkVal}</div>}
+          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 10, color: "rgba(255,255,255,.92)" }}>{cost}</div>
+          {atkVal && <div style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "rgba(255,255,255,.92)" }}>{atkVal}</div>}
         </div>
       </div>
     );
@@ -152,26 +152,28 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
           </div>
         )}
 
-        {/* bottom text box — inset with a margin from the card edges */}
-        <div style={{ position: "absolute", left: 8, right: 8, bottom: 8, padding: "11px 11px 9px", borderRadius: 12, display: "flex", flexDirection: "column", gap: 2, background: "linear-gradient(180deg,rgba(7,9,13,.55),rgba(7,9,13,.9) 42%,rgba(7,9,13,.96))", zIndex: 2 }}>
+        {/* soft long fade behind the text — no hard box */}
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: "62%", background: "linear-gradient(180deg, transparent 0%, rgba(7,9,13,.4) 44%, rgba(7,9,13,.85) 76%, rgba(7,9,13,.95) 100%)", zIndex: 1, pointerEvents: "none" }} />
+        {/* text content — side padding = margin, no box */}
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "0 15px 11px", display: "flex", flexDirection: "column", gap: 1, zIndex: 2 }}>
           {def.passive && (
             <div>
-              <div style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 14, color: "#fff", letterSpacing: ".02em" }}>{def.passive.name}</div>
-              <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10.5, lineHeight: 1.2, color: "rgba(255,255,255,.82)" }}>{def.passive.description}</div>
+              <div style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 12.5, color: "#fff", letterSpacing: ".02em" }}>{def.passive.name}</div>
+              <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 9.5, lineHeight: 1.14, color: "rgba(255,255,255,.82)" }}>{def.passive.description}</div>
             </div>
           )}
-          {(base || spec) && <div style={{ height: 1, margin: "2px 0", background: "linear-gradient(90deg,rgba(255,255,255,.4),transparent)" }} />}
+          {(base || spec) && <div style={{ height: 1, margin: "2px 0", background: "linear-gradient(90deg,rgba(255,255,255,.38),transparent)" }} />}
           {base && renderAction(base, false, actions?.base)}
           {spec && renderAction(spec, true, actions?.special)}
           {!isChar && (
-            <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, lineHeight: 1.25, color: "rgba(255,255,255,.82)" }}>
+            <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, lineHeight: 1.2, color: "rgba(255,255,255,.82)" }}>
               {def.type === "object" && <>{def.bonusAtk ? `+${def.bonusAtk} ATK ` : ""}{def.bonusDef ? `+${def.bonusDef} DEF ` : ""}{def.equipEffect ?? ""}</>}
               {def.type === "ship" && <>{def.shipPassive}{def.shipActive ? ` — ${def.shipActive.name} (${def.shipActive.cost}V)` : ""}</>}
               {def.type === "counter" && def.counterEffect && (def.counterEffect.type === "survive" ? def.counterEffect.description : `Réduit ${def.counterEffect.amount} dégâts.`)}
               {def.type === "event" && def.eventEffect && describeEvent(def.eventEffect)}
             </div>
           )}
-          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, letterSpacing: ".05em", color: "rgba(255,255,255,.5)", textAlign: "right", marginTop: 1 }}>
+          <div style={{ fontFamily: "var(--font-oswald)", fontSize: 8, letterSpacing: ".05em", color: "rgba(255,255,255,.5)", textAlign: "right", marginTop: 1 }}>
             {setCode(def.faction)} · {fac.label} · {roleOf(def)}
           </div>
         </div>
