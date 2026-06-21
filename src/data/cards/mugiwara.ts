@@ -5,7 +5,7 @@ export const mugiwaraCards: CardDef[] = [
   {
     id: "ST01-001", name: "Roronoa Zoro", type: "character", cost: 5,
     faction: "pirate", rarity: "R", set: "ST01",
-    atk: 7, def: 4, pv: 10,
+    atk: 7, def: 2, pv: 10,
     traits: ["shield"], tags: ["mugiwara", "bretteur"],
     preferredRow: "front",
     passive: {
