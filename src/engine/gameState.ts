@@ -10,7 +10,7 @@ import type {
   LogEntry,
 } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
-import { shuffle, generateInstanceId, STARTING_HAND_SIZE } from "./utils";
+import { shuffle, generateInstanceId, STARTING_HAND_SIZE, HAND_LIMIT } from "./utils";
 import { gainVolonte } from "./volonte";
 
 // ============================================================
@@ -162,9 +162,14 @@ export function startTurn(state: GameState): GameState {
     const card = next.cards[slot];
     if (card && card.zone === "board" && card.currentPv <= 0) {
       const cardDef = require("./cardRegistry").getCardDef(card.defId);
+      const koOwner = card.owner;
+      const koDefId = card.defId;
       next = addLog(next, currentPlayerId, `${cardDef.name} est KO (brulure/effet) !`);
-      next = grantKOBonus(next, getOpponent(currentPlayerId));
+      // Burn/poison were inflicted by the opponent: the owner who lost the ally gets +2 Vol (Rulebook v3.1 §4).
+      next = grantKOBonus(next, koOwner);
       next = removeFromBoard(next, slot);
+      const { applyOnKOEffects } = require("./passives");
+      next = applyOnKOEffects(next, koOwner, getOpponent(koOwner), koDefId);
     }
   }
 
@@ -185,6 +190,24 @@ export function startTurn(state: GameState): GameState {
 export function endTurn(state: GameState): GameState {
   return produce(state, (draft) => {
     draft.phase = "end";
+
+    // Hand limit: discard the excess at end of turn (Rulebook v3.1 §10).
+    // Auto-discards the oldest cards (front of the hand) for now.
+    const ending = draft.players[draft.currentPlayer];
+    if (ending.hand.length > HAND_LIMIT) {
+      const overflow = ending.hand.length - HAND_LIMIT;
+      const discarded = ending.hand.splice(0, overflow);
+      for (const id of discarded) {
+        draft.cards[id].zone = "graveyard";
+        ending.graveyard.push(id);
+      }
+      draft.log.push({
+        turn: draft.turnNumber,
+        player: draft.currentPlayer,
+        message: `Limite de main : ${overflow} carte(s) défaussée(s).`,
+      });
+    }
+
     // Switch player
     const nextPlayer: PlayerId =
       draft.currentPlayer === "player1" ? "player2" : "player1";

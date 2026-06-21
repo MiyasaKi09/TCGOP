@@ -352,7 +352,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     if (!inCounterWindow) return null;
     const pending = state.pendingAttack!;
     const counterActions = validActions.filter(
-      (a) => a.type === "playCounter" || a.type === "passCounter" || (a.type === "useHaki" && a.hakiType === "observation")
+      (a) => a.type === "playCounter" || a.type === "passCounter" || a.type === "useShield" || (a.type === "useHaki" && a.hakiType === "observation")
     );
     if (counterActions.length === 0) return null;
 
@@ -389,6 +389,14 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
                 return (
                   <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-blue-600/80 hover:bg-blue-500/80 rounded-xl text-sm font-bold transition-all">
                     🛡 {def.name} <span className="text-blue-200/70 text-xs">({def.cost}V)</span>
+                  </button>
+                );
+              }
+              if (action.type === "useShield") {
+                const blockerDef = getCardDef(state.cards[action.blockerInstanceId].defId);
+                return (
+                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-amber-700/80 hover:bg-amber-600/80 rounded-xl text-sm font-bold transition-all">
+                    🛡 Bloquer ({blockerDef.name})
                   </button>
                 );
               }
@@ -434,6 +442,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   const foeFac = faction(opponentCaptainDef.faction);
   const canFlip = validActions.some((a) => a.type === "flipCaptain");
   const canActivateShip = validActions.some((a) => a.type === "activateShip");
+  const canKingHaki = validActions.some((a) => a.type === "useHaki" && a.hakiType === "king");
 
   const statusText = (() => {
     if (isAiTurn) return { text: "Tour de l'adversaire…", color: "text-yellow-400", pulse: true };
@@ -539,6 +548,10 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
             {canFlip && (
               <button onClick={() => setUiMode({ type: "selectingCaptainSlot" })}
                 className="action-btn font-oswald px-3 py-2 bg-red-700/60 hover:bg-red-600/60 rounded-xl text-xs font-bold transition-all">⚔ Engager Capitaine</button>
+            )}
+            {canKingHaki && (
+              <button onClick={() => dispatch({ type: "useHaki", hakiType: "king" })}
+                className="action-btn font-oswald px-3 py-2 bg-amber-600/70 hover:bg-amber-500/70 rounded-xl text-xs font-bold transition-all">👑 Haki des Rois</button>
             )}
             <button onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }} disabled={isAiTurn || inCounterWindow}
               className="action-btn gold-surface font-oswald px-3 py-3 rounded-xl text-sm font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all">Fin de tour ➡</button>

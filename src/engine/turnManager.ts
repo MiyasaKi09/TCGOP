@@ -29,10 +29,11 @@ import {
   resolveAttack,
   applyCounterReduce,
   applyCounterSurvive,
+  applyShieldBlock,
   getEligibleCounters,
 } from "./combat";
 import { canFlipCaptain, flipCaptain, declareCaptainBaseAttack } from "./captain";
-import { isHakiAvailable, useObservationHaki, useArmamentHaki } from "./haki";
+import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
 import { produce } from "immer";
 
 // ============================================================
@@ -80,6 +81,9 @@ export function executeAction(
 
     case "playCounter":
       return playCounter(state, action.instanceId);
+
+    case "useShield":
+      return applyShieldBlock(state, action.blockerInstanceId);
 
     case "passCounter":
       // Resolve the pending attack without counter
@@ -435,7 +439,9 @@ function executeSupportAction(
 
   let next = produce(state, (draft) => {
     draft.cards[instanceId].tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): a support base spends the turn's action.
     draft.cards[instanceId].usedBaseAction = true;
+    draft.cards[instanceId].usedSpecialAttack = true;
   });
 
   // Immobilize (Robin, Kuzan)
@@ -528,9 +534,9 @@ function handleHaki(
   switch (action.hakiType) {
     case "observation":
       return useObservationHaki(state, playerId);
-    case "armament":
-      if (!action.targetInstanceId) throw new Error("Armament needs a target");
-      return useArmamentHaki(state, playerId, action.targetInstanceId);
+    case "king":
+      return useKingHaki(state, playerId);
+    // Armament (T7+) is a passive in Rulebook v3.1 — no activation.
     default:
       return state;
   }
@@ -558,9 +564,28 @@ export function getValidActions(
       // Can always pass
       actions.push({ type: "passCounter" });
 
-      // Observation Haki to dodge
-      if (isHakiAvailable(state, playerId, "observation")) {
+      // Observation Haki to dodge (unless the attack cannot be dodged)
+      if (isHakiAvailable(state, playerId, "observation") && !state.pendingAttack.cannotBeDodged) {
         actions.push({ type: "useHaki", hakiType: "observation" });
+      }
+
+      // Bouclier / Shield: an untapped Shield ally adjacent to the target may block.
+      if (!state.pendingAttack.ignoreShield) {
+        const pending = state.pendingAttack;
+        const targetSlot = pending.targetIsCaptain
+          ? player.captain.slot
+          : state.cards[pending.targetId]?.slot;
+        if (targetSlot) {
+          const { getAdjacentSlots } = require("./board");
+          for (const adjSlot of getAdjacentSlots(targetSlot)) {
+            const adjId = player.board[adjSlot as Slot];
+            if (!adjId || adjId === pending.targetId) continue;
+            const adjCard = state.cards[adjId];
+            if (adjCard && !adjCard.tapped && hasTrait(state, adjId, "shield")) {
+              actions.push({ type: "useShield", blockerInstanceId: adjId });
+            }
+          }
+        }
       }
     }
     return actions;
@@ -847,14 +872,14 @@ export function getValidActions(
     }
   }
 
-  // Armament Haki
-  if (isHakiAvailable(state, playerId, "armament")) {
-    for (const char of boardChars) {
-      actions.push({
-        type: "useHaki",
-        hakiType: "armament",
-        targetInstanceId: char.instanceId,
-      });
+  // Armament Haki (T7+) is a passive in Rulebook v3.1 — no action to offer.
+
+  // Roi Haki (T10+): requires a Conquerant unit in play, KOs all enemies DEF <= 3, 1x/game.
+  if (isHakiAvailable(state, playerId, "king") && hasConquerorInPlay(state, playerId)) {
+    const oppChars = getBoardCharacters(state, getOpponent(playerId));
+    const hasTarget = oppChars.some((c) => getEffectiveDef(state, c.instanceId) <= 3);
+    if (hasTarget) {
+      actions.push({ type: "useHaki", hakiType: "king" });
     }
   }
 

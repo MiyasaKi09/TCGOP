@@ -30,6 +30,9 @@ export const VOLONTE_CAP = 10;
 /** Starting hand size */
 export const STARTING_HAND_SIZE = 6;
 
+/** Maximum hand size — excess is discarded at end of turn (Rulebook v3.1 §10) */
+export const HAND_LIMIT = 10;
+
 /** Bonus Vol on ally KO */
 export const ALLY_KO_BONUS_VOL = 2;
 

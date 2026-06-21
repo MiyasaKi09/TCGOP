@@ -57,12 +57,14 @@ function scoreAction(
       return scoreEvent(state, playerId, action);
     case "playCounter":
       return 50; // Counters during enemy turn are almost always good
+    case "useShield":
+      return scoreShield(state, action);
     case "passCounter":
       return 0; // Default — pass if no counter
     case "flipCaptain":
       return scoreCaptainFlip(state, playerId);
     case "useHaki":
-      return action.hakiType === "observation" ? 40 : 10;
+      return action.hakiType === "observation" ? 40 : action.hakiType === "king" ? 60 : 10;
     case "moveCharacter":
       return 2; // Low priority
     case "endTurn":
@@ -178,6 +180,30 @@ function scoreEvent(
     default:
       return 6;
   }
+}
+
+function scoreShield(
+  state: GameState,
+  action: Extract<GameAction, { type: "useShield" }>
+): number {
+  const pending = state.pendingAttack;
+  if (!pending) return 0;
+  const blockerDef = getEffectiveDef(state, action.blockerInstanceId);
+  const blocker = state.cards[action.blockerInstanceId];
+  if (!blocker) return 0;
+  const atkPower = pending.attackPower ?? pending.rawDamage;
+  const redirected = Math.max(0, atkPower - blockerDef);
+
+  // Worthwhile if the block saves the original target from a KO and the blocker survives.
+  const savesKO = !pending.targetIsCaptain
+    ? (state.cards[pending.targetId]?.currentPv ?? 0) <= pending.rawDamage
+    : pending.rawDamage >= 6; // protecting the captain from a heavy hit
+  const blockerSurvives = redirected < blocker.currentPv;
+
+  if (savesKO && blockerSurvives) return 32;
+  if (redirected === 0) return 20; // fully negated, free
+  if (redirected < pending.rawDamage && blockerSurvives) return 6;
+  return 0;
 }
 
 function scoreCaptainFlip(

@@ -351,14 +351,20 @@ export interface PendingAttack {
   targetIsCaptain: boolean;
   /** Is this a special attack? */
   isSpecial: boolean;
-  /** Calculated raw damage before counter */
+  /** Calculated raw damage before counter (vs the primary target's DEF) */
   rawDamage: number;
+  /** Attacker's effective attack power before target DEF (for Zone/Total spread) */
+  attackPower?: number;
   /** Attack element if any */
   element?: Element;
   /** Attack traits */
   attackTraits: AttackTrait[];
   /** Does this attack have haki? */
   hasHaki: boolean;
+  /** If true, the Bouclier/Shield block reaction cannot intercept this attack */
+  ignoreShield?: boolean;
+  /** If true, Observation Haki / dodge effects cannot cancel this attack */
+  cannotBeDodged?: boolean;
 }
 
 export interface LogEntry {
@@ -394,6 +400,7 @@ export type GameAction =
   | { type: "baseSupportAction"; instanceId: string; targetInstanceId?: string }
   | { type: "playEvent"; instanceId: string; targets?: string[] }
   | { type: "playCounter"; instanceId: string }
+  | { type: "useShield"; blockerInstanceId: string }
   | { type: "passCounter" }
   | { type: "flipCaptain"; slot: Slot }
   | { type: "captainAttack"; targetInstanceId: string; targetIsCaptain?: boolean; isSpecial?: boolean }

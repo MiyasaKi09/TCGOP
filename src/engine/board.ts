@@ -529,8 +529,10 @@ export function getValidTargets(
       canTargetCaptain = true;
     }
   } else {
-    // Recto captain is off-board (on the ship) — never directly targetable
-    canTargetCaptain = false;
+    // Recto captain is off-board, but becomes EXPOSED when its owner has no characters
+    // on the board — the crew is wiped (Rulebook v3.1 §2.1). Re-protected as soon as
+    // any ally returns to the board.
+    canTargetCaptain = opponentChars.length === 0;
   }
 
   return {

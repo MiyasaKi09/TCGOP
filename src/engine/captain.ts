@@ -2,7 +2,7 @@ import { produce } from "immer";
 import type { GameState, PlayerId, Slot, EntryEffect } from "@/types";
 import { getCaptainDef } from "./cardRegistry";
 import { canAfford, spendVolonte } from "./volonte";
-import { addLog, getOpponent } from "./gameState";
+import { addLog, getOpponent, checkWinCondition } from "./gameState";
 import { getBoardCharacters, getEffectiveAtk, getEffectiveDef } from "./board";
 
 /**
@@ -71,11 +71,13 @@ export function flipCaptain(
 
   let next = cost > 0 ? spendVolonte(state, playerId, cost) : state;
 
-  // Flip captain
+  // Flip captain — damage already marked on the recto face carries over to the verso
+  // face (Rulebook v3.1 §2.1: the face/PV max changes, marked damage stays).
   next = produce(next, (draft) => {
     const cap = draft.players[playerId].captain;
     cap.flipped = true;
-    cap.currentPv = def.verso.pv;
+    const dmgMarked = Math.max(0, def.recto.pv - cap.currentPv);
+    cap.currentPv = def.verso.pv - dmgMarked;
     cap.slot = slot;
     cap.deployedTurn = draft.turnNumber;
   });
@@ -85,6 +87,14 @@ export function flipCaptain(
     playerId,
     `${def.name} s'engage sur le champ de bataille ! (verso, slot ${slot})`
   );
+
+  // Flipping a badly wounded captain into a lower-PV face can be lethal.
+  const flipWinner = checkWinCondition(next);
+  if (flipWinner) {
+    return produce(next, (draft) => {
+      draft.winner = flipWinner;
+    });
+  }
 
   // Apply entry effect
   next = resolveEntryEffect(next, playerId, def.verso.entryEffect);
@@ -231,13 +241,16 @@ export function declareCaptainBaseAttack(
   let next = produce(state, (draft) => {
     const cap = draft.players[playerId].captain;
     cap.tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6).
     cap.usedBaseAction = true;
+    cap.usedSpecialAttack = true;
     draft.pendingAttack = {
       attackerId: `captain_${playerId}`,
       targetId: targetInstanceId,
       targetIsCaptain,
       isSpecial: false,
       rawDamage,
+      attackPower: atk,
       element: baseAction.element,
       attackTraits: baseAction.attackTraits ?? [],
       hasHaki,

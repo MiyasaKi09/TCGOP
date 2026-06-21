@@ -109,11 +109,9 @@ export function declareBaseAttack(
 
   const rawDamage = Math.max(0, atk - targetDef);
 
-  // Check Haki: natural, from Armament buff, automatic from T7+, or water element
-  const hasArmamentBuff = attacker.modifiers.some((m) => m.source === "armament_haki");
+  // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
-    hasArmamentBuff ||
     state.turnNumber >= 7 ||
     attackElement === "water";
 
@@ -123,6 +121,7 @@ export function declareBaseAttack(
     targetIsCaptain,
     isSpecial: false,
     rawDamage,
+    attackPower: atk,
     element: attackElement,
     attackTraits,
     hasHaki: hasHaki ?? false,
@@ -130,7 +129,9 @@ export function declareBaseAttack(
 
   let next = produce(state, (draft) => {
     draft.cards[attackerInstanceId].tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
     draft.cards[attackerInstanceId].usedBaseAction = true;
+    draft.cards[attackerInstanceId].usedSpecialAttack = true;
     draft.pendingAttack = pending;
   });
 
@@ -231,12 +232,11 @@ export function declareSpecialAttack(
 
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
-  // Check Haki: natural, from Armament buff, or automatic from T7+
-  const hasArmamentBuffSpec = attacker.modifiers.some((m) => m.source === "armament_haki");
+  // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
-    hasArmamentBuffSpec ||
-    state.turnNumber >= 7;
+    state.turnNumber >= 7 ||
+    spec.element === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -244,13 +244,17 @@ export function declareSpecialAttack(
     targetIsCaptain,
     isSpecial: true,
     rawDamage,
+    attackPower: totalAtk,
     element: spec.element,
     attackTraits,
     hasHaki: hasHaki ?? false,
   };
 
   next = produce(next, (draft) => {
+    draft.cards[attackerInstanceId].tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
     draft.cards[attackerInstanceId].usedSpecialAttack = true;
+    draft.cards[attackerInstanceId].usedBaseAction = true;
     if (spec.oncePerGame) {
       draft.cards[attackerInstanceId].usedOnceAbilities.push(spec.name);
     }
@@ -322,9 +326,8 @@ export function declareFruitSpecialAttack(
 
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
-  const hasArmament = attacker.modifiers.some((m) => m.source === "armament_haki");
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) || hasArmament || next.turnNumber >= 7;
+    (def.naturalHaki && def.naturalHaki.length > 0) || next.turnNumber >= 7;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -332,12 +335,17 @@ export function declareFruitSpecialAttack(
     targetIsCaptain,
     isSpecial: true,
     rawDamage,
+    attackPower: totalAtk,
     element: undefined,
     attackTraits: [],
     hasHaki: hasHaki ?? false,
   };
 
   next = produce(next, (draft) => {
+    draft.cards[attackerInstanceId].tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
+    draft.cards[attackerInstanceId].usedSpecialAttack = true;
+    draft.cards[attackerInstanceId].usedBaseAction = true;
     if (spec.oncePerGame) {
       draft.cards[attackerInstanceId].usedOnceAbilities.push(spec.name);
     }
@@ -456,6 +464,47 @@ export function applyCounterSurvive(
   return next;
 }
 
+/**
+ * Bouclier / Shield reaction (Rulebook v3.1 §8): an untapped ally with the Shield trait,
+ * adjacent to the attack's target, intercepts the hit. It taps, becomes the new target,
+ * and the damage is recomputed against its DEF. Costs 0 Vol. The attack stays pending so
+ * the defender can still react further or pass to resolve.
+ */
+export function applyShieldBlock(
+  state: GameState,
+  blockerInstanceId: string
+): GameState {
+  const pending = state.pendingAttack;
+  if (!pending) throw new Error("No pending attack");
+  if (pending.ignoreShield) throw new Error("This attack ignores Bouclier");
+
+  const blocker = state.cards[blockerInstanceId];
+  if (!blocker) throw new Error("Blocker not found");
+  if (blocker.tapped) throw new Error("A tapped character cannot use Bouclier");
+  if (!hasTrait(state, blockerInstanceId, "shield")) {
+    throw new Error("Not a Bouclier character");
+  }
+
+  let blockerDef = getEffectiveDef(state, blockerInstanceId);
+  if (pending.attackTraits.includes("piercing")) {
+    blockerDef = Math.floor(blockerDef / 2);
+  }
+  const atkPower = pending.attackPower ?? pending.rawDamage;
+  const newRaw = Math.max(0, atkPower - blockerDef);
+
+  let next = produce(state, (draft) => {
+    draft.cards[blockerInstanceId].tapped = true;
+    if (draft.pendingAttack) {
+      draft.pendingAttack.targetId = blockerInstanceId;
+      draft.pendingAttack.targetIsCaptain = false;
+      draft.pendingAttack.rawDamage = newRaw;
+    }
+  });
+
+  const blockerName = getCardDef(blocker.defId).name;
+  return addLog(next, blocker.owner, `🛡 ${blockerName} bloque l'attaque ! (Bouclier)`);
+}
+
 // ============================================================
 // Step 3: Resolve Attack (apply damage)
 // ============================================================
@@ -485,7 +534,8 @@ export function resolveAttack(state: GameState): GameState {
       const targetDefAfter = getCardDef(targetAfter.defId);
       const atkOwner = getAttackerOwner(next, pending.attackerId);
       next = addLog(next, targetAfter.owner, `${targetDefAfter.name} est KO (effet elementaire) !`);
-      next = grantKOBonus(next, atkOwner);
+      // +2 Vol. goes to the player who LOST the ally (Rulebook v3.1 §4).
+      next = grantKOBonus(next, targetAfter.owner);
       const koDefId = targetAfter.defId;
       const koOwner = targetAfter.owner;
       next = removeFromBoard(next, pending.targetId);
@@ -506,14 +556,47 @@ export function resolveAttack(state: GameState): GameState {
           const adjCard = next.cards[adjId];
           if (adjCard && adjCard.zone === "board" && adjCard.currentPv <= 0) {
             const adjDef = getCardDef(adjCard.defId);
-            const atkOwner = getAttackerOwner(next, pending.attackerId);
+            const adjKoOwner = adjCard.owner;
+            const adjKoDefId = adjCard.defId;
             next = addLog(next, adjCard.owner, `${adjDef.name} est KO (foudre) !`);
-            next = grantKOBonus(next, atkOwner);
+            // +2 Vol. goes to the player who LOST the ally (Rulebook v3.1 §4).
+            next = grantKOBonus(next, adjKoOwner);
             next = removeFromBoard(next, adjId);
+            const { applyOnKOEffects: applyAdjKO } = require("./passives");
+            next = applyAdjKO(next, adjKoOwner, getAttackerOwner(next, pending.attackerId), adjKoDefId);
           }
           break;
         }
       }
+    }
+  }
+
+  // Zone / Total spread (Rulebook v3.1 §8 Family 2): after the primary hit, the same
+  // attack also strikes the target's adjacents (Zone) or every enemy (Total).
+  if (
+    !pending.targetIsCaptain &&
+    (pending.attackTraits.includes("zone") || pending.attackTraits.includes("total"))
+  ) {
+    const attackerOwner = getAttackerOwner(state, pending.attackerId);
+    const defenderId = getOpponent(attackerOwner);
+    const secondaryIds: string[] = [];
+
+    if (pending.attackTraits.includes("total")) {
+      for (const c of getBoardCharacters(next, defenderId)) {
+        if (c.instanceId !== pending.targetId) secondaryIds.push(c.instanceId);
+      }
+    } else {
+      const primarySlot = state.cards[pending.targetId]?.slot;
+      if (primarySlot) {
+        for (const adjSlot of getAdjacentSlots(primarySlot)) {
+          const adjId = next.players[defenderId].board[adjSlot];
+          if (adjId && adjId !== pending.targetId) secondaryIds.push(adjId);
+        }
+      }
+    }
+
+    for (const sid of secondaryIds) {
+      next = applySpreadHit(next, pending, sid);
     }
   }
 
@@ -528,6 +611,63 @@ export function resolveAttack(state: GameState): GameState {
     next = produce(next, (draft) => {
       draft.winner = winner;
     });
+  }
+
+  return next;
+}
+
+/**
+ * Apply one Zone/Total spread hit to a single secondary character target.
+ * Recomputes ATK - DEF for this target, applies the element, and handles KO.
+ */
+function applySpreadHit(
+  state: GameState,
+  pending: PendingAttack,
+  targetId: string
+): GameState {
+  const target = state.cards[targetId];
+  if (!target || target.zone !== "board" || target.currentPv <= 0) return state;
+
+  const attackerOwner = getAttackerOwner(state, pending.attackerId);
+  const atkPower = pending.attackPower ?? pending.rawDamage;
+
+  // Logia intangibility blocks the spread unless the attack carries Haki/Water.
+  if (hasTrait(state, targetId, "logia") && !pending.hasHaki) return state;
+
+  let targetDefVal = getEffectiveDef(state, targetId);
+  if (pending.attackTraits.includes("piercing")) {
+    targetDefVal = Math.floor(targetDefVal / 2);
+  }
+  const dmg = Math.max(0, atkPower - targetDefVal);
+  const targetDef = getCardDef(target.defId);
+
+  let next = produce(state, (draft) => {
+    draft.cards[targetId].currentPv -= dmg;
+  });
+  next = addLog(
+    next,
+    attackerOwner,
+    `${targetDef.name} subit ${dmg} degats (Zone/Total) (PV: ${next.cards[targetId].currentPv})`
+  );
+
+  // Element status on this target (skip thunder re-propagation to avoid chains).
+  next = applyElementEffects(next, {
+    ...pending,
+    targetId,
+    targetIsCaptain: false,
+    rawDamage: dmg,
+    element: pending.element === "thunder" ? undefined : pending.element,
+  });
+
+  const after = next.cards[targetId];
+  if (after && after.zone === "board" && after.currentPv <= 0) {
+    next = addLog(next, after.owner, `${targetDef.name} est KO !`);
+    next = grantKOBonus(next, after.owner);
+    const koOwner = after.owner;
+    const koDefId = after.defId;
+    next = removeFromBoard(next, targetId);
+    const { applyOnKOEffects } = require("./passives");
+    next = applyOnKOEffects(next, koOwner, attackerOwner, koDefId);
   }
 
   return next;
@@ -625,7 +765,8 @@ function applyCharacterDamage(
   // Check KO
   if (next.cards[pending.targetId].currentPv <= 0) {
     next = addLog(next, target.owner, `${targetDef.name} est KO !`);
-    next = grantKOBonus(next, attackerOwner);
+    // +2 Vol. goes to the player who LOST the ally (Rulebook v3.1 §4), not the attacker.
+    next = grantKOBonus(next, target.owner);
     const koDefId = target.defId;
     const koOwner = target.owner;
     next = removeFromBoard(next, pending.targetId);
