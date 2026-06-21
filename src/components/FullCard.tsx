@@ -112,16 +112,16 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: 46, background: "linear-gradient(90deg,rgba(6,9,14,.55),transparent)" }} />
 
         {/* cost (top-left, gold) */}
-        <div style={{ position: "absolute", top: 2, left: 12, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 52, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1, zIndex: 5 }}>{def.cost}</div>
+        <div style={{ position: "absolute", top: 4, left: 13, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1, zIndex: 5 }}>{def.cost}</div>
 
         {/* PV (top-right, gold + heart) */}
         <div style={{ position: "absolute", top: 6, right: 12, display: "flex", alignItems: "flex-start", gap: 3, zIndex: 5 }}>
-          <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 46, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
-          <Heart size={18} color="#D8453C" style={{ marginTop: 6 }} />
+          <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
+          <Heart size={18} color="#D8453C" style={{ marginTop: 7 }} />
         </div>
 
         {/* name + quote — two parallel vertical columns (left) */}
-        <div style={{ position: "absolute", left: 6, top: "14%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4 }}>
+        <div style={{ position: "absolute", left: 6, top: "19%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4 }}>
           <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 23, letterSpacing: ".03em", color: "#fff", textShadow: SHADOW, whiteSpace: "nowrap" }}>{def.name}</span>
           {quote && <span style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, color: "rgba(255,255,255,.8)", textShadow: SHADOW, whiteSpace: "nowrap" }}>“{quote}”</span>}
         </div>
@@ -135,20 +135,22 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
           </div>
         )}
 
-        {/* DEF (right) */}
-        {isChar && (
-          <div style={{ position: "absolute", right: 12, top: "56%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
-            <ShieldOutline size={22} />
-            <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 22, color: "#fff", textShadow: SHADOW }}>{dfv}</span>
-          </div>
-        )}
-
-        {/* traits (right, below DEF) */}
-        {traits.length > 0 && (
-          <div style={{ position: "absolute", right: 10, top: "62%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
-            {traits.map((t) => (
-              <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 8px", boxShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{TRAIT_LABEL[t] ?? t}</span>
-            ))}
+        {/* DEF + traits — one right-aligned column, just above the fade */}
+        {(isChar || traits.length > 0) && (
+          <div style={{ position: "absolute", right: 11, top: "54%", maxWidth: 158, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7, zIndex: 4 }}>
+            {isChar && (
+              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                <ShieldOutline size={22} />
+                <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 22, color: "#fff", textShadow: SHADOW }}>{dfv}</span>
+              </div>
+            )}
+            {traits.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4 }}>
+                {traits.map((t) => (
+                  <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 8px", boxShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{TRAIT_LABEL[t] ?? t}</span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
