@@ -129,10 +129,10 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
           <Heart size={18} color="#D8453C" style={{ marginTop: 6 }} />
         </div>
 
-        {/* name + quote (vertical, left) */}
-        <div style={{ position: "absolute", left: 8, top: "13%", display: "flex", alignItems: "center", gap: 8, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4, maxHeight: "74%" }}>
-          <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 24, letterSpacing: ".03em", color: "#fff", textShadow: SHADOW, whiteSpace: "nowrap" }}>{def.name}</span>
-          {quote && <span style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 12, color: "rgba(255,255,255,.82)", textShadow: SHADOW, whiteSpace: "nowrap" }}>“{quote}”</span>}
+        {/* name + quote — two parallel vertical columns (left) */}
+        <div style={{ position: "absolute", left: 6, top: "14%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, writingMode: "vertical-rl", transform: "rotate(180deg)", zIndex: 4 }}>
+          <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 23, letterSpacing: ".03em", color: "#fff", textShadow: SHADOW, whiteSpace: "nowrap" }}>{def.name}</span>
+          {quote && <span style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 11, color: "rgba(255,255,255,.8)", textShadow: SHADOW, whiteSpace: "nowrap" }}>“{quote}”</span>}
         </div>
 
         {/* synergy (vertical, right) */}
@@ -146,7 +146,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* DEF (right) */}
         {isChar && (
-          <div style={{ position: "absolute", right: 12, top: "52%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
+          <div style={{ position: "absolute", right: 12, top: "48%", display: "flex", alignItems: "center", gap: 3, zIndex: 4 }}>
             <ShieldOutline size={22} />
             <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 22, color: "#fff", textShadow: SHADOW }}>{dfv}</span>
           </div>
@@ -154,7 +154,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
         {/* traits (right, below DEF) */}
         {traits.length > 0 && (
-          <div style={{ position: "absolute", right: 10, top: "59%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
+          <div style={{ position: "absolute", right: 10, top: "55%", maxWidth: 150, display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 4, zIndex: 4 }}>
             {traits.map((t) => (
               <span key={t} style={{ fontFamily: "var(--font-oswald)", fontWeight: 600, fontSize: 10, color: "#fff", background: TRAIT_COLOR[t] ?? "rgba(255,255,255,.2)", borderRadius: 99, padding: "1px 8px", boxShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{TRAIT_LABEL[t] ?? t}</span>
             ))}
@@ -162,10 +162,10 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         )}
 
         {/* role figure (left, above text box) */}
-        <div style={{ position: "absolute", left: 13, top: "55%", zIndex: 4 }}><RoleFigure size={26} /></div>
+        <div style={{ position: "absolute", left: 13, top: "51%", zIndex: 4 }}><RoleFigure size={26} /></div>
 
-        {/* bottom text box */}
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "12px 12px 8px", display: "flex", flexDirection: "column", gap: 2, background: "linear-gradient(180deg,transparent,rgba(7,9,13,.82) 22%,rgba(7,9,13,.98))", zIndex: 2 }}>
+        {/* bottom text box — inset with a margin from the card edges */}
+        <div style={{ position: "absolute", left: 8, right: 8, bottom: 8, padding: "11px 11px 9px", borderRadius: 12, display: "flex", flexDirection: "column", gap: 2, background: "linear-gradient(180deg,rgba(7,9,13,.55),rgba(7,9,13,.9) 42%,rgba(7,9,13,.96))", zIndex: 2 }}>
           {def.passive && (
             <div>
               <div style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 14, color: "#fff", letterSpacing: ".02em" }}>{def.passive.name}</div>
