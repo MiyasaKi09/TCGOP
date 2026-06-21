@@ -72,7 +72,7 @@ export default function ActionMenu({
           <span className="font-oswald font-bold text-sm" style={{ color: "#E8B84B" }}>{playerVol} Vol.</span>
         </div>
 
-        <FullCard def={def} instance={instance} state={state} width={300} actions={actions} />
+        <FullCard def={def} instance={instance} state={state} width={360} actions={actions} />
 
         {(isTapped || hasSickness || isFrozen || isImmobilized) && (
           <div className="flex gap-1.5 flex-wrap">

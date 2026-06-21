@@ -26,7 +26,7 @@ export default function CardDetail({ def, instance, state, onClose }: CardDetail
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="rounded-2xl p-4 flex gap-4 max-h-[92vh] overflow-y-auto animate-modal-enter" style={{ background: "rgba(10,14,20,.94)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.28), 0 24px 70px rgba(0,0,0,.6)" }} onClick={(e) => e.stopPropagation()}>
-        <FullCard def={def} instance={instance} state={state} width={240} />
+        <FullCard def={def} instance={instance} state={state} width={340} />
 
         <div className="flex flex-col gap-2.5 w-[240px]">
           <div className="flex justify-between items-start">

@@ -30,15 +30,6 @@ function ShieldOutline({ size = 22 }: { size?: number }) {
     </svg>
   );
 }
-function RoleFigure({ size = 26 }: { size?: number }) {
-  return (
-    <svg width={size * 0.6} height={size} viewBox="0 0 16 26" fill="#fff" opacity={0.92} style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,.9))" }}>
-      <ellipse cx="8" cy="4" rx="7" ry="2.2" />
-      <circle cx="8" cy="3.4" r="2.6" />
-      <path d="M4 9c0-2 1.8-3.4 4-3.4s4 1.4 4 3.4v13a1.4 1.4 0 0 1-1.4 1.4H5.4A1.4 1.4 0 0 1 4 22z" />
-    </svg>
-  );
-}
 
 export default function FullCard({ def, instance, state, width = 300, actions }: FullCardProps) {
   const W = 300, H = 419;
@@ -160,9 +151,6 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
             ))}
           </div>
         )}
-
-        {/* role figure (left, above text box) */}
-        <div style={{ position: "absolute", left: 13, top: "51%", zIndex: 4 }}><RoleFigure size={26} /></div>
 
         {/* bottom text box — inset with a margin from the card edges */}
         <div style={{ position: "absolute", left: 8, right: 8, bottom: 8, padding: "11px 11px 9px", borderRadius: 12, display: "flex", flexDirection: "column", gap: 2, background: "linear-gradient(180deg,rgba(7,9,13,.55),rgba(7,9,13,.9) 42%,rgba(7,9,13,.96))", zIndex: 2 }}>
