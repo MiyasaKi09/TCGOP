@@ -31,6 +31,7 @@ export default function BoardSlot({
       onClick={onClick}
       onDragOver={(e) => { if (onDrop) e.preventDefault(); }}
       onDrop={(e) => { e.preventDefault(); onDrop?.(); }}
+      data-inst={instance?.instanceId}
       className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${ring}`}
       style={
         instance

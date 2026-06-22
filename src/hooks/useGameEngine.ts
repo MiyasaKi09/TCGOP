@@ -80,8 +80,13 @@ export function useGameEngine(
   useEffect(() => {
     if (needsAutoAction === "none") return;
 
-    const delay = needsAutoAction === "auto_pass" ? 300 :
-                  needsAutoAction === "ai_defend" ? 500 : 600;
+    // Readable pause: keep the attack "in flight" (pendingAttack set) long enough for
+    // the projectile/charge VFX to read before damage resolves. Specials/captain = grander.
+    const pa = state.pendingAttack;
+    const attackPause = pa
+      ? (pa.isSpecial || pa.attackerId.startsWith("captain_") ? 1000 : 750)
+      : 0;
+    const delay = needsAutoAction === "ai_turn" ? 650 : (attackPause || 700);
 
     const timer = setTimeout(() => {
       updateState((prev) => {

@@ -235,3 +235,161 @@
 .card-action:hover {
   background: rgba(232, 184, 75, 0.16) !important;
 }
+
+/* ============================================================ */
+/* === COMBAT VFX — cinematic per-action & per-element layer === */
+/* ============================================================ */
+
+/* --- Projectile travelling attacker → target --- */
+@keyframes vfx-travel {
+  0%   { transform: translate(0,0) scale(.5); opacity: .15; }
+  14%  { opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(1); opacity: .95; }
+}
+.vfx-proj {
+  position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle, var(--c) 0%, transparent 70%);
+  box-shadow: 0 0 18px 6px var(--g);
+  animation: vfx-travel var(--dur, 560ms) cubic-bezier(.3,.5,.2,1) forwards;
+  will-change: transform, opacity;
+}
+.vfx-proj-big { width: 56px; height: 56px; margin: -28px 0 0 -28px; box-shadow: 0 0 30px 10px var(--g); }
+.vfx-glyph { font-size: 18px; line-height: 1; filter: drop-shadow(0 0 5px var(--g)); }
+.vfx-proj-big .vfx-glyph { font-size: 30px; }
+
+/* element-specific projectile flavour */
+.vfx-proj-fire    { background: radial-gradient(circle, #ffe08a 0%, var(--c) 45%, transparent 72%); }
+.vfx-proj-fire::after { content:""; position:absolute; inset:-6px; border-radius:50%;
+  background: radial-gradient(circle, rgba(255,180,80,.5), transparent 70%); filter: blur(4px); }
+.vfx-proj-water   { background: radial-gradient(circle at 50% 35%, #cfeeff 0%, var(--c) 55%, transparent 75%); border-radius: 60% 60% 65% 65% / 70% 70% 60% 60%; }
+.vfx-proj-thunder { animation-timing-function: steps(7, end); box-shadow: 0 0 22px 8px var(--g), 0 0 4px 1px #fff; }
+.vfx-proj-ice     { border-radius: 4px; transform-origin: center; }
+.vfx-proj-ice .vfx-glyph { animation: vfx-spin .6s linear; }
+.vfx-proj-sand    { filter: blur(1px); }
+.vfx-proj-sand .vfx-glyph { animation: vfx-spin .7s linear; }
+.vfx-proj-poison  { background: radial-gradient(circle, #d6f08a 0%, var(--c) 50%, transparent 74%); }
+.vfx-proj-haki    { background: radial-gradient(circle, #f0e0ff 0%, var(--c) 45%, transparent 72%); box-shadow: 0 0 24px 8px var(--g); }
+@keyframes vfx-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
+/* --- Impact burst at the target --- */
+@keyframes vfx-burst {
+  0%   { transform: scale(.2); opacity: 0; }
+  22%  { opacity: 1; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+.vfx-burst {
+  position: absolute; width: 72px; height: 72px; margin: -36px 0 0 -36px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle, var(--c) 0%, transparent 62%);
+  box-shadow: 0 0 30px 8px var(--g);
+  animation: vfx-burst .62s ease-out forwards; will-change: transform, opacity;
+}
+.vfx-burst::before {
+  content:""; position:absolute; inset:0; border-radius:50%;
+  border: 2px solid var(--c); animation: vfx-ring .62s ease-out forwards;
+}
+@keyframes vfx-ring { 0% { transform: scale(.3); opacity: .9; } 100% { transform: scale(2.2); opacity: 0; } }
+.vfx-burst-big { width: 128px; height: 128px; margin: -64px 0 0 -64px; box-shadow: 0 0 50px 14px var(--g); }
+.vfx-burst .vfx-glyph { font-size: 26px; }
+.vfx-burst-big .vfx-glyph { font-size: 46px; }
+.vfx-burst-ice { border-radius: 8px; }
+.vfx-burst-thunder { box-shadow: 0 0 36px 10px var(--g), 0 0 8px 2px #fff; }
+.vfx-burst-water::before { border-width: 3px; }
+.vfx-burst-heal { background: radial-gradient(circle, var(--c) 0%, transparent 60%); }
+
+/* --- Floating damage / heal numbers --- */
+@keyframes vfx-num {
+  0%   { transform: translate(-50%,-50%) scale(.6); opacity: 0; }
+  20%  { transform: translate(-50%,-95%) scale(1.15); opacity: 1; }
+  100% { transform: translate(-50%,-230%) scale(1); opacity: 0; }
+}
+.vfx-num {
+  position: absolute; font-family: var(--font-bangers), system-ui, sans-serif;
+  font-size: 28px; letter-spacing: .02em; white-space: nowrap;
+  text-shadow: 0 2px 7px rgba(0,0,0,.85), 0 0 10px var(--c, #000);
+  animation: vfx-num .86s cubic-bezier(.2,.7,.3,1) forwards; will-change: transform, opacity;
+}
+.vfx-num-dmg  { color: #ff6157; }
+.vfx-num-heal { color: #5BC46A; text-shadow: 0 2px 7px rgba(0,0,0,.85), 0 0 10px rgba(91,196,106,.8); }
+.vfx-num-big  { font-size: 46px; }
+
+/* --- Special / captain banner --- */
+@keyframes vfx-banner {
+  0%   { opacity: 0; transform: translate(-50%,-50%) scale(.8); }
+  16%  { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+  82%  { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%,-50%) scale(1.05); }
+}
+.vfx-banner {
+  position: fixed; left: 50%; top: 34%; text-align: center;
+  animation: vfx-banner 1.15s ease-out forwards; will-change: transform, opacity;
+}
+.vfx-banner-name {
+  display: block; font-family: var(--font-cinzel), Georgia, serif; font-weight: 800;
+  font-size: 30px; color: #fff; letter-spacing: .04em;
+  text-shadow: 0 0 20px var(--g), 0 3px 10px #000;
+}
+.vfx-banner-big .vfx-banner-name { font-size: 44px; }
+.vfx-banner-sub {
+  display: block; font-family: var(--font-oswald), sans-serif; text-transform: uppercase;
+  letter-spacing: .32em; font-size: 11px; color: var(--c); margin-top: 3px;
+  text-shadow: 0 1px 4px #000;
+}
+.vfx-banner::after {
+  content:""; display:block; height:2px; margin:6px auto 0; width:60%;
+  background: linear-gradient(90deg, transparent, var(--c), transparent);
+}
+
+/* --- Full-screen element tint flash --- */
+@keyframes vfx-tint { 0% { opacity: 0; } 28% { opacity: 1; } 100% { opacity: 0; } }
+.vfx-tint {
+  position: fixed; inset: 0;
+  background: radial-gradient(120% 90% at 50% 50%, var(--tint), transparent 72%);
+  animation: vfx-tint .6s ease-out forwards;
+}
+.vfx-tint-soft { animation-duration: .5s; }
+
+/* --- KO shatter --- */
+@keyframes vfx-ko {
+  0%   { transform: translate(-50%,-50%) scale(.4) rotate(0); opacity: 0; }
+  25%  { opacity: 1; }
+  100% { transform: translate(-50%,-50%) scale(2.5) rotate(22deg); opacity: 0; }
+}
+.vfx-ko-burst {
+  position: absolute; transform: translate(-50%,-50%); font-size: 46px; color: #fff;
+  text-shadow: 0 0 20px #ff6157, 0 0 8px #fff; animation: vfx-ko .76s ease-out forwards;
+}
+
+/* --- Token reactions (applied to the [data-inst] element) --- */
+@keyframes vfx-hit {
+  0%,100% { transform: translate(0,0); } 15% { transform: translate(-5px,2px); }
+  30% { transform: translate(5px,-2px); } 45% { transform: translate(-4px,1px); }
+  60% { transform: translate(3px,-1px); } 75% { transform: translate(-2px,0); }
+}
+.vfx-hit { animation: vfx-hit .5s ease-out; filter: brightness(1.8) saturate(1.4); z-index: 4; }
+@keyframes vfx-knockback { 0% { transform: translate(0,0); } 35% { transform: translate(0,11px) scale(.95); } 100% { transform: translate(0,0); } }
+.vfx-knockback { animation: vfx-knockback .5s ease-out; filter: brightness(1.6); z-index: 4; }
+@keyframes vfx-lunge { 0%,100% { transform: translate(0,0); } 38% { transform: translate(0,-9px) scale(1.07); } }
+.vfx-lunge { animation: vfx-lunge .38s ease-out; z-index: 5; }
+@keyframes vfx-heal-glow { 0%,100% { filter: brightness(1); } 45% { filter: brightness(1.35) drop-shadow(0 0 12px #5BC46A); } }
+.vfx-heal { animation: vfx-heal-glow .7s ease-out; }
+
+/* --- Board screen shake --- */
+@keyframes vfx-shake {
+  0%,100% { transform: translate(0,0); } 20% { transform: translate(-3px,2px); }
+  40% { transform: translate(3px,-2px); } 60% { transform: translate(-2px,1px); } 80% { transform: translate(2px,-1px); }
+}
+.vfx-shake { animation: vfx-shake .35s ease-out; }
+@keyframes vfx-shake-hard {
+  0%,100% { transform: translate(0,0); } 14% { transform: translate(-7px,4px) rotate(-.4deg); }
+  28% { transform: translate(7px,-4px) rotate(.4deg); } 44% { transform: translate(-6px,3px); }
+  60% { transform: translate(5px,-3px); } 80% { transform: translate(-3px,1px); }
+}
+.vfx-shake-hard { animation: vfx-shake-hard .52s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vfx-proj, .vfx-banner, .vfx-ko-burst { animation-duration: .25s !important; }
+  .vfx-shake, .vfx-shake-hard, .vfx-lunge, .vfx-knockback, .vfx-num { animation: none !important; }
+  .vfx-hit { animation: none !important; filter: brightness(1.6); }
+}

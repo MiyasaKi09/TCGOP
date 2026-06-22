@@ -12,6 +12,8 @@ import CaptainCard from "./CaptainCard";
 import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
 import EventConfirm from "./EventConfirm";
+import CombatVfxLayer from "./CombatVfxLayer";
+import { useCombatVfx } from "@/lib/useCombatVfx";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
 import { faction } from "@/data/cardArt";
 import { Bolt, SkullCross, Crest } from "./icons";
@@ -56,6 +58,10 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
   const player = state.players[humanPlayer];
   const opponent = state.players[aiPlayer];
   const inCounterWindow = state.pendingAttack !== null;
+
+  // Combat VFX: derive animations from state diffs (PV deltas + pendingAttack).
+  const boardRef = useRef<HTMLElement | null>(null);
+  const { events: vfxEvents, remove: removeVfx } = useCombatVfx(state, boardRef);
 
   // Deploy slots (characters and captain)
   const deploySlots = useMemo(() => {
@@ -247,6 +253,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         return (
           <div
             key={slot}
+            data-inst={`captain_${playerId}`}
             onClick={() => {
               if (isTarget) handleCaptainClick(playerId);
               else if (isPlayerSide && ps.captain.flipped && !ps.captain.tapped) {
@@ -319,6 +326,7 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
     const captainBlock = (
       <div className="flex flex-col items-center gap-1">
         <div
+          data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
           onClick={!isYou ? () => handleCaptainClick(playerId) : undefined}
           className={`rounded-xl transition-all ${captainTarget ? "ring-target cursor-pointer" : ""}`}
         >
@@ -478,8 +486,11 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         </div>
       </header>
 
+      {/* Combat VFX overlay */}
+      <CombatVfxLayer events={vfxEvents} remove={removeVfx} />
+
       {/* BOARD — two ships broadside */}
-      <main className="flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
+      <main ref={boardRef} className="flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
         <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(humanPlayer, true)}</section>
 
         <div className="shrink-0 flex flex-col items-center justify-center gap-2 px-0.5">
