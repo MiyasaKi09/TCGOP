@@ -25,6 +25,19 @@ import { addLog, getOpponent, checkWinCondition } from "./gameState";
 // Step 1: Declare Attack
 // ============================================================
 
+/** An attacker's hits can't be dodged if it has the noDodge passive or an equipped Kabuto. */
+function attackerNoDodge(state: GameState, attackerInstanceId: string): boolean {
+  const card = state.cards[attackerInstanceId];
+  if (!card) return false;
+  const def = getCardDef(card.defId);
+  if (def.passive?.effects.some((e) => e.type === "noDodge")) return true;
+  for (const objId of card.attachedObjects) {
+    const obj = state.cards[objId];
+    if (obj && getCardDef(obj.defId).id === "MG-013") return true; // Kabuto
+  }
+  return false;
+}
+
 /**
  * Declare a base attack (free, taps the attacker).
  */
@@ -125,6 +138,7 @@ export function declareBaseAttack(
     element: attackElement,
     attackTraits,
     hasHaki: hasHaki ?? false,
+    cannotBeDodged: attackerNoDodge(state, attackerInstanceId),
   };
 
   let next = produce(state, (draft) => {
@@ -197,6 +211,28 @@ export function declareSpecialAttack(
     throw new Error(`Cannot afford special (cost ${spec.cost})`);
   }
 
+  // Self-transformation special (Chopper Monster Point): no target, no pending attack.
+  if (spec.transform) {
+    const t = spec.transform;
+    let tnext = spendVolonte(state, attacker.owner, spec.cost);
+    const curAtk = getEffectiveAtk(tnext, attackerInstanceId);
+    tnext = produce(tnext, (draft) => {
+      const c = draft.cards[attackerInstanceId];
+      c.usedBaseAction = true;
+      c.usedSpecialAttack = true;
+      c.tapped = true;
+      if (spec.oncePerGame) c.usedOnceAbilities.push(spec.name);
+      c.modifiers.push({
+        id: `transform_${spec.name}_${Date.now()}`,
+        stat: "atk", amount: Math.max(0, t.atk - curAtk),
+        source: "transform", duration: "permanent",
+      });
+      // Self-KO countdown — KO'd after `turns` of the owner's turns (no Vol to opponent).
+      c.statusEffects.push({ type: "selfKO", turnsRemaining: t.turns, damagePerTurn: 0, source: spec.name });
+    });
+    return addLog(tnext, attacker.owner, `${def.name} : ${spec.name} ! ATK ${t.atk} pendant ${t.turns} tours, puis KO.`);
+  }
+
   let next = spendVolonte(state, attacker.owner, spec.cost);
 
   const baseAtk = getEffectiveAtk(state, attackerInstanceId);
@@ -248,6 +284,11 @@ export function declareSpecialAttack(
     element: spec.element,
     attackTraits,
     hasHaki: hasHaki ?? false,
+    cannotBeDodged: spec.cannotBeDodged || attackerNoDodge(state, attackerInstanceId),
+    ignoreShield: spec.ignoreShield,
+    immobilize: spec.immobilize,
+    sleep: spec.sleep,
+    pushback: spec.pushback,
   };
 
   next = produce(next, (draft) => {
@@ -444,20 +485,27 @@ export function applyCounterSurvive(
     throw new Error("Cannot afford counter");
   }
 
+  // Survive protects an ally character — once per character (Rulebook ST01 MG-026).
+  const protectedId = state.pendingAttack.targetId;
+  if (state.pendingAttack.targetIsCaptain) throw new Error("Survive only protects allies");
+  const protectedCard = state.cards[protectedId];
+  if (protectedCard?.usedOnceAbilities.includes("survived")) {
+    throw new Error("This character already survived once");
+  }
+
   let next = spendVolonte(state, owner, counterDef.cost);
 
-  // We'll mark the pending attack with a "survive" flag by setting damage to a special state
-  // Actually, we resolve this at applyDamage: if target would die and survive counter was played, set PV to 1
-  // For now, just discard the counter and track it
   next = produce(next, (draft) => {
     const p = draft.players[owner];
     p.hand = p.hand.filter((id) => id !== counterInstanceId);
     draft.cards[counterInstanceId].zone = "graveyard";
     p.graveyard.push(counterInstanceId);
-    // Mark the pending attack — target survives at 1 PV
+    // Mark the pending attack — target survives at 1 PV — and tag the character.
     if (draft.pendingAttack) {
       (draft.pendingAttack as PendingAttack & { survivePlayed?: boolean }).survivePlayed = true;
     }
+    const pc = draft.cards[protectedId];
+    if (pc) pc.usedOnceAbilities.push("survived");
   });
 
   next = addLog(next, owner, `Joue ${counterDef.name} : survie a 1 PV !`);
@@ -566,6 +614,40 @@ export function resolveAttack(state: GameState): GameState {
             next = applyAdjKO(next, adjKoOwner, getAttackerOwner(next, pending.attackerId), adjKoDefId);
           }
           break;
+        }
+      }
+    }
+  }
+
+  // On-hit control effects on the surviving primary target.
+  if (!pending.targetIsCaptain) {
+    const tgt = next.cards[pending.targetId];
+    if (tgt && tgt.zone === "board") {
+      const tdef = getCardDef(tgt.defId);
+      if (pending.immobilize) {
+        next = produce(next, (draft) => {
+          draft.cards[pending.targetId].statusEffects.push({ type: "immobilize", turnsRemaining: 2, damagePerTurn: 0, source: pending.attackerId });
+        });
+        next = addLog(next, tgt.owner, `${tdef.name} est immobilisé !`);
+      }
+      if (pending.sleep) {
+        next = produce(next, (draft) => {
+          draft.cards[pending.targetId].statusEffects.push({ type: "sleep", turnsRemaining: 3, damagePerTurn: 0, source: pending.attackerId });
+        });
+        next = addLog(next, tgt.owner, `${tdef.name} est endormi !`);
+      }
+      if (pending.pushback && !(tdef.passive?.effects.some((e) => e.type === "immuneImpact"))) {
+        const back: Record<string, string> = { V1: "A1", V2: "A2", V3: "A3" };
+        const slot = tgt.slot;
+        if (slot && back[slot] && next.players[tgt.owner].board[back[slot] as keyof typeof next.players.player1.board] === null) {
+          const dest = back[slot];
+          next = produce(next, (draft) => {
+            const p = draft.players[tgt.owner];
+            p.board[slot as keyof typeof p.board] = null;
+            p.board[dest as keyof typeof p.board] = pending.targetId;
+            draft.cards[pending.targetId].slot = dest as import("@/types").Slot;
+          });
+          next = addLog(next, tgt.owner, `${tdef.name} est repoussé en ${dest} (Impact) !`);
         }
       }
     }

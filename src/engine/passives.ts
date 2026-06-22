@@ -69,6 +69,30 @@ function resolveStartOfTurnEffect(
         });
       });
     }
+    case "startTurnBuffAlly": {
+      // Usopp Vantardise: give one ally (highest ATK, not the source) +amount this turn.
+      const { getEffectiveAtk } = require("./board");
+      const player = state.players[playerId];
+      const sourceDef = getCardDef(state.cards[sourceId].defId);
+      let bestId: string | null = null;
+      let bestAtk = -1;
+      for (const slot of ALL_SLOTS) {
+        const id = player.board[slot as Slot];
+        if (!id || id === sourceId) continue;
+        const a = getEffectiveAtk(state, id);
+        if (a > bestAtk) { bestAtk = a; bestId = id; }
+      }
+      if (!bestId) return state;
+      const targetId = bestId;
+      return produce(state, (draft) => {
+        draft.cards[targetId].modifiers.push({
+          id: `vantardise_${targetId}_${Date.now()}`,
+          stat: effect.stat, amount: effect.amount,
+          source: `passive_${sourceId}`, duration: "turn",
+        });
+        draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${sourceDef.name} : Vantardise — un allié gagne +${effect.amount} ${effect.stat.toUpperCase()} ce tour.` });
+      });
+    }
     default:
       return state;
   }
@@ -259,6 +283,11 @@ export function applyOnKOEffects(
   let next = state;
   const koPlayer = state.players[koPlayerId];
 
+  // Track game/turn KO flags (free captain flip, Flashback condition).
+  next = produce(next, (draft) => {
+    draft.players[koPlayerId].charKOedThisGame = true;
+  });
+
   // Captain onAllyKO passive
   const capDef = getCaptainDef(koPlayer.captain.defId);
   const capPassive = koPlayer.captain.flipped ? capDef.verso.passive : capDef.recto.passive;
@@ -273,6 +302,20 @@ export function applyOnKOEffects(
           message: `Passif Capitaine : +${effect.amount} Vol. (allie KO)`,
         });
       });
+    }
+    // Luffy verso: +1 ATK permanent per Mugiwara ally KO (max +3).
+    if (effect.type === "selfBuffOnAllyKO" && matchesFilter(next, koDefId, effect.filter)) {
+      const cap = next.players[koPlayerId].captain;
+      const current = cap.modifiers.filter((m) => m.source === "captainSelfKO").reduce((s, m) => s + m.amount, 0);
+      if (current < effect.max) {
+        next = produce(next, (draft) => {
+          draft.players[koPlayerId].captain.modifiers.push({
+            id: `captainSelfKO_${Date.now()}`, stat: effect.stat, amount: effect.amount,
+            source: "captainSelfKO", duration: "permanent",
+          });
+          draft.log.push({ turn: draft.turnNumber, player: koPlayerId, message: `${capDef.name} : +${effect.amount} ATK permanent (Mugiwara KO).` });
+        });
+      }
     }
   }
 

@@ -5,48 +5,48 @@ export const captainLuffy: CaptainDef = {
   name: "Monkey D. Luffy",
   faction: "pirate",
   tags: ["mugiwara"],
-  traits: ["cursed", "conqueror"],
+  traits: ["conqueror"],
 
   recto: {
     pv: 30, atk: 4, def: 2,
     passive: {
-      name: "Chapeau de paille",
-      description: "Chaque Mugiwara en jeu gagne +1 DEF. Si un allie Mugiwara est KO : +2 Vol. bonus.",
+      name: "Pavillon au Chapeau de Paille",
+      description: "Vos personnages Pirate gagnent +1 ATK.",
       effects: [
-        { type: "buffAlly", stat: "def", amount: 1, filter: { tag: "mugiwara" } },
-        { type: "onAllyKO", effect: "bonusWill", amount: 2 },
+        { type: "buffAlly", stat: "atk", amount: 1, filter: { faction: "pirate" } },
       ],
     },
-    attacks: [
-      { name: "Gomu Gomu no Pistol", cost: 3, atkBonus: 0, attackTraits: ["range"], description: "Le bras s'etire a distance." },
-      { name: "Gomu Gomu no Bazooka", cost: 6, atkBonus: 3, description: "Les deux paumes frappent." },
-    ],
+    // Le Capitaine recto ne peut pas attaquer (Rulebook v3.1 §2.1).
+    attacks: [],
   },
 
-  flipCondition: { cost: 4, autoIfAlliesLte: 2 },
+  flipCondition: { cost: 2, freeIfAllyKO: true },
 
   verso: {
     pv: 25, atk: 6, def: 2,
     passive: {
-      name: "Celui qui ne tombe pas",
-      description: "Immunite Impact. Chaque Mugiwara donne +1 ATK a Luffy. Sous 10 PV : +3 ATK permanent.",
-      effects: [{ type: "immuneImpact" }],
+      name: "Esprit de Capitaine",
+      description: "Immunisé contre l'Impact. Quand un Mugiwara allié est KO : Luffy gagne +1 ATK permanent (max +3).",
+      effects: [
+        { type: "immuneImpact" },
+        { type: "selfBuffOnAllyKO", stat: "atk", amount: 1, max: 3, filter: { tag: "mugiwara" } },
+      ],
     },
     entryEffect: {
       type: "multi",
       effects: [
-        { type: "buffAllies", stat: "atk", amount: 3, duration: "turn" },
-        { type: "draw", amount: 2 },
+        { type: "grantSelfRush" },
+        { type: "damageEnemies", amount: 3, target: "single" },
       ],
     },
-    baseAction: { name: "Gomu Gomu no Gatling", atk: 6, description: "Rafale de poings." },
+    baseAction: { name: "Gomu Gomu no Pistol", atk: 6, description: "Le poing élastique." },
     specialAttack: {
-      name: "Gear Third",
-      cost: 4,
-      atkBonus: 7,
-      attackTraits: ["zone"],
-      oncePerGame: false,
-      description: "Le poing geant.",
+      name: "Gomu Gomu no Bazooka",
+      cost: 3,
+      atkBonus: 4,
+      attackTraits: ["impact"],
+      pushback: true,
+      description: "Impact — repousse la cible d'un slot.",
     },
     traits: ["cursed", "conqueror"],
   },

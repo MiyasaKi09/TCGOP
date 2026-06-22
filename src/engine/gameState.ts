@@ -149,12 +149,51 @@ export function startTurn(state: GameState): GameState {
     draft.phase = "main";
   });
 
+  // 5b. Cursed weapon (Sandai Kitetsu): the bearer takes 1 damage at the start of the turn.
+  next = produce(next, (draft) => {
+    const player = draft.players[draft.currentPlayer];
+    for (const slot of Object.values(player.board)) {
+      if (!slot) continue;
+      const card = draft.cards[slot];
+      if (!card) continue;
+      const hasSandai = card.attachedObjects.some((id) => draft.cards[id]?.defId === "MG-010");
+      if (hasSandai) {
+        card.currentPv -= 1;
+        draft.log.push({ turn: draft.turnNumber, player: draft.currentPlayer, message: `Malédiction du Sandai Kitetsu : 1 dégât.` });
+      }
+    }
+  });
+
   // 6. Process start-of-turn effects (burn, poison, etc.)
   next = processStartOfTurnEffects(next);
 
-  // 6b. Check for KO from burn/desiccation damage
   const { removeFromBoard } = require("./board");
   const { grantKOBonus } = require("./volonte");
+
+  // 6a. Self-KO timers (Chopper Monster Point) — KO without granting the opponent +2 Vol.
+  {
+    const cp = next.currentPlayer;
+    for (const slot of Object.values(next.players[cp].board)) {
+      if (!slot) continue;
+      const card = next.cards[slot];
+      if (!card) continue;
+      const sk = card.statusEffects.find((e) => e.type === "selfKO");
+      if (!sk) continue;
+      if (sk.turnsRemaining <= 1) {
+        const d = require("./cardRegistry").getCardDef(card.defId);
+        next = addLog(next, cp, `${d.name} retombe (fin de transformation) — KO.`);
+        next = removeFromBoard(next, slot);
+      } else {
+        next = produce(next, (draft) => {
+          const c = draft.cards[slot];
+          const e = c?.statusEffects.find((x) => x.type === "selfKO");
+          if (e) e.turnsRemaining -= 1;
+        });
+      }
+    }
+  }
+
+  // 6b. Check for KO from burn/desiccation damage
   const currentPlayerId = next.currentPlayer;
   const currentPlayerState = next.players[currentPlayerId];
   for (const slot of Object.values(currentPlayerState.board)) {
@@ -247,6 +286,7 @@ function resetTurnFlags(state: GameState): GameState {
     player.hasDrawn = false;
     player.observationUsed = false;
     player.armamentUsed = false;
+    player.allyKOedThisTurn = false;
 
     // Reset character per-turn flags
     for (const slot of Object.values(player.board)) {
@@ -315,6 +355,8 @@ function processStartOfTurnEffects(state: GameState): GameState {
 
       const remaining: typeof card.statusEffects = [];
       for (const effect of card.statusEffects) {
+        // selfKO is handled by a dedicated pass in startTurn — keep it untouched here.
+        if (effect.type === "selfKO") { remaining.push(effect); continue; }
         // Apply damage
         if (effect.type === "burn" || effect.type === "poison") {
           card.currentPv -= effect.damagePerTurn;

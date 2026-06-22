@@ -253,45 +253,112 @@ function resolveEventEffect(
 
     case "damageEnemies": {
       const opponentId = getOpponent(playerId);
-      if (effect.target === "allFront") {
+      next = produce(next, (draft) => {
+        const opp = draft.players[opponentId];
+        for (const slotKey of Object.keys(opp.board) as Array<keyof typeof opp.board>) {
+          const id = opp.board[slotKey];
+          if (!id) continue;
+          if (effect.target === "allFront" && !["V1", "V2", "V3"].includes(slotKey)) continue;
+          const card = draft.cards[id];
+          if (!card) continue;
+          const cdef = getCardDef(card.defId);
+          const cursed = cdef.traits?.includes("cursed") ?? false;
+          if (effect.target === "allCursed" && !cursed) continue;
+          const dmg = cursed && effect.cursedBonus ? effect.cursedBonus : effect.amount;
+          card.currentPv -= dmg;
+        }
+      });
+      // Resolve any KOs from the blast.
+      next = sweepKOs(next, opponentId, playerId);
+      break;
+    }
+
+    case "rally": {
+      // Nakama! — all your allies +ATK/+DEF this turn and heal.
+      next = produce(next, (draft) => {
+        const p = draft.players[playerId];
+        for (const slot of Object.values(p.board)) {
+          if (!slot) continue;
+          const c = draft.cards[slot];
+          if (!c) continue;
+          const d = getCardDef(c.defId);
+          c.modifiers.push({ id: `rally_atk_${slot}_${Date.now()}`, stat: "atk", amount: effect.atk, source: cardName, duration: "turn" });
+          c.modifiers.push({ id: `rally_def_${slot}_${Date.now()}`, stat: "def", amount: effect.def, source: cardName, duration: "turn" });
+          c.currentPv = Math.min(c.currentPv + effect.heal, d.pv ?? c.currentPv);
+        }
+      });
+      break;
+    }
+
+    case "buffSingle": {
+      // Flashback — needs an own KO this game; buff one ally (strongest) permanently.
+      if (effect.requiresOwnKO && !next.players[playerId].charKOedThisGame) {
+        throw new Error("Flashback: aucun de vos personnages n'a été KO ce match");
+      }
+      const { getEffectiveAtk } = require("./board");
+      let bestId: string | null = null, best = -1;
+      for (const slot of Object.values(next.players[playerId].board)) {
+        if (!slot) continue;
+        const a = getEffectiveAtk(next, slot);
+        if (a > best) { best = a; bestId = slot; }
+      }
+      if (bestId) {
+        const targetId = bestId;
         next = produce(next, (draft) => {
-          const opp = draft.players[opponentId];
-          for (const slotKey of ["V1", "V2", "V3"] as const) {
-            const id = opp.board[slotKey];
-            if (id) {
-              draft.cards[id].currentPv -= effect.amount;
-            }
-          }
+          draft.cards[targetId].modifiers.push({ id: `flashback_${Date.now()}`, stat: effect.stat, amount: effect.amount, source: cardName, duration: effect.duration === "turn" ? "turn" : "permanent" });
         });
-      } else if (effect.target === "allCursed") {
+      }
+      break;
+    }
+
+    case "rushBuff": {
+      // Coup de Burst — one ally gains Rush + ATK this turn and can attack immediately.
+      const { getEffectiveAtk } = require("./board");
+      let bestId: string | null = null, best = -1;
+      for (const slot of Object.values(next.players[playerId].board)) {
+        if (!slot) continue;
+        const a = getEffectiveAtk(next, slot);
+        if (a > best) { best = a; bestId = slot; }
+      }
+      if (bestId) {
+        const targetId = bestId;
         next = produce(next, (draft) => {
-          const opp = draft.players[opponentId];
-          for (const slot of Object.values(opp.board)) {
-            if (slot) {
-              const card = draft.cards[slot];
-              if (card) {
-                const def = getCardDef(card.defId);
-                if (def.traits?.includes("cursed")) {
-                  card.currentPv -= effect.amount;
-                }
-              }
-            }
-          }
+          const c = draft.cards[targetId];
+          c.modifiers.push({ id: `burst_${Date.now()}`, stat: "atk", amount: effect.atk, source: cardName, duration: "turn" });
+          c.deployedTurn = -1; // clear summoning sickness so it can act now
         });
       }
       break;
     }
 
     case "dodgeAll":
-      // All characters dodge all attacks this turn — simplified as a flag
-      // For MVP, this is a no-op (would need combat phase tracking)
       break;
 
     case "custom":
-      // Custom effects handled per card ID
       break;
   }
 
+  return next;
+}
+
+/** Remove any KO'd characters of victimPlayerId after AoE/effect damage. */
+function sweepKOs(state: GameState, victimPlayerId: PlayerId, killerPlayerId: PlayerId): GameState {
+  let next = state;
+  const { removeFromBoard } = require("./board");
+  const { grantKOBonus } = require("./volonte");
+  const { applyOnKOEffects } = require("./passives");
+  for (const slot of Object.values(next.players[victimPlayerId].board)) {
+    if (!slot) continue;
+    const card = next.cards[slot];
+    if (card && card.zone === "board" && card.currentPv <= 0) {
+      const d = getCardDef(card.defId);
+      const koDefId = card.defId;
+      next = addLog(next, victimPlayerId, `${d.name} est KO !`);
+      next = grantKOBonus(next, victimPlayerId);
+      next = removeFromBoard(next, slot);
+      next = applyOnKOEffects(next, victimPlayerId, killerPlayerId, koDefId);
+    }
+  }
   return next;
 }
 
@@ -353,6 +420,32 @@ function activateShipAbility(
   }
 
   const desc = active.description.toLowerCase();
+
+  // Gaon Cannon (Thousand Sunny): 5 damage to one enemy (Portée).
+  if (def.id === "MG-021") {
+    const opponentId = getOpponent(playerId);
+    const m = active.description.match(/(\d+)/);
+    const dmg = m ? parseInt(m[1]) : 5;
+    const enemies = getBoardCharacters(next, opponentId);
+    const front = enemies.filter((c) => c.slot && ["V1", "V2", "V3"].includes(c.slot));
+    const pool = front.length ? front : enemies;
+    let targetId: string | null = null;
+    for (const c of pool) {
+      if (targetId === null || getEffectiveDef(next, c.instanceId) < getEffectiveDef(next, targetId)) targetId = c.instanceId;
+    }
+    if (targetId) {
+      const tid = targetId;
+      next = produce(next, (draft) => { draft.cards[tid].currentPv -= dmg; });
+      next = addLog(next, playerId, `${def.name} : Gaon Cannon — ${dmg} dégâts !`);
+      next = sweepKOs(next, opponentId, playerId);
+    } else {
+      next = produce(next, (draft) => { draft.players[opponentId].captain.currentPv -= dmg; });
+      next = addLog(next, playerId, `${def.name} : Gaon Cannon — ${dmg} dégâts au Capitaine !`);
+      const w = checkWinCondition(next);
+      if (w) next = produce(next, (draft) => { draft.winner = w; });
+    }
+    return next;
+  }
 
   // Damage to front line ("deg. a toute la Ligne Avant ennemie")
   if (desc.includes("deg.") && desc.includes("avant")) {
@@ -443,6 +536,37 @@ function executeSupportAction(
     draft.cards[instanceId].usedBaseAction = true;
     draft.cards[instanceId].usedSpecialAttack = true;
   });
+
+  // Scry / reorder (Nami Prévisions): reorder the top N — keep the cheapest on top.
+  if (ba.scry) {
+    next = produce(next, (draft) => {
+      const p = draft.players[playerId];
+      const n = Math.min(ba.scry!, p.deck.length);
+      const top = p.deck.slice(0, n);
+      top.sort((a, b) => getCardDef(draft.cards[a].defId).cost - getCardDef(draft.cards[b].defId).cost);
+      for (let i = 0; i < n; i++) p.deck[i] = top[i];
+    });
+    return addLog(next, playerId, `${def.name} utilise ${ba.name} : réorganise le dessus du deck.`);
+  }
+
+  // Bluff (Usopp): an enemy of DEF <= 1 loses its next action.
+  if (ba.bluff && targetInstanceId) {
+    next = produce(next, (draft) => {
+      const t = draft.cards[targetInstanceId];
+      if (t) t.statusEffects.push({ type: "loseAction", turnsRemaining: 2, damagePerTurn: 0, source: instanceId });
+    });
+    const tn = getCardDef(state.cards[targetInstanceId].defId).name;
+    return addLog(next, playerId, `${def.name} utilise ${ba.name} : ${tn} a peur et perd sa prochaine action !`);
+  }
+
+  // Buff one ally (Brook Mélodie): +N ATK this turn.
+  if (ba.buffAllyAtk && targetInstanceId) {
+    next = produce(next, (draft) => {
+      draft.cards[targetInstanceId].modifiers.push({ id: `support_${def.id}_${Date.now()}`, stat: "atk", amount: ba.buffAllyAtk!, source: `support_${def.id}`, duration: "turn" });
+    });
+    const tn = getCardDef(state.cards[targetInstanceId].defId).name;
+    return addLog(next, playerId, `${def.name} utilise ${ba.name} : ${tn} +${ba.buffAllyAtk} ATK ce tour.`);
+  }
 
   // Immobilize (Robin, Kuzan)
   if (ba.immobilize && targetInstanceId) {
@@ -645,14 +769,29 @@ export function getValidActions(
   for (const char of boardChars) {
     if (char.tapped || char.usedBaseAction) continue;
     if (hasSummoningSickness(state, char.instanceId)) continue;
-    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize" || e.type === "sleep" || e.type === "loseAction")) continue;
 
     const def = getCardDef(char.defId);
     if (!def.baseAction?.isSupport) continue;
 
     const ba = def.baseAction;
 
-    if (ba.immobilize) {
+    if (ba.scry) {
+      // No target needed (reorder your own deck top).
+      actions.push({ type: "baseSupportAction", instanceId: char.instanceId });
+    } else if (ba.bluff) {
+      // Target: an enemy of effective DEF <= 1.
+      for (const opp of getBoardCharacters(state, getOpponent(playerId))) {
+        if (getEffectiveDef(state, opp.instanceId) <= 1) {
+          actions.push({ type: "baseSupportAction", instanceId: char.instanceId, targetInstanceId: opp.instanceId });
+        }
+      }
+    } else if (ba.buffAllyAtk) {
+      // Target: any ally (including self).
+      for (const ally of boardChars) {
+        actions.push({ type: "baseSupportAction", instanceId: char.instanceId, targetInstanceId: ally.instanceId });
+      }
+    } else if (ba.immobilize) {
       // Target: any enemy character
       const oppChars = getBoardCharacters(state, getOpponent(playerId));
       for (const opp of oppChars) {
@@ -686,7 +825,7 @@ export function getValidActions(
     // Must have effective ATK > 0 to attack (includes equipment + modifiers)
     if (getEffectiveAtk(state, char.instanceId) <= 0) continue;
 
-    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize" || e.type === "sleep" || e.type === "loseAction")) continue;
 
     // Check cannotAttackFemale passive
     const cannotAttackFemale = def.passive?.effects.some(
@@ -726,12 +865,17 @@ export function getValidActions(
 
     const def = getCardDef(char.defId);
     if (!def.specialAttack) continue;
-    // Support specials (heal, buff) don't need attack targets — skip for now
-    if (def.specialAttack.isSupport) continue;
     if (def.specialAttack.oncePerGame && char.usedOnceAbilities.includes(def.specialAttack.name)) continue;
     if (!canAfford(state, playerId, def.specialAttack.cost)) continue;
+    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize" || e.type === "sleep" || e.type === "loseAction")) continue;
 
-    if (char.statusEffects.some((e) => e.type === "freeze" || e.type === "immobilize")) continue;
+    // Self-transformation special (Chopper Monster Point): target self, no enemy needed.
+    if (def.specialAttack.transform) {
+      actions.push({ type: "specialAttack", attackerInstanceId: char.instanceId, targetInstanceId: char.instanceId });
+      continue;
+    }
+    // Other support specials (heal/buff with no target) — skip offering for now.
+    if (def.specialAttack.isSupport) continue;
 
     // Check cannotAttackFemale
     const cantFemale = def.passive?.effects.some(

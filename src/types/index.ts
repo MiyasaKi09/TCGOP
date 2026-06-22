@@ -22,7 +22,7 @@ export type Trait =
   | "piercing"   // Toutes les attaques divisent DEF par 2
   | "conqueror"; // Acces au Haki du Roi (T10+)
 
-export type AttackTrait = "range" | "piercing" | "zone" | "total";
+export type AttackTrait = "range" | "piercing" | "zone" | "total" | "impact";
 
 export type HakiType = "observation" | "armament" | "king";
 
@@ -49,6 +49,14 @@ export interface BaseAction {
   healAmount?: number;
   /** Control effect: immobilize target */
   immobilize?: boolean;
+  /** This attack cannot be dodged (Observation Haki) */
+  cannotBeDodged?: boolean;
+  /** Support: look at the top N of your deck and reorder them (Nami Prévisions) */
+  scry?: number;
+  /** Support: an enemy of DEF <= 1 loses its next action (Usopp Bluff) */
+  bluff?: boolean;
+  /** Support: give one ally +N ATK this turn (Brook Mélodie) */
+  buffAllyAtk?: number;
   /** Description text */
   description?: string;
 }
@@ -68,6 +76,18 @@ export interface SpecialAttack {
   /** Is support (heal, buff) rather than damage */
   isSupport?: boolean;
   healAmount?: number;
+  /** Control: immobilize the target for 1 turn (Robin Clutch) */
+  immobilize?: boolean;
+  /** Control: put the target to sleep (loses its next 2 actions) */
+  sleep?: boolean;
+  /** This attack cannot be dodged (Observation Haki) */
+  cannotBeDodged?: boolean;
+  /** This attack bypasses the Bouclier/Shield block */
+  ignoreShield?: boolean;
+  /** Impact: knock the target back one slot (negated by immuneImpact) */
+  pushback?: boolean;
+  /** Self-transformation special (Chopper Monster Point): set stats + Rush for N turns, then self-KO */
+  transform?: { atk: number; def: number; pv: number; turns: number };
   description?: string;
 }
 
@@ -98,6 +118,9 @@ export type PassiveEffect =
   | { type: "revive"; pv: number }
   | { type: "logiaIntangibility" }
   | { type: "immuneImpact" }
+  | { type: "startTurnBuffAlly"; stat: "atk" | "def"; amount: number }
+  | { type: "noDodge" }
+  | { type: "selfBuffOnAllyKO"; stat: "atk"; amount: number; max: number; filter?: AllyFilter }
   | { type: "meleeRecoil"; amount: number }
   | { type: "costReduction"; filter?: AllyFilter; amount: number }
   | { type: "hakiCostReduction"; amount: number }
@@ -178,6 +201,8 @@ export interface CardDef {
     description: string;
     oncePerGame?: boolean;
   };
+  /** Effect when this ship is destroyed/replaced (e.g. Going Merry's funeral). */
+  shipDestroyEffect?: { healAll?: number; draw?: number; buffAtk?: number; buffDef?: number };
 
   // --- Event fields ---
   eventEffect?: EventEffect;
@@ -193,8 +218,11 @@ export type EventEffect =
   | { type: "draw"; amount: number; discard?: number }
   | { type: "healAlly"; amount: number; allAllies?: boolean }
   | { type: "buffAllies"; stat: "atk" | "def"; amount: number; filter?: AllyFilter; duration: "turn" | "permanent" }
-  | { type: "damageEnemies"; amount: number; target: "allFront" | "allCursed" | "single" }
+  | { type: "damageEnemies"; amount: number; target: "allFront" | "allCursed" | "all" | "single"; cursedBonus?: number }
   | { type: "dodgeAll" }
+  | { type: "rally"; atk: number; def: number; heal: number }
+  | { type: "buffSingle"; stat: "atk" | "def"; amount: number; duration: "turn" | "permanent"; requiresOwnKO?: boolean }
+  | { type: "rushBuff"; atk: number }
   | { type: "custom"; id: string; description: string };
 
 export type CounterEffect =
@@ -227,6 +255,8 @@ export interface CaptainDef {
     cost?: number;
     /** Auto-flip if allies count <= this */
     autoIfAlliesLte?: number;
+    /** Free flip if one of your allies was KO'd this turn (Luffy) */
+    freeIfAllyKO?: boolean;
   };
 
   verso: {
@@ -247,6 +277,7 @@ export type EntryEffect =
   | { type: "buffAllies"; stat: "atk" | "def"; amount: number; duration: "turn" }
   | { type: "draw"; amount: number }
   | { type: "damageEnemies"; amount: number; target: "allFront" | "single" }
+  | { type: "grantSelfRush" }
   | { type: "multi"; effects: EntryEffect[] }
   | { type: "custom"; id: string; description: string };
 
@@ -275,7 +306,7 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;
@@ -342,6 +373,10 @@ export interface PlayerState {
   armamentUsed: boolean;
   /** Haki du Roi used this game */
   kingUsed: boolean;
+  /** One of this player's allies was KO'd this turn (free captain flip) */
+  allyKOedThisTurn?: boolean;
+  /** One of this player's characters has been KO'd this game (Flashback) */
+  charKOedThisGame?: boolean;
 }
 
 export interface PendingAttack {
@@ -365,6 +400,10 @@ export interface PendingAttack {
   ignoreShield?: boolean;
   /** If true, Observation Haki / dodge effects cannot cancel this attack */
   cannotBeDodged?: boolean;
+  /** On-hit control effects carried from the attack */
+  immobilize?: boolean;
+  sleep?: boolean;
+  pushback?: boolean;
 }
 
 export interface LogEntry {

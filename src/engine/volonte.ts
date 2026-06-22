@@ -55,5 +55,7 @@ export function grantKOBonus(
 ): GameState {
   return produce(state, (draft) => {
     draft.players[playerId].volonte += ALLY_KO_BONUS_VOL;
+    // The player lost an ally to the opponent this turn (enables Luffy's free flip).
+    draft.players[playerId].allyKOedThisTurn = true;
   });
 }

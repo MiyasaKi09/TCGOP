@@ -1,6 +1,6 @@
 import { produce } from "immer";
 import type { GameState, PlayerId, Slot, EntryEffect } from "@/types";
-import { getCaptainDef } from "./cardRegistry";
+import { getCaptainDef, getCardDef } from "./cardRegistry";
 import { canAfford, spendVolonte } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
 import { getBoardCharacters, getEffectiveAtk, getEffectiveDef } from "./board";
@@ -17,6 +17,9 @@ export function canFlipCaptain(
 
   const def = getCaptainDef(captain.defId);
   const condition = def.flipCondition;
+
+  // Free flip if a Mugiwara ally was KO'd this turn (Luffy).
+  if (condition.freeIfAllyKO && state.players[playerId].allyKOedThisTurn) return true;
 
   // Check auto-flip condition (allies <= N)
   // Only available from turn 4+ to prevent early abuse
@@ -57,12 +60,13 @@ export function flipCaptain(
   // Determine cost
   let cost = 0;
   const allyCount = getBoardCharacters(state, playerId).length;
-  const autoFlip =
-    condition.autoIfAlliesLte !== undefined &&
-    state.turnNumber >= 4 &&
-    allyCount <= condition.autoIfAlliesLte;
+  const freeFlip =
+    (condition.freeIfAllyKO && state.players[playerId].allyKOedThisTurn) ||
+    (condition.autoIfAlliesLte !== undefined &&
+      state.turnNumber >= 4 &&
+      allyCount <= condition.autoIfAlliesLte);
 
-  if (!autoFlip) {
+  if (!freeFlip) {
     cost = condition.cost ?? 0;
     if (!canAfford(state, playerId, cost)) {
       throw new Error("Cannot afford captain flip");
@@ -150,7 +154,6 @@ function resolveEntryEffect(
 
     case "damageEnemies": {
       const opponentId = getOpponent(playerId);
-      const opponent = next.players[opponentId];
 
       if (effect.target === "allFront") {
         next = produce(next, (draft) => {
@@ -162,12 +165,43 @@ function resolveEntryEffect(
             }
           }
         });
-        next = addLog(
-          next,
-          playerId,
-          `Effet d'entree : ${effect.amount} degats a toute la Ligne Avant ennemie !`
-        );
+        next = addLog(next, playerId, `Effet d'entree : ${effect.amount} degats a toute la Ligne Avant ennemie !`);
+      } else if (effect.target === "single") {
+        // Gear 2: hit the strongest enemy front char, else any char, else the captain.
+        const enemies = getBoardCharacters(next, opponentId);
+        let targetId: string | null = null;
+        const front = enemies.filter((c) => c.slot && ["V1", "V2", "V3"].includes(c.slot));
+        const pool = front.length > 0 ? front : enemies;
+        for (const c of pool) {
+          if (targetId === null || getEffectiveAtk(next, c.instanceId) > getEffectiveAtk(next, targetId)) targetId = c.instanceId;
+        }
+        if (targetId) {
+          const tid = targetId;
+          next = produce(next, (draft) => { draft.cards[tid].currentPv -= effect.amount; });
+          const td = getCardDef(next.cards[tid].defId);
+          next = addLog(next, playerId, `Effet d'entree (Gear 2) : ${effect.amount} degats a ${td.name} !`);
+          if (next.cards[tid].currentPv <= 0) {
+            const { removeFromBoard } = require("./board");
+            const { grantKOBonus } = require("./volonte");
+            const { applyOnKOEffects } = require("./passives");
+            const koDefId = next.cards[tid].defId;
+            next = addLog(next, opponentId, `${td.name} est KO !`);
+            next = grantKOBonus(next, opponentId);
+            next = removeFromBoard(next, tid);
+            next = applyOnKOEffects(next, opponentId, playerId, koDefId);
+          }
+        } else {
+          next = produce(next, (draft) => { draft.players[opponentId].captain.currentPv -= effect.amount; });
+          next = addLog(next, playerId, `Effet d'entree (Gear 2) : ${effect.amount} degats au Capitaine !`);
+        }
       }
+      break;
+    }
+
+    case "grantSelfRush": {
+      // Clear the captain's summoning sickness so it can act the turn it flips (Gear 2).
+      next = produce(next, (draft) => { draft.players[playerId].captain.deployedTurn = -1; });
+      next = addLog(next, playerId, `Effet d'entree : Gear 2 — le Capitaine peut agir immédiatement (Rush).`);
       break;
     }
 

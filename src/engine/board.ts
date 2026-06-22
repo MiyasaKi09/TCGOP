@@ -224,6 +224,14 @@ export function deployCharacter(
     c.slot = slot;
     c.deployedTurn = draft.turnNumber;
     c.currentPv = def.pv ?? 0;
+    // Going Merry: your Mugiwara gain +1 PV at deployment.
+    if (p.activeShip) {
+      const ship = draft.cards[p.activeShip];
+      if (ship?.defId === "MG-020" && def.tags?.includes("mugiwara")) {
+        c.currentPv += 1;
+        c.modifiers.push({ id: `merry_pv_${instanceId}`, stat: "pv", amount: 1, source: "ship_MG-020", duration: "permanent" });
+      }
+    }
   });
 
   next = addLog(next, playerId, `Deploie ${def.name} en ${slot}`);
@@ -257,8 +265,14 @@ export function equipObject(
   if (targetCard.owner !== playerId) throw new Error("Not your character");
   if (targetCard.zone !== "board") throw new Error("Target not on board");
 
-  if (!canAfford(state, playerId, objDef.cost)) {
-    throw new Error(`Cannot afford ${objDef.name} (cost ${objDef.cost})`);
+  // Clima-Tact combo: costs 0 if both Usopp (MG-004) and Nami (MG-003) are in play.
+  let effectiveCost = objDef.cost;
+  if (objDef.id === "MG-012") {
+    const ids = getBoardCharacters(state, playerId).map((c) => c.defId);
+    if (ids.includes("MG-003") && ids.includes("MG-004")) effectiveCost = 0;
+  }
+  if (!canAfford(state, playerId, effectiveCost)) {
+    throw new Error(`Cannot afford ${objDef.name} (cost ${effectiveCost})`);
   }
 
   // Check equipment slot limits (simplified — 1 weapon, 1 fruit, 1 accessory)
@@ -291,7 +305,7 @@ export function equipObject(
     }
   }
 
-  let next = spendVolonte(state, playerId, objDef.cost);
+  let next = spendVolonte(state, playerId, effectiveCost);
 
   next = produce(next, (draft) => {
     const p = draft.players[playerId];
@@ -305,6 +319,11 @@ export function equipObject(
     obj.zone = "board";
     obj.slot = target.slot;
     target.attachedObjects.push(objectInstanceId);
+
+    // Wado Ichimonji: +1 DEF more when wielded by Zoro.
+    if (objDef.id === "MG-009" && targetDef.name.includes("Zoro")) {
+      target.modifiers.push({ id: `wado_def_${objectInstanceId}`, stat: "def", amount: 1, source: `equip_${objDef.id}`, duration: "permanent" });
+    }
   });
 
   next = addLog(
@@ -351,10 +370,29 @@ export function deployShip(
   next = produce(next, (draft) => {
     const p = draft.players[playerId];
 
-    // Discard previous ship if any
+    // Discard previous ship if any — may trigger its destruction effect (Going Merry).
     if (p.activeShip) {
       const oldShip = draft.cards[p.activeShip];
       if (oldShip) {
+        const oldDef = getCardDef(oldShip.defId);
+        const de = oldDef.shipDestroyEffect;
+        if (de) {
+          if (de.healAll) {
+            for (const s of Object.values(p.board)) {
+              if (!s) continue;
+              const c = draft.cards[s];
+              if (c) c.currentPv = Math.min(c.currentPv + de.healAll, getCardDef(c.defId).pv ?? c.currentPv);
+            }
+          }
+          if (de.draw && p.deck.length > 0) {
+            for (let i = 0; i < de.draw && p.deck.length > 0; i++) {
+              const id = p.deck.shift()!;
+              draft.cards[id].zone = "hand";
+              p.hand.push(id);
+            }
+          }
+          draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${oldDef.name} : Funérailles — soin et pioche.` });
+        }
         oldShip.zone = "graveyard";
         p.graveyard.push(p.activeShip);
       }
@@ -429,6 +467,21 @@ export function removeFromBoard(
 
     if (slot) {
       player.board[slot] = null;
+    }
+
+    // Vivre Card: if the KO'd bearer held one, tutor a Mugiwara (cost <= 3) to hand.
+    const hadVivre = c.attachedObjects.some((id) => draft.cards[id]?.defId === "MG-019");
+    if (hadVivre) {
+      const idx = player.deck.findIndex((id) => {
+        const d = getCardDef(draft.cards[id].defId);
+        return d.type === "character" && (d.tags?.includes("mugiwara") ?? false) && d.cost <= 3;
+      });
+      if (idx >= 0) {
+        const [tutored] = player.deck.splice(idx, 1);
+        draft.cards[tutored].zone = "hand";
+        player.hand.push(tutored);
+        draft.log.push({ turn: draft.turnNumber, player: c.owner, message: `Vivre Card : ${getCardDef(draft.cards[tutored].defId).name} rejoint la main.` });
+      }
     }
 
     // Move attached objects to graveyard
