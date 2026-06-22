@@ -5,12 +5,19 @@ import { useSearchParams } from "next/navigation";
 import Game from "@/components/Game";
 import { mugiwaraDeck, marinesDeck, baroqueDeck, redhairDeck } from "@/data/decks";
 import type { DeckDef } from "@/types";
+import type { Difficulty } from "@/engine/ai";
 
 const DECKS: Record<string, DeckDef> = {
   mugiwara: mugiwaraDeck,
   marines: marinesDeck,
   baroque: baroqueDeck,
   redhair: redhairDeck,
+};
+
+const LEVELS: Record<string, Difficulty> = {
+  beginner: "beginner",
+  intermediate: "intermediate",
+  expert: "expert",
 };
 
 function GameContent() {
@@ -22,8 +29,9 @@ function GameContent() {
   const aiDeck =
     DECKS[foeChoice] ??
     (deckChoice === "marines" ? mugiwaraDeck : marinesDeck);
+  const difficulty = LEVELS[params.get("ai") ?? "intermediate"] ?? "intermediate";
 
-  return <Game playerDeck={playerDeck} aiDeck={aiDeck} />;
+  return <Game playerDeck={playerDeck} aiDeck={aiDeck} difficulty={difficulty} />;
 }
 
 export default function GamePage() {

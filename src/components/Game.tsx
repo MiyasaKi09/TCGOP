@@ -13,7 +13,9 @@ import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
 import EventConfirm from "./EventConfirm";
 import CombatVfxLayer from "./CombatVfxLayer";
+import PlayRevealLayer from "./PlayRevealLayer";
 import { useCombatVfx } from "@/lib/useCombatVfx";
+import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
 import { faction } from "@/data/cardArt";
 import { Bolt, SkullCross, Crest } from "./icons";
@@ -23,6 +25,7 @@ initializeRegistry();
 interface GameProps {
   playerDeck: DeckDef;
   aiDeck: DeckDef;
+  difficulty?: Difficulty;
 }
 
 type UIMode =
@@ -37,9 +40,9 @@ type UIMode =
   | { type: "confirmShip"; instanceId: string }
   | { type: "selectingCaptainSlot" };
 
-export default function Game({ playerDeck, aiDeck }: GameProps) {
-  const { state, validActions, dispatch, isAiTurn, humanPlayer } =
-    useGameEngine(playerDeck, aiDeck);
+export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }: GameProps) {
+  const { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement } =
+    useGameEngine(playerDeck, aiDeck, "player1", difficulty);
   const [uiMode, setUiMode] = useState<UIMode>({ type: "idle" });
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
 
@@ -486,8 +489,9 @@ export default function Game({ playerDeck, aiDeck }: GameProps) {
         </div>
       </header>
 
-      {/* Combat VFX overlay */}
+      {/* Combat VFX + play-reveal overlays */}
       <CombatVfxLayer events={vfxEvents} remove={removeVfx} />
+      <PlayRevealLayer announcements={announcements} dismiss={dismissAnnouncement} />
 
       {/* BOARD — two ships broadside */}
       <main ref={boardRef} className="flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">

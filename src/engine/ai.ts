@@ -1,6 +1,6 @@
 import type { GameState, GameAction, PlayerId } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
-import { getValidActions } from "./turnManager";
+import { getValidActions, executeAction } from "./turnManager";
 import {
   getBoardCharacters,
   getEffectiveAtk,
@@ -9,31 +9,94 @@ import {
 } from "./board";
 import { getOpponent } from "./gameState";
 
+export type Difficulty = "beginner" | "intermediate" | "expert";
+
 /**
- * AI chooses the best action from valid actions.
- * Heuristic-based: scores each action and picks the highest.
+ * AI chooses an action. Three levels:
+ * - beginner: noisy, passive, mostly basic actions and passes on defense
+ * - intermediate: the score heuristic
+ * - expert: 1-ply lookahead over a board-evaluation function
  */
 export function aiChooseAction(
   state: GameState,
-  playerId: PlayerId
+  playerId: PlayerId,
+  difficulty: Difficulty = "intermediate"
 ): GameAction {
   const actions = getValidActions(state, playerId);
   if (actions.length === 0) return { type: "endTurn" };
   if (actions.length === 1) return actions[0];
+  if (difficulty === "beginner") return chooseBeginner(state, playerId, actions);
+  if (difficulty === "expert") return chooseExpert(state, playerId, actions);
+  return chooseByScore(state, playerId, actions, 0);
+}
 
-  // Score each action
-  let bestAction = actions[0];
+function chooseByScore(state: GameState, playerId: PlayerId, actions: GameAction[], jitter: number): GameAction {
+  let best = actions[0];
   let bestScore = -Infinity;
-
   for (const action of actions) {
-    const score = scoreAction(state, playerId, action);
-    if (score > bestScore) {
-      bestScore = score;
-      bestAction = action;
+    const score = scoreAction(state, playerId, action) + (jitter > 0 ? Math.random() * jitter : 0);
+    if (score > bestScore) { bestScore = score; best = action; }
+  }
+  return best;
+}
+
+const BASIC = new Set(["deployCharacter", "baseAttack", "moveCharacter", "endTurn", "passCounter", "playCounter", "useShield"]);
+
+function chooseBeginner(state: GameState, playerId: PlayerId, actions: GameAction[]): GameAction {
+  // Defense: usually just take the hit.
+  if (state.pendingAttack) {
+    const pass = actions.find((a) => a.type === "passCounter");
+    if (pass && Math.random() < 0.8) return pass;
+  }
+  const simple = actions.filter((a) => BASIC.has(a.type));
+  const pool = simple.length ? simple : actions;
+  // Often plays almost randomly; otherwise a very noisy heuristic.
+  if (Math.random() < 0.35) return pool[Math.floor(Math.random() * pool.length)];
+  return chooseByScore(state, playerId, pool, 7);
+}
+
+function chooseExpert(state: GameState, playerId: PlayerId, actions: GameAction[]): GameAction {
+  let best = actions[0];
+  let bestVal = -Infinity;
+  for (const action of actions) {
+    let val: number;
+    try {
+      const ns = executeAction(state, action);
+      val = evaluateState(ns, playerId);
+    } catch {
+      val = -Infinity;
     }
+    // small heuristic tie-break; rank ending the turn last.
+    val += scoreAction(state, playerId, action) * 0.02;
+    if (action.type === "endTurn") val -= 6;
+    if (val > bestVal) { bestVal = val; best = action; }
+  }
+  return best;
+}
+
+/** Static evaluation of a position from playerId's point of view (higher = better). */
+export function evaluateState(state: GameState, playerId: PlayerId): number {
+  const opp = getOpponent(playerId);
+  const me = state.players[playerId];
+  const op = state.players[opp];
+  let v = 0;
+
+  v += (me.captain.currentPv - op.captain.currentPv) * 1.5;
+  if (op.captain.currentPv <= 0) v += 1000;
+  if (me.captain.currentPv <= 0) v -= 1000;
+  if (state.winner === playerId) v += 1000;
+  if (state.winner === opp) v -= 1000;
+
+  for (const c of getBoardCharacters(state, playerId)) {
+    v += getEffectiveAtk(state, c.instanceId) + getEffectiveDef(state, c.instanceId) + c.currentPv * 0.5 + 3;
+  }
+  for (const c of getBoardCharacters(state, opp)) {
+    v -= getEffectiveAtk(state, c.instanceId) + getEffectiveDef(state, c.instanceId) + c.currentPv * 0.5 + 3;
   }
 
-  return bestAction;
+  v += me.hand.length * 1.4 - op.hand.length * 1.0;
+  v += me.volonte * 0.4;
+  return v;
 }
 
 function scoreAction(
