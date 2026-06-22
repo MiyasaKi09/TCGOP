@@ -177,9 +177,12 @@ function resolveEntryEffect(
         }
         if (targetId) {
           const tid = targetId;
-          next = produce(next, (draft) => { draft.cards[tid].currentPv -= effect.amount; });
+          const cursed = getCardDef(next.cards[tid].defId).traits?.includes("cursed") ?? false;
+          let dmg = cursed && effect.cursedBonus ? effect.cursedBonus : effect.amount;
+          if (effect.sand) dmg += 1; // permanent PV loss approximated
+          next = produce(next, (draft) => { draft.cards[tid].currentPv -= dmg; });
           const td = getCardDef(next.cards[tid].defId);
-          next = addLog(next, playerId, `Effet d'entree (Gear 2) : ${effect.amount} degats a ${td.name} !`);
+          next = addLog(next, playerId, `Effet d'entree : ${dmg} degats a ${td.name} !`);
           if (next.cards[tid].currentPv <= 0) {
             const { removeFromBoard } = require("./board");
             const { grantKOBonus } = require("./volonte");
@@ -202,6 +205,52 @@ function resolveEntryEffect(
       // Clear the captain's summoning sickness so it can act the turn it flips (Gear 2).
       next = produce(next, (draft) => { draft.players[playerId].captain.deployedTurn = -1; });
       next = addLog(next, playerId, `Effet d'entree : Gear 2 — le Capitaine peut agir immédiatement (Rush).`);
+      break;
+    }
+
+    case "haoshoku": {
+      // Shanks: immobilize enemies of DEF <= N and give all enemies -ATK this turn.
+      const opponentId = getOpponent(playerId);
+      next = produce(next, (draft) => {
+        for (const slot of Object.values(draft.players[opponentId].board)) {
+          if (!slot) continue;
+          const c = draft.cards[slot];
+          if (!c) continue;
+          const d = getCardDef(c.defId);
+          c.modifiers.push({ id: `haoshoku_${slot}_${Date.now()}`, stat: "atk", amount: -effect.debuffAtk, source: "entry_haoshoku", duration: "turn" });
+          const ctrlImmune = d.passive?.effects.some((e) => e.type === "immuneControl") ?? false;
+          if (!ctrlImmune && (d.def ?? 0) <= effect.immobilizeMaxDef) {
+            c.statusEffects.push({ type: "immobilize", turnsRemaining: 2, damagePerTurn: 0, source: "haoshoku" });
+          }
+        }
+      });
+      next = addLog(next, playerId, `Effet d'entree : Haoshoku Haki !`);
+      break;
+    }
+
+    case "debuffAllEnemies": {
+      const opponentId = getOpponent(playerId);
+      next = produce(next, (draft) => {
+        for (const slot of Object.values(draft.players[opponentId].board)) {
+          if (!slot) continue;
+          const c = draft.cards[slot];
+          if (c) c.modifiers.push({ id: `entrydebuff_${slot}_${Date.now()}`, stat: "atk", amount: -effect.atk, source: "entry", duration: "turn" });
+        }
+      });
+      break;
+    }
+
+    case "discardOpponentRandom": {
+      const opponentId = getOpponent(playerId);
+      next = produce(next, (draft) => {
+        for (let i = 0; i < effect.amount && draft.players[opponentId].hand.length > 0; i++) {
+          const h = draft.players[opponentId].hand;
+          const idx = Math.floor(Math.random() * h.length);
+          const [d2] = h.splice(idx, 1);
+          draft.cards[d2].zone = "graveyard";
+          draft.players[opponentId].graveyard.push(d2);
+        }
+      });
       break;
     }
 

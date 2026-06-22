@@ -96,6 +96,42 @@ export const marinesDeck: DeckDef = {
   ],
 };
 
+export const baroqueDeck: DeckDef = {
+  name: "Baroque Works - Utopia",
+  captainId: "CAP-CROCODILE",
+  cards: [
+    { cardId: "BW-001", count: 3 }, { cardId: "BW-002", count: 2 }, { cardId: "BW-003", count: 2 },
+    { cardId: "BW-004", count: 2 }, { cardId: "BW-005", count: 2 }, { cardId: "BW-006", count: 2 },
+    { cardId: "BW-007", count: 2 }, { cardId: "BW-008", count: 2 }, { cardId: "BW-009", count: 2 },
+    { cardId: "BW-010", count: 2 },
+    { cardId: "BW-013", count: 2 }, { cardId: "BW-014", count: 1 },
+    { cardId: "BW-011", count: 1 }, { cardId: "BW-012", count: 1 },
+    { cardId: "BW-015", count: 1 }, { cardId: "BW-016", count: 1 }, { cardId: "BW-017", count: 1 },
+    { cardId: "BW-018", count: 2 }, { cardId: "BW-019", count: 2 },
+    { cardId: "BW-020", count: 2 }, { cardId: "BW-021", count: 2 }, { cardId: "BW-022", count: 2 },
+    { cardId: "BW-023", count: 2 }, { cardId: "BW-024", count: 2 }, { cardId: "BW-027", count: 2 },
+    { cardId: "BW-028", count: 1 },
+    { cardId: "BW-025", count: 2 }, { cardId: "BW-026", count: 2 },
+  ],
+};
+
+export const redhairDeck: DeckDef = {
+  name: "Red Hair - L'Empereur",
+  captainId: "CAP-SHANKS",
+  cards: [
+    { cardId: "RH-001", count: 2 }, { cardId: "RH-002", count: 3 }, { cardId: "RH-003", count: 2 },
+    { cardId: "RH-004", count: 3 }, { cardId: "RH-005", count: 2 }, { cardId: "RH-006", count: 3 },
+    { cardId: "RH-007", count: 2 }, { cardId: "RH-008", count: 2 }, { cardId: "RH-009", count: 2 },
+    { cardId: "RH-010", count: 1 }, { cardId: "RH-011", count: 1 }, { cardId: "RH-012", count: 1 },
+    { cardId: "RH-013", count: 1 },
+    { cardId: "RH-014", count: 1 }, { cardId: "RH-015", count: 1 }, { cardId: "RH-016", count: 1 },
+    { cardId: "RH-017", count: 2 }, { cardId: "RH-018", count: 2 },
+    { cardId: "RH-019", count: 2 }, { cardId: "RH-020", count: 2 }, { cardId: "RH-021", count: 2 },
+    { cardId: "RH-022", count: 3 }, { cardId: "RH-023", count: 2 }, { cardId: "RH-026", count: 2 },
+    { cardId: "RH-024", count: 2 }, { cardId: "RH-025", count: 2 }, { cardId: "RH-027", count: 1 },
+  ],
+};
+
 // Verify deck sizes
 function verifyDeck(deck: DeckDef): void {
   const total = deck.cards.reduce((sum, e) => sum + e.count, 0);
@@ -106,3 +142,5 @@ function verifyDeck(deck: DeckDef): void {
 
 verifyDeck(mugiwaraDeck);
 verifyDeck(marinesDeck);
+verifyDeck(baroqueDeck);
+verifyDeck(redhairDeck);

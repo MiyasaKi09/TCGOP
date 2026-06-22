@@ -38,6 +38,35 @@ function attackerNoDodge(state: GameState, attackerInstanceId: string): boolean 
   return false;
 }
 
+/** Whether the attacker strips Furtif from targets it hits (Smoker). */
+function attackerStripsStealth(state: GameState, attackerInstanceId: string): boolean {
+  const card = state.cards[attackerInstanceId];
+  if (!card) return false;
+  return getCardDef(card.defId).passive?.effects.some((e) => e.type === "stripStealthOnAttack") ?? false;
+}
+
+/** Conditional ATK bonus from a special when the target matches a trait/faction. */
+function conditionalAtkBonus(
+  state: GameState,
+  cond: { vsTrait?: import("@/types").Trait; vsFaction?: import("@/types").Faction; amount: number } | undefined,
+  targetInstanceId: string,
+  targetIsCaptain: boolean,
+  defenderId: PlayerId
+): number {
+  if (!cond) return 0;
+  if (targetIsCaptain) {
+    const capDef = getCaptainDef(state.players[defenderId].captain.defId);
+    if (cond.vsFaction && capDef.faction === cond.vsFaction) return cond.amount;
+    return 0;
+  }
+  const tc = state.cards[targetInstanceId];
+  if (!tc) return 0;
+  const tdef = getCardDef(tc.defId);
+  if (cond.vsFaction && tdef.faction === cond.vsFaction) return cond.amount;
+  if (cond.vsTrait && hasTrait(state, targetInstanceId, cond.vsTrait)) return cond.amount;
+  return 0;
+}
+
 /**
  * Declare a base attack (free, taps the attacker).
  */
@@ -126,7 +155,8 @@ export function declareBaseAttack(
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
     state.turnNumber >= 7 ||
-    attackElement === "water";
+    attackElement === "water" ||
+    !!state.players[attacker.owner].hakiThisTurn;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -139,6 +169,8 @@ export function declareBaseAttack(
     attackTraits,
     hasHaki: hasHaki ?? false,
     cannotBeDodged: attackerNoDodge(state, attackerInstanceId),
+    immobilize: baseAction?.immobilize,
+    stripStealth: baseAction?.stripStealth || attackerStripsStealth(state, attackerInstanceId),
   };
 
   let next = produce(state, (draft) => {
@@ -236,9 +268,11 @@ export function declareSpecialAttack(
   let next = spendVolonte(state, attacker.owner, spec.cost);
 
   const baseAtk = getEffectiveAtk(state, attackerInstanceId);
-  const totalAtk = baseAtk + spec.atkBonus;
+  const condBonus = conditionalAtkBonus(state, spec.conditionalBonus, targetInstanceId, targetIsCaptain, getOpponent(attacker.owner));
+  const totalAtk = baseAtk + spec.atkBonus + condBonus;
 
-  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+  // "Touche 2 cibles" is approximated as a small Zone (target + adjacents).
+  const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? []), ...(spec.twoTargets && !(spec.attackTraits ?? []).includes("zone") ? ["zone" as AttackTrait] : [])];
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
@@ -272,7 +306,8 @@ export function declareSpecialAttack(
   const hasHaki =
     (def.naturalHaki && def.naturalHaki.length > 0) ||
     state.turnNumber >= 7 ||
-    spec.element === "water";
+    spec.element === "water" ||
+    !!state.players[attacker.owner].hakiThisTurn;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -288,7 +323,8 @@ export function declareSpecialAttack(
     ignoreShield: spec.ignoreShield,
     immobilize: spec.immobilize,
     sleep: spec.sleep,
-    pushback: spec.pushback,
+    pushback: spec.pushback || (spec.pushbackSlots ?? 0) > 0,
+    stripStealth: spec.stripStealth || attackerStripsStealth(state, attackerInstanceId),
   };
 
   next = produce(next, (draft) => {
@@ -352,6 +388,8 @@ export function declareFruitSpecialAttack(
   const baseAtk = getEffectiveAtk(next, attackerInstanceId);
   const totalAtk = baseAtk + spec.atkBonus;
 
+  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+
   let targetDefVal = 0;
   if (targetIsCaptain) {
     const opponent = getOpponent(attacker.owner);
@@ -364,11 +402,13 @@ export function declareFruitSpecialAttack(
   } else {
     targetDefVal = getEffectiveDef(next, targetInstanceId);
   }
+  if (attackTraits.includes("piercing")) targetDefVal = Math.floor(targetDefVal / 2);
+  if (spec.ignoreDef) targetDefVal = Math.max(0, targetDefVal - spec.ignoreDef);
 
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) || next.turnNumber >= 7;
+    (def.naturalHaki && def.naturalHaki.length > 0) || next.turnNumber >= 7 || spec.element === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -377,9 +417,14 @@ export function declareFruitSpecialAttack(
     isSpecial: true,
     rawDamage,
     attackPower: totalAtk,
-    element: undefined,
-    attackTraits: [],
+    element: spec.element,
+    attackTraits,
     hasHaki: hasHaki ?? false,
+    ignoreShield: spec.ignoreShield,
+    immobilize: spec.immobilize,
+    sleep: spec.sleep,
+    pushback: spec.pushback,
+    stripStealth: spec.stripStealth,
   };
 
   next = produce(next, (draft) => {
@@ -464,6 +509,43 @@ export function applyCounterReduce(
 }
 
 /**
+ * Cancel an incoming attack (Manteau de Justice, « Faible », Mirage, Sacrifice du Bras).
+ */
+export function applyCounterCancel(state: GameState, counterInstanceId: string): GameState {
+  if (!state.pendingAttack) throw new Error("No pending attack");
+  const counter = state.cards[counterInstanceId];
+  if (!counter) throw new Error("Counter not found");
+  const cdef = getCardDef(counter.defId);
+  const ce = cdef.counterEffect;
+  if (!ce || (ce.type !== "cancel" && ce.type !== "untargetable")) throw new Error("Not a cancel counter");
+  const owner = counter.owner;
+  if (!canAfford(state, owner, cdef.cost)) throw new Error("Cannot afford counter");
+  if (ce.type === "cancel" && ce.maxAttackerAtk !== undefined) {
+    if ((state.pendingAttack.attackPower ?? 0) > ce.maxAttackerAtk) {
+      throw new Error("Attacker is too strong for this counter");
+    }
+  }
+
+  let next = spendVolonte(state, owner, cdef.cost);
+  next = produce(next, (draft) => {
+    const p = draft.players[owner];
+    p.hand = p.hand.filter((id) => id !== counterInstanceId);
+    draft.cards[counterInstanceId].zone = "graveyard";
+    p.graveyard.push(counterInstanceId);
+    draft.pendingAttack = null;
+  });
+  next = addLog(next, owner, `${cdef.name} : attaque annulée !`);
+
+  if (ce.type === "cancel" && ce.selfCaptainDamage) {
+    next = produce(next, (draft) => { draft.players[owner].captain.currentPv -= ce.selfCaptainDamage!; });
+    next = addLog(next, owner, `${cdef.name} : votre Capitaine subit ${ce.selfCaptainDamage} dégâts.`);
+    const w = checkWinCondition(next);
+    if (w) next = produce(next, (draft) => { draft.winner = w; });
+  }
+  return next;
+}
+
+/**
  * Apply a "survive" counter (ally survives at 1 PV).
  * This is resolved at damage application time — mark the counter as played.
  */
@@ -537,8 +619,11 @@ export function applyShieldBlock(
   if (pending.attackTraits.includes("piercing")) {
     blockerDef = Math.floor(blockerDef / 2);
   }
+  // Some blockers reduce the damage further (Sentomaru, Garp).
+  const blockDef = getCardDef(blocker.defId);
+  const blockRed = blockDef.passive?.effects.reduce((s, e) => s + (e.type === "blockDamageReduction" ? e.amount : 0), 0) ?? 0;
   const atkPower = pending.attackPower ?? pending.rawDamage;
-  const newRaw = Math.max(0, atkPower - blockerDef);
+  const newRaw = Math.max(0, atkPower - blockerDef - blockRed);
 
   let next = produce(state, (draft) => {
     draft.cards[blockerInstanceId].tapped = true;
@@ -570,6 +655,28 @@ export function resolveAttack(state: GameState): GameState {
     next = applyCaptainDamage(next, pending);
   } else {
     next = applyCharacterDamage(next, pending);
+  }
+
+  // Thorns / melee recoil (Miss Doublefinger): a melee attacker takes damage.
+  if (!pending.targetIsCaptain && !pending.attackTraits.includes("range")) {
+    const tdefPre = getCardDef(state.cards[pending.targetId].defId);
+    const recoil = tdefPre.passive?.effects.reduce((s, e) => s + (e.type === "meleeRecoil" ? e.amount : 0), 0) ?? 0;
+    const atkId = pending.attackerId;
+    if (recoil > 0 && !atkId.startsWith("captain_") && next.cards[atkId]?.zone === "board") {
+      const atkDef = getCardDef(next.cards[atkId].defId);
+      if (!(atkDef.traits?.includes("range"))) {
+        next = produce(next, (d) => { d.cards[atkId].currentPv -= recoil; });
+        next = addLog(next, next.cards[atkId].owner, `${atkDef.name} subit ${recoil} dégâts (Épines) !`);
+        if (next.cards[atkId].currentPv <= 0) {
+          const koDefId = next.cards[atkId].defId; const koOwner = next.cards[atkId].owner;
+          next = addLog(next, koOwner, `${atkDef.name} est KO (Épines) !`);
+          next = grantKOBonus(next, koOwner);
+          next = removeFromBoard(next, atkId);
+          const { applyOnKOEffects } = require("./passives");
+          next = applyOnKOEffects(next, koOwner, getOpponent(koOwner), koDefId);
+        }
+      }
+    }
   }
 
   // Apply element effects
@@ -624,17 +731,23 @@ export function resolveAttack(state: GameState): GameState {
     const tgt = next.cards[pending.targetId];
     if (tgt && tgt.zone === "board") {
       const tdef = getCardDef(tgt.defId);
-      if (pending.immobilize) {
+      const ctrlImmune = tdef.passive?.effects.some((e) => e.type === "immuneControl") ?? false;
+      if (pending.immobilize && !ctrlImmune) {
         next = produce(next, (draft) => {
           draft.cards[pending.targetId].statusEffects.push({ type: "immobilize", turnsRemaining: 2, damagePerTurn: 0, source: pending.attackerId });
         });
         next = addLog(next, tgt.owner, `${tdef.name} est immobilisé !`);
       }
-      if (pending.sleep) {
+      if (pending.sleep && !ctrlImmune) {
         next = produce(next, (draft) => {
           draft.cards[pending.targetId].statusEffects.push({ type: "sleep", turnsRemaining: 3, damagePerTurn: 0, source: pending.attackerId });
         });
         next = addLog(next, tgt.owner, `${tdef.name} est endormi !`);
+      }
+      if (pending.stripStealth) {
+        next = produce(next, (draft) => {
+          draft.cards[pending.targetId].statusEffects.push({ type: "noStealth", turnsRemaining: 2, damagePerTurn: 0, source: pending.attackerId });
+        });
       }
       if (pending.pushback && !(tdef.passive?.effects.some((e) => e.type === "immuneImpact"))) {
         const back: Record<string, string> = { V1: "A1", V2: "A2", V3: "A3" };
@@ -846,6 +959,17 @@ function applyCharacterDamage(
 
   // Check KO
   if (next.cards[pending.targetId].currentPv <= 0) {
+    // Chapeau de Paille (RH-014): the first time the bearer would be KO'd, it survives at 1 PV.
+    const bearer = next.cards[pending.targetId];
+    const strawhat = bearer.attachedObjects.find((id) => next.cards[id]?.defId === "RH-014");
+    if (strawhat && !bearer.usedOnceAbilities.includes("strawhat")) {
+      next = produce(next, (draft) => {
+        const b = draft.cards[pending.targetId];
+        b.currentPv = 1;
+        b.usedOnceAbilities.push("strawhat");
+      });
+      return addLog(next, target.owner, `${targetDef.name} survit grâce au Chapeau de Paille (1 PV) !`);
+    }
     next = addLog(next, target.owner, `${targetDef.name} est KO !`);
     // +2 Vol. goes to the player who LOST the ally (Rulebook v3.1 §4), not the attacker.
     next = grantKOBonus(next, target.owner);
@@ -1015,6 +1139,11 @@ export function getEligibleCounters(
   return player.hand.filter((id) => {
     const card = state.cards[id];
     const def = getCardDef(card.defId);
-    return def.type === "counter" && canAfford(state, playerId, def.cost);
+    if (def.type !== "counter" || !canAfford(state, playerId, def.cost)) return false;
+    const ce = def.counterEffect;
+    if (ce?.type === "cancel" && ce.maxAttackerAtk !== undefined) {
+      return (state.pendingAttack?.attackPower ?? 0) <= ce.maxAttackerAtk;
+    }
+    return true;
   });
 }

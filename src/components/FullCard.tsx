@@ -174,7 +174,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
             <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, lineHeight: 1.2, color: "rgba(255,255,255,.82)" }}>
               {def.type === "object" && <>{def.bonusAtk ? `+${def.bonusAtk} ATK ` : ""}{def.bonusDef ? `+${def.bonusDef} DEF ` : ""}{def.equipEffect ?? ""}</>}
               {def.type === "ship" && <>{def.shipPassive}{def.shipActive ? ` — ${def.shipActive.name} (${def.shipActive.cost}V)` : ""}</>}
-              {def.type === "counter" && def.counterEffect && (def.counterEffect.type === "survive" ? def.counterEffect.description : `Réduit ${def.counterEffect.amount} dégâts.`)}
+              {def.type === "counter" && def.counterEffect && (def.counterEffect.type === "reduceDamage" ? `Réduit ${def.counterEffect.amount} dégâts.` : def.counterEffect.description)}
               {def.type === "event" && def.eventEffect && describeEvent(def.eventEffect)}
             </div>
           )}

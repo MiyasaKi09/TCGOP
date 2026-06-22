@@ -180,6 +180,43 @@ export function hasSummoningSickness(
   return false;
 }
 
+/** Effective deploy cost after costReduction passives (Sengoku) and ship reductions (min 1). */
+export function deployCost(
+  state: GameState,
+  playerId: PlayerId,
+  def: import("@/types").CardDef
+): number {
+  let cost = def.cost;
+  const player = state.players[playerId];
+  const matches = (f?: { faction?: string; tag?: string; trait?: string }) => {
+    if (!f) return true;
+    if (f.faction && def.faction !== f.faction) return false;
+    if (f.tag && !(def.tags?.includes(f.tag))) return false;
+    if (f.trait && !(def.traits?.includes(f.trait as Trait))) return false;
+    return true;
+  };
+  for (const slot of ALL_SLOTS) {
+    const id = player.board[slot];
+    if (!id) continue;
+    const d = getCardDef(state.cards[id].defId);
+    for (const e of d.passive?.effects ?? []) {
+      if (e.type === "costReduction" && matches(e.filter)) cost -= e.amount;
+    }
+  }
+  if (player.activeShip) {
+    const sd = getCardDef(state.cards[player.activeShip].defId);
+    const sp = (sd.shipPassive ?? "").toLowerCase();
+    if ((sp.includes("cout") || sp.includes("coût")) && sp.includes("-1")) {
+      const factionOk =
+        (sp.includes("marine") && def.faction === "marine") ||
+        (sp.includes("mugiwara") && (def.tags?.includes("mugiwara") ?? false)) ||
+        (!sp.includes("marine") && !sp.includes("mugiwara"));
+      if (factionOk) cost -= 1;
+    }
+  }
+  return Math.max(1, cost);
+}
+
 // ============================================================
 // Mutations
 // ============================================================
@@ -205,11 +242,12 @@ export function deployCharacter(
   const player = state.players[playerId];
   if (player.board[slot] !== null) throw new Error(`Slot ${slot} is occupied`);
 
-  if (!canAfford(state, playerId, def.cost)) {
-    throw new Error(`Cannot afford ${def.name} (cost ${def.cost})`);
+  const cost = deployCost(state, playerId, def);
+  if (!canAfford(state, playerId, cost)) {
+    throw new Error(`Cannot afford ${def.name} (cost ${cost})`);
   }
 
-  let next = spendVolonte(state, playerId, def.cost);
+  let next = spendVolonte(state, playerId, cost);
 
   next = produce(next, (draft) => {
     const p = draft.players[playerId];
@@ -224,21 +262,63 @@ export function deployCharacter(
     c.slot = slot;
     c.deployedTurn = draft.turnNumber;
     c.currentPv = def.pv ?? 0;
-    // Going Merry: your Mugiwara gain +1 PV at deployment.
+
+    // At-deploy ship buffs (Going Merry +1 PV, Navire de Guerre +1 DEF, etc.).
     if (p.activeShip) {
-      const ship = draft.cards[p.activeShip];
-      if (ship?.defId === "MG-020" && def.tags?.includes("mugiwara")) {
-        c.currentPv += 1;
-        c.modifiers.push({ id: `merry_pv_${instanceId}`, stat: "pv", amount: 1, source: "ship_MG-020", duration: "permanent" });
+      const sd = getCardDef(draft.cards[p.activeShip].defId);
+      const sp = (sd.shipPassive ?? "").toLowerCase();
+      if (sp.includes("deploiement") || sp.includes("déploiement")) {
+        const factionOk =
+          (sp.includes("mugiwara") && (def.tags?.includes("mugiwara") ?? false)) ||
+          (sp.includes("marine") && def.faction === "marine") ||
+          (!sp.includes("mugiwara") && !sp.includes("marine"));
+        if (factionOk) {
+          const pv = sp.match(/\+(\d+)\s*pv/);
+          const dfb = sp.match(/\+(\d+)\s*def/);
+          if (pv) { c.currentPv += parseInt(pv[1]); c.modifiers.push({ id: `shipdep_pv_${instanceId}`, stat: "pv", amount: parseInt(pv[1]), source: `ship_${sd.id}`, duration: "permanent" }); }
+          if (dfb) { c.modifiers.push({ id: `shipdep_def_${instanceId}`, stat: "def", amount: parseInt(dfb[1]), source: `ship_${sd.id}`, duration: "permanent" }); }
+        }
       }
     }
   });
 
   next = addLog(next, playerId, `Deploie ${def.name} en ${slot}`);
 
+  // Mr. 2 (Bon Clay): copy the ATK of one of your other characters on deploy.
+  if (def.passive?.effects.some((e) => e.type === "copyAtkOnDeploy")) {
+    let bestAtk = def.atk ?? 0;
+    for (const s of ALL_SLOTS) {
+      const oid = next.players[playerId].board[s];
+      if (!oid || oid === instanceId) continue;
+      bestAtk = Math.max(bestAtk, getEffectiveAtk(next, oid));
+    }
+    const delta = bestAtk - (def.atk ?? 0);
+    if (delta > 0) {
+      next = produce(next, (d) => {
+        d.cards[instanceId].modifiers.push({ id: `manemane_${instanceId}`, stat: "atk", amount: delta, source: `passive_${instanceId}`, duration: "permanent" });
+      });
+    }
+  }
+
+  // Miss All Sunday (Robin): opponent discards a random card on entry.
+  if (def.passive?.effects.some((e) => e.type === "entryDiscardRandom")) {
+    const opp = getOpponent(playerId);
+    if (next.players[opp].hand.length > 0) {
+      next = produce(next, (d) => {
+        const h = d.players[opp].hand;
+        const i = Math.floor(Math.random() * h.length);
+        const [disc] = h.splice(i, 1);
+        d.cards[disc].zone = "graveyard";
+        d.players[opp].graveyard.push(disc);
+        d.log.push({ turn: d.turnNumber, player: playerId, message: `${def.name} : l'adversaire défausse une carte.` });
+      });
+    }
+  }
+
   // Recalculate passive buffs (new character on board may trigger synergies, captain buffs)
-  const { recalculatePassiveBuffs } = require("./passives");
+  const { recalculatePassiveBuffs, applyEnemyDebuffAuras } = require("./passives");
   next = recalculatePassiveBuffs(next, playerId);
+  next = applyEnemyDebuffAuras(next);
 
   return next;
 }
@@ -291,6 +371,8 @@ export function equipObject(
     if (objDef.subtype === "weapon") {
       if (passiveEffects.some((e) => e.type === "threeWeaponSlots")) {
         maxSlots = 3;
+      } else if (passiveEffects.some((e) => e.type === "twoWeaponSlots")) {
+        maxSlots = 2;
       }
     }
     if (objDef.subtype === "accessory") {
@@ -320,9 +402,16 @@ export function equipObject(
     obj.slot = target.slot;
     target.attachedObjects.push(objectInstanceId);
 
-    // Wado Ichimonji: +1 DEF more when wielded by Zoro.
-    if (objDef.id === "MG-009" && targetDef.name.includes("Zoro")) {
-      target.modifiers.push({ id: `wado_def_${objectInstanceId}`, stat: "def", amount: 1, source: `equip_${objDef.id}`, duration: "permanent" });
+    // Signature-weapon bonuses when wielded by the matching character.
+    const wielderBonus: Record<string, { name: string; stat: "atk" | "def"; amount: number }> = {
+      "MG-009": { name: "Zoro", stat: "def", amount: 1 },        // Wado Ichimonji
+      "MR-013": { name: "Tashigi", stat: "atk", amount: 1 },     // Shigure
+      "RH-011": { name: "Ben Beckman", stat: "atk", amount: 1 }, // Fusil de Beckman
+      "RH-013": { name: "Yasopp", stat: "atk", amount: 1 },      // Fusil de Yasopp
+    };
+    const wb = wielderBonus[objDef.id];
+    if (wb && targetDef.name.includes(wb.name)) {
+      target.modifiers.push({ id: `wield_${objectInstanceId}`, stat: wb.stat, amount: wb.amount, source: `equip_${objDef.id}`, duration: "permanent" });
     }
   });
 
@@ -391,7 +480,21 @@ export function deployShip(
               p.hand.push(id);
             }
           }
-          draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${oldDef.name} : Funérailles — soin et pioche.` });
+          if (de.deployToken) {
+            const empty = ALL_SLOTS.find((s) => p.board[s] === null);
+            if (empty) {
+              const { generateInstanceId } = require("./utils");
+              const tdef = getCardDef(de.deployToken);
+              const tid = generateInstanceId(de.deployToken);
+              draft.cards[tid] = {
+                instanceId: tid, defId: de.deployToken, owner: playerId, zone: "board", slot: empty, tapped: false,
+                currentPv: tdef.pv ?? 1, attachedObjects: [], modifiers: [], statusEffects: [],
+                deployedTurn: draft.turnNumber, usedBaseAction: false, usedSpecialAttack: false, usedOnceAbilities: [],
+              };
+              p.board[empty] = tid;
+            }
+          }
+          draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${oldDef.name} : effet de destruction.` });
         }
         oldShip.zone = "graveyard";
         p.graveyard.push(p.activeShip);
@@ -561,14 +664,13 @@ export function getValidTargets(
     );
   }
 
-  // Apply Stealth filter
-  const hasNonStealth = targetable.some(
-    (c) => !hasTrait(state, c.instanceId, "stealth")
-  );
+  // Apply Stealth filter (a unit stripped of Furtif this turn counts as non-stealth)
+  const isStealthed = (c: CardInstance) =>
+    hasTrait(state, c.instanceId, "stealth") &&
+    !c.statusEffects.some((e) => e.type === "noStealth");
+  const hasNonStealth = targetable.some((c) => !isStealthed(c));
   if (hasNonStealth) {
-    targetable = targetable.filter(
-      (c) => !hasTrait(state, c.instanceId, "stealth")
-    );
+    targetable = targetable.filter((c) => !isStealthed(c));
   }
 
   // Can target captain?

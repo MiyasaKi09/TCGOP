@@ -254,6 +254,55 @@ export function recalculatePassiveBuffs(
   });
 }
 
+/**
+ * Recompute enemy-debuff auras (Shanks "adjacent enemies -2 ATK", Goldenweek/Howling Gab
+ * "one enemy -N"). Approximations: adjacent → enemy front row; one → strongest enemy.
+ */
+export function applyEnemyDebuffAuras(state: GameState): GameState {
+  return produce(state, (draft) => {
+    const players: PlayerId[] = ["player1", "player2"];
+    for (const pid of players) {
+      for (const slot of ALL_SLOTS) {
+        const id = draft.players[pid].board[slot as Slot];
+        if (id) draft.cards[id].modifiers = draft.cards[id].modifiers.filter((m) => m.source !== "debuffAura");
+      }
+    }
+    for (const pid of players) {
+      const opp: PlayerId = pid === "player1" ? "player2" : "player1";
+      const sources: PassiveEffect[][] = [];
+      for (const slot of ALL_SLOTS) {
+        const id = draft.players[pid].board[slot as Slot];
+        if (id) sources.push(getCardDef(draft.cards[id].defId).passive?.effects ?? []);
+      }
+      const cap = draft.players[pid].captain;
+      const cd = getCaptainDef(cap.defId);
+      sources.push((cap.flipped ? cd.verso.passive : cd.recto.passive).effects);
+
+      let adj = 0, one = 0;
+      for (const effs of sources) for (const e of effs) {
+        if (e.type === "debuffAdjacentEnemies") adj += e.amount;
+        if (e.type === "debuffOneEnemy") one = Math.max(one, e.amount);
+      }
+      if (adj > 0) {
+        for (const s of ["V1", "V2", "V3"] as Slot[]) {
+          const id = draft.players[opp].board[s];
+          if (id) draft.cards[id].modifiers.push({ id: `debuffAura_adj_${id}`, stat: "atk", amount: -adj, source: "debuffAura", duration: "permanent" });
+        }
+      }
+      if (one > 0) {
+        let best: string | null = null, bestAtk = -1;
+        for (const slot of ALL_SLOTS) {
+          const id = draft.players[opp].board[slot as Slot];
+          if (!id) continue;
+          const a = getCardDef(draft.cards[id].defId).atk ?? 0;
+          if (a > bestAtk) { bestAtk = a; best = id; }
+        }
+        if (best) draft.cards[best].modifiers.push({ id: `debuffAura_one_${best}`, stat: "atk", amount: -one, source: "debuffAura", duration: "permanent" });
+      }
+    }
+  });
+}
+
 function matchesFilter(
   draft: GameState,
   defId: string,
@@ -315,6 +364,43 @@ export function applyOnKOEffects(
           });
           draft.log.push({ turn: draft.turnNumber, player: koPlayerId, message: `${capDef.name} : +${effect.amount} ATK permanent (Mugiwara KO).` });
         });
+      }
+    }
+  }
+
+  // Banish-on-KO (Akainu Justice Implacable): the killer's flipped captain banishes the victim.
+  const killer = next.players[killerPlayerId].captain;
+  const killerDef = getCaptainDef(killer.defId);
+  const killerPassive = killer.flipped ? killerDef.verso.passive : killerDef.recto.passive;
+  if (killer.flipped && killerPassive.effects.some((e) => e.type === "banishOnKO")) {
+    next = produce(next, (draft) => {
+      const gy = draft.players[koPlayerId].graveyard;
+      for (let i = gy.length - 1; i >= 0; i--) {
+        if (draft.cards[gy[i]].defId === koDefId) {
+          draft.cards[gy[i]].zone = "banished";
+          gy.splice(i, 1);
+          break;
+        }
+      }
+      draft.log.push({ turn: draft.turnNumber, player: killerPlayerId, message: `${getCardDef(koDefId).name} est banni (Justice Implacable) !` });
+    });
+  }
+
+  // Explode-on-KO (Mr. 5): the KO'd unit deals damage to an enemy.
+  const koDefStatic = getCardDef(koDefId);
+  const explode = koDefStatic.passive?.effects.reduce((s, e) => s + (e.type === "explodeOnKO" ? e.amount : 0), 0) ?? 0;
+  if (explode > 0) {
+    const enemies = getBoardCharacters(next, killerPlayerId);
+    if (enemies.length > 0) {
+      const target = enemies.reduce((a, b) => (b.currentPv < a.currentPv ? b : a));
+      const tid = target.instanceId;
+      next = produce(next, (d) => { d.cards[tid].currentPv -= explode; });
+      next = addLog(next, koPlayerId, `Corps Explosif : ${explode} dégâts à ${getCardDef(target.defId).name} !`);
+      if (next.cards[tid] && next.cards[tid].currentPv <= 0) {
+        const { removeFromBoard } = require("./board");
+        const exDef = next.cards[tid].defId; const exOwner = next.cards[tid].owner;
+        next = addLog(next, exOwner, `${getCardDef(exDef).name} est KO !`);
+        next = removeFromBoard(next, tid);
       }
     }
   }

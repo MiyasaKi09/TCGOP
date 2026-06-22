@@ -51,6 +51,8 @@ export interface BaseAction {
   immobilize?: boolean;
   /** This attack cannot be dodged (Observation Haki) */
   cannotBeDodged?: boolean;
+  /** The attack strips Furtif/Stealth from the target this turn */
+  stripStealth?: boolean;
   /** Support: look at the top N of your deck and reorder them (Nami Prévisions) */
   scry?: number;
   /** Support: an enemy of DEF <= 1 loses its next action (Usopp Bluff) */
@@ -86,6 +88,18 @@ export interface SpecialAttack {
   ignoreShield?: boolean;
   /** Impact: knock the target back one slot (negated by immuneImpact) */
   pushback?: boolean;
+  /** Impact variant: knock the target back N slots */
+  pushbackSlots?: number;
+  /** The attack strips Furtif/Stealth from the target this turn */
+  stripStealth?: boolean;
+  /** Conditional ATK bonus when the target matches a trait/faction */
+  conditionalBonus?: { vsTrait?: Trait; vsFaction?: Faction; amount: number };
+  /** Sand: the target loses N permanent PV (in addition to the damage) */
+  permanentPvLoss?: number;
+  /** The attack also hits a second target (approximated as a small Zone) */
+  twoTargets?: boolean;
+  /** The target can no longer be healed (desiccation) */
+  noHeal?: boolean;
   /** Self-transformation special (Chopper Monster Point): set stats + Rush for N turns, then self-KO */
   transform?: { atk: number; def: number; pv: number; turns: number };
   description?: string;
@@ -120,6 +134,19 @@ export type PassiveEffect =
   | { type: "immuneImpact" }
   | { type: "startTurnBuffAlly"; stat: "atk" | "def"; amount: number }
   | { type: "noDodge" }
+  | { type: "blockDamageReduction"; amount: number }
+  | { type: "stripStealthOnAttack" }
+  | { type: "debuffAdjacentEnemies"; amount: number }
+  | { type: "debuffOneEnemy"; amount: number }
+  | { type: "banishOnKO" }
+  | { type: "explodeOnKO"; amount: number }
+  | { type: "copyAtkOnDeploy" }
+  | { type: "entryDiscardRandom" }
+  | { type: "immuneControl" }
+  | { type: "endTurnDesiccation"; amount: number }
+  | { type: "twoWeaponSlots" }
+  | { type: "attacksIgnoreShield" }
+  | { type: "grantObservationAll" }
   | { type: "selfBuffOnAllyKO"; stat: "atk"; amount: number; max: number; filter?: AllyFilter }
   | { type: "meleeRecoil"; amount: number }
   | { type: "costReduction"; filter?: AllyFilter; amount: number }
@@ -141,6 +168,8 @@ export interface CardDef {
   faction: Faction;
   rarity: "C" | "U" | "R" | "SR" | "L" | "CAP";
   set: string;
+  /** Token bodies (jeton Marine, agent, Bananawani…) deployed by effects, not in the deck. */
+  isToken?: boolean;
 
   // --- Character fields ---
   atk?: number;
@@ -188,7 +217,11 @@ export interface CardDef {
       atkBonus?: number;
       defBonus?: number;
       passiveDescription?: string;
-      specialAttack?: { name: string; cost: number; atkBonus: number; description: string; oncePerGame?: boolean };
+      specialAttack?: {
+        name: string; cost: number; atkBonus: number; description: string; oncePerGame?: boolean;
+        attackTraits?: AttackTrait[]; element?: Element; ignoreDef?: number;
+        immobilize?: boolean; sleep?: boolean; pushback?: boolean; ignoreShield?: boolean; stripStealth?: boolean;
+      };
     };
   };
   /** Is this fruit awakened? (runtime, set on CardInstance not CardDef) */
@@ -202,7 +235,7 @@ export interface CardDef {
     oncePerGame?: boolean;
   };
   /** Effect when this ship is destroyed/replaced (e.g. Going Merry's funeral). */
-  shipDestroyEffect?: { healAll?: number; draw?: number; buffAtk?: number; buffDef?: number };
+  shipDestroyEffect?: { healAll?: number; draw?: number; buffAtk?: number; buffDef?: number; deployToken?: string };
 
   // --- Event fields ---
   eventEffect?: EventEffect;
@@ -218,16 +251,23 @@ export type EventEffect =
   | { type: "draw"; amount: number; discard?: number }
   | { type: "healAlly"; amount: number; allAllies?: boolean }
   | { type: "buffAllies"; stat: "atk" | "def"; amount: number; filter?: AllyFilter; duration: "turn" | "permanent" }
-  | { type: "damageEnemies"; amount: number; target: "allFront" | "allCursed" | "all" | "single"; cursedBonus?: number }
+  | { type: "damageEnemies"; amount: number; target: "allFront" | "allCursed" | "all" | "single"; cursedBonus?: number; sand?: boolean; destroyShips?: boolean }
   | { type: "dodgeAll" }
   | { type: "rally"; atk: number; def: number; heal: number }
   | { type: "buffSingle"; stat: "atk" | "def"; amount: number; duration: "turn" | "permanent"; requiresOwnKO?: boolean }
   | { type: "rushBuff"; atk: number }
+  | { type: "tutor"; filterTag?: string; maxCost?: number }
+  | { type: "deployTokens"; tokenId: string; count: number }
+  | { type: "healAllBuff"; heal: number; atk: number }
+  | { type: "debuffAllEnemies"; atk: number; immobilizeMaxDef?: number }
+  | { type: "grantHakiAll"; atk?: number }
   | { type: "custom"; id: string; description: string };
 
 export type CounterEffect =
   | { type: "survive"; description: string }
-  | { type: "reduceDamage"; amount: number; captainBonus?: number };
+  | { type: "reduceDamage"; amount: number; captainBonus?: number }
+  | { type: "cancel"; description: string; maxAttackerAtk?: number; selfCaptainDamage?: number; once?: boolean }
+  | { type: "untargetable"; description: string };
 
 // --- Captain Definition ---
 
@@ -257,6 +297,12 @@ export interface CaptainDef {
     autoIfAlliesLte?: number;
     /** Free flip if one of your allies was KO'd this turn (Luffy) */
     freeIfAllyKO?: boolean;
+    /** Free flip if an enemy Cursed unit is in play (Akainu) */
+    freeIfEnemyCursed?: boolean;
+    /** Free flip if you control >= N characters (Crocodile) */
+    freeIfAlliesGte?: number;
+    /** Free flip on turn >= N (Shanks) */
+    freeIfTurnGte?: number;
   };
 
   verso: {
@@ -276,8 +322,11 @@ export interface CaptainDef {
 export type EntryEffect =
   | { type: "buffAllies"; stat: "atk" | "def"; amount: number; duration: "turn" }
   | { type: "draw"; amount: number }
-  | { type: "damageEnemies"; amount: number; target: "allFront" | "single" }
+  | { type: "damageEnemies"; amount: number; target: "allFront" | "single"; cursedBonus?: number; sand?: boolean }
   | { type: "grantSelfRush" }
+  | { type: "haoshoku"; immobilizeMaxDef: number; debuffAtk: number }
+  | { type: "debuffAllEnemies"; atk: number }
+  | { type: "discardOpponentRandom"; amount: number }
   | { type: "multi"; effects: EntryEffect[] }
   | { type: "custom"; id: string; description: string };
 
@@ -306,7 +355,7 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;
@@ -377,6 +426,8 @@ export interface PlayerState {
   allyKOedThisTurn?: boolean;
   /** One of this player's characters has been KO'd this game (Flashback) */
   charKOedThisGame?: boolean;
+  /** This player's attacks pierce Logia this turn (granted Haki this turn) */
+  hakiThisTurn?: boolean;
 }
 
 export interface PendingAttack {
@@ -404,6 +455,8 @@ export interface PendingAttack {
   immobilize?: boolean;
   sleep?: boolean;
   pushback?: boolean;
+  pushbackSlots?: number;
+  stripStealth?: boolean;
 }
 
 export interface LogEntry {

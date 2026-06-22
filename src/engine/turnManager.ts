@@ -21,6 +21,7 @@ import {
   hasTrait,
   getEffectiveAtk,
   getEffectiveDef,
+  deployCost,
 } from "./board";
 import {
   declareBaseAttack,
@@ -29,6 +30,7 @@ import {
   resolveAttack,
   applyCounterReduce,
   applyCounterSurvive,
+  applyCounterCancel,
   applyShieldBlock,
   getEligibleCounters,
 } from "./combat";
@@ -264,12 +266,94 @@ function resolveEventEffect(
           const cdef = getCardDef(card.defId);
           const cursed = cdef.traits?.includes("cursed") ?? false;
           if (effect.target === "allCursed" && !cursed) continue;
-          const dmg = cursed && effect.cursedBonus ? effect.cursedBonus : effect.amount;
+          let dmg = cursed && effect.cursedBonus ? effect.cursedBonus : effect.amount;
+          if (effect.sand) dmg += 1; // permanent PV loss approximated
           card.currentPv -= dmg;
         }
+        // Buster Call also destroys enemy ships.
+        if (effect.destroyShips && opp.activeShip) {
+          draft.cards[opp.activeShip].zone = "graveyard";
+          opp.graveyard.push(opp.activeShip);
+          opp.activeShip = null;
+        }
       });
-      // Resolve any KOs from the blast.
       next = sweepKOs(next, opponentId, playerId);
+      break;
+    }
+
+    case "tutor": {
+      next = produce(next, (draft) => {
+        const p = draft.players[playerId];
+        const idx = p.deck.findIndex((id) => {
+          const d = getCardDef(draft.cards[id].defId);
+          if (d.type !== "character") return false;
+          if (effect.filterTag && !(d.tags?.includes(effect.filterTag))) return false;
+          if (effect.maxCost !== undefined && d.cost > effect.maxCost) return false;
+          return true;
+        });
+        if (idx >= 0) {
+          const [tut] = p.deck.splice(idx, 1);
+          draft.cards[tut].zone = "hand";
+          p.hand.push(tut);
+        }
+      });
+      next = addLog(next, playerId, `${cardName} : recherche un personnage.`);
+      break;
+    }
+
+    case "deployTokens": {
+      for (let i = 0; i < effect.count; i++) next = deployToken(next, playerId, effect.tokenId);
+      break;
+    }
+
+    case "healAllBuff": {
+      next = produce(next, (draft) => {
+        const p = draft.players[playerId];
+        for (const slot of Object.values(p.board)) {
+          if (!slot) continue;
+          const c = draft.cards[slot];
+          if (!c || c.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) continue;
+          const d = getCardDef(c.defId);
+          c.currentPv = Math.min(c.currentPv + effect.heal, d.pv ?? c.currentPv);
+          c.modifiers.push({ id: `feast_${slot}_${Date.now()}`, stat: "atk", amount: effect.atk, source: cardName, duration: "turn" });
+        }
+      });
+      break;
+    }
+
+    case "debuffAllEnemies": {
+      const opponentId = getOpponent(playerId);
+      next = produce(next, (draft) => {
+        const opp = draft.players[opponentId];
+        for (const slot of Object.values(opp.board)) {
+          if (!slot) continue;
+          const c = draft.cards[slot];
+          if (!c) continue;
+          c.modifiers.push({ id: `intim_${slot}_${Date.now()}`, stat: "atk", amount: -effect.atk, source: cardName, duration: "turn" });
+          if (effect.immobilizeMaxDef !== undefined) {
+            const d = getCardDef(c.defId);
+            const ctrlImmune = d.passive?.effects.some((e) => e.type === "immuneControl") ?? false;
+            if (!ctrlImmune && getEffectiveDef(next, slot) <= effect.immobilizeMaxDef) {
+              c.statusEffects.push({ type: "immobilize", turnsRemaining: 2, damagePerTurn: 0, source: cardName });
+            }
+          }
+        }
+      });
+      break;
+    }
+
+    case "grantHakiAll": {
+      next = produce(next, (draft) => {
+        draft.players[playerId].hakiThisTurn = true;
+        if (effect.atk) {
+          for (const slot of Object.values(draft.players[playerId].board)) {
+            if (!slot) continue;
+            const c = draft.cards[slot];
+            if (c) c.modifiers.push({ id: `haki_${slot}_${Date.now()}`, stat: "atk", amount: effect.atk, source: cardName, duration: "turn" });
+          }
+        }
+      });
+      next = addLog(next, playerId, `${cardName} : Haki de l'Armement ce tour !`);
       break;
     }
 
@@ -334,11 +418,60 @@ function resolveEventEffect(
     case "dodgeAll":
       break;
 
-    case "custom":
+    case "custom": {
+      const opponentId = getOpponent(playerId);
+      if (effect.id === "execute3" || effect.id === "execute4") {
+        const maxPv = effect.id === "execute4" ? 4 : 3;
+        const enemies = getBoardCharacters(next, opponentId).filter((c) => c.currentPv <= maxPv);
+        if (enemies.length > 0) {
+          const target = enemies.reduce((a, b) => (b.currentPv > a.currentPv ? b : a));
+          const koDefId = target.defId;
+          next = addLog(next, opponentId, `${getCardDef(koDefId).name} est exécuté !`);
+          next = produce(next, (d) => { d.cards[target.instanceId].currentPv = 0; });
+          next = sweepKOs(next, opponentId, playerId);
+        }
+      } else if (effect.id === "coordinatedFire") {
+        const marines = getBoardCharacters(next, playerId).filter((c) => getCardDef(c.defId).tags?.includes("marine")).length;
+        if (marines > 0) {
+          const enemies = getBoardCharacters(next, opponentId);
+          if (enemies.length > 0) {
+            const target = enemies.reduce((a, b) => (getEffectiveDef(next, b.instanceId) < getEffectiveDef(next, a.instanceId) ? b : a));
+            const tid = target.instanceId;
+            next = produce(next, (d) => { d.cards[tid].currentPv -= marines; });
+            next = addLog(next, playerId, `Ordre de Tir : ${marines} dégâts coordonnés.`);
+            next = sweepKOs(next, opponentId, playerId);
+          }
+        }
+      } else {
+        // embargo / betrayal / noHeal2 — flavour-logged (not yet enforced).
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
+      }
       break;
+    }
   }
 
   return next;
+}
+
+/** Deploy a token body into an empty slot (no cost, no summoning use). */
+function deployToken(state: GameState, playerId: PlayerId, tokenDefId: string, slot?: Slot): GameState {
+  const empties = getEmptySlots(state, playerId);
+  const target = slot && state.players[playerId].board[slot] === null ? slot : empties[0];
+  if (!target) return state;
+  const { generateInstanceId } = require("./utils");
+  const def = getCardDef(tokenDefId);
+  const id = generateInstanceId(tokenDefId);
+  let next = produce(state, (draft) => {
+    draft.cards[id] = {
+      instanceId: id, defId: tokenDefId, owner: playerId, zone: "board", slot: target, tapped: false,
+      currentPv: def.pv ?? 1, attachedObjects: [], modifiers: [], statusEffects: [],
+      deployedTurn: draft.turnNumber, usedBaseAction: false, usedSpecialAttack: false, usedOnceAbilities: [],
+    };
+    draft.players[playerId].board[target] = id;
+    draft.log.push({ turn: draft.turnNumber, player: playerId, message: `Déploie ${def.name}.` });
+  });
+  const { recalculatePassiveBuffs } = require("./passives");
+  return recalculatePassiveBuffs(next, playerId);
 }
 
 /** Remove any KO'd characters of victimPlayerId after AoE/effect damage. */
@@ -381,6 +514,9 @@ function playCounter(state: GameState, instanceId: string): GameState {
       return applyCounterReduce(state, instanceId);
     case "survive":
       return applyCounterSurvive(state, instanceId);
+    case "cancel":
+    case "untargetable":
+      return applyCounterCancel(state, instanceId);
     default:
       return state;
   }
@@ -445,6 +581,26 @@ function activateShipAbility(
       if (w) next = produce(next, (draft) => { draft.winner = w; });
     }
     return next;
+  }
+
+  // Navire Baroque Works: deploy two agent tokens.
+  if (def.id === "BW-019") {
+    next = deployToken(next, playerId, "TOK-AGENT");
+    next = deployToken(next, playerId, "TOK-AGENT");
+    return addLog(next, playerId, `${def.name} : deux agents déployés !`);
+  }
+
+  // Red Force: this turn your characters gain Haki + ATK.
+  if (def.id === "RH-017") {
+    next = produce(next, (draft) => {
+      draft.players[playerId].hakiThisTurn = true;
+      for (const slot of Object.values(draft.players[playerId].board)) {
+        if (!slot) continue;
+        const c = draft.cards[slot];
+        if (c) c.modifiers.push({ id: `redforce_${slot}_${Date.now()}`, stat: "atk", amount: 1, source: `ship_${def.id}`, duration: "turn" });
+      }
+    });
+    return addLog(next, playerId, `${def.name} : Haki d'Armement et +1 ATK ce tour !`);
   }
 
   // Damage to front line ("deg. a toute la Ligne Avant ennemie")
@@ -724,7 +880,7 @@ export function getValidActions(
   for (const cardId of player.hand) {
     const card = state.cards[cardId];
     const def = getCardDef(card.defId);
-    if (def.type === "character" && canAfford(state, playerId, def.cost)) {
+    if (def.type === "character" && canAfford(state, playerId, deployCost(state, playerId, def))) {
       for (const slot of emptySlots) {
         actions.push({ type: "deployCharacter", instanceId: cardId, slot });
       }

@@ -79,9 +79,9 @@ export default function EventConfirm({ def, playerVol, onConfirm, onCancel }: Ev
           <div className="p-3 rounded-xl bg-blue-950/15 border border-blue-800/20 mb-3">
             <div className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mb-1">Effet Counter</div>
             <div className="text-sm text-gray-200">
-              {def.counterEffect.type === "survive"
-                ? def.counterEffect.description
-                : `Reduit les degats de ${def.counterEffect.amount}.`}
+              {def.counterEffect.type === "reduceDamage"
+                ? `Reduit les degats de ${def.counterEffect.amount}.`
+                : def.counterEffect.description}
             </div>
           </div>
         )}

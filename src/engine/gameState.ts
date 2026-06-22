@@ -213,12 +213,13 @@ export function startTurn(state: GameState): GameState {
   }
 
   // 7. Apply start-of-turn passives (healAdjacent, etc.)
-  const { applyStartOfTurnPassives, recalculatePassiveBuffs } = require("./passives");
+  const { applyStartOfTurnPassives, recalculatePassiveBuffs, applyEnemyDebuffAuras } = require("./passives");
   next = applyStartOfTurnPassives(next, next.currentPlayer);
 
   // 8. Recalculate passive buffs (captain, synergies)
   next = recalculatePassiveBuffs(next, next.currentPlayer);
   next = recalculatePassiveBuffs(next, getOpponent(next.currentPlayer));
+  next = applyEnemyDebuffAuras(next);
 
   return next;
 }
@@ -227,7 +228,30 @@ export function startTurn(state: GameState): GameState {
  * End the current player's turn. Switch to opponent.
  */
 export function endTurn(state: GameState): GameState {
-  return produce(state, (draft) => {
+  // End-of-turn desiccation (Crocodile): an injured enemy loses 1 permanent PV.
+  let pre = state;
+  {
+    const me = pre.currentPlayer;
+    const opp = getOpponent(me);
+    const capDef = getCaptainDef(pre.players[me].captain.defId);
+    const capPassive = pre.players[me].captain.flipped ? capDef.verso.passive : capDef.recto.passive;
+    const desicc = capPassive.effects.reduce((s, e) => s + (e.type === "endTurnDesiccation" ? e.amount : 0), 0);
+    if (pre.players[me].captain.flipped && desicc > 0) {
+      const injured = Object.values(pre.players[opp].board)
+        .filter((id): id is string => !!id)
+        .map((id) => pre.cards[id])
+        .filter((c) => c && getCardDef(c.defId).pv !== undefined && c.currentPv < (getCardDef(c.defId).pv ?? 0));
+      if (injured.length > 0) {
+        const tid = injured[0].instanceId;
+        pre = produce(pre, (d) => { d.cards[tid].currentPv -= desicc; });
+        pre = addLog(pre, me, `Déshydratation : ${getCardDef(pre.cards[tid].defId).name} perd ${desicc} PV permanent.`);
+        const { removeFromBoard } = require("./board");
+        if (pre.cards[tid].currentPv <= 0) pre = removeFromBoard(pre, tid);
+      }
+    }
+  }
+
+  return produce(pre, (draft) => {
     draft.phase = "end";
 
     // Hand limit: discard the excess at end of turn (Rulebook v3.1 §10).
@@ -287,6 +311,7 @@ function resetTurnFlags(state: GameState): GameState {
     player.observationUsed = false;
     player.armamentUsed = false;
     player.allyKOedThisTurn = false;
+    player.hakiThisTurn = false;
 
     // Reset character per-turn flags
     for (const slot of Object.values(player.board)) {

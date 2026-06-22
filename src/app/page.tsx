@@ -4,7 +4,39 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Hat, Anchor, SkullCross } from "@/components/icons";
 
-type DeckChoice = "mugiwara" | "marines";
+type DeckChoice = "mugiwara" | "marines" | "baroque" | "redhair";
+
+interface DeckMeta {
+  label: string;
+  captain: string;
+  tagline: string;
+  accent: string;
+  frame: string;
+  crest: "hat" | "anchor";
+}
+
+const DECKS: Record<DeckChoice, DeckMeta> = {
+  mugiwara: {
+    label: "Mugiwara", captain: "Monkey D. Luffy", tagline: "Diversité, synergies, sustain",
+    accent: "#E8954A", crest: "hat",
+    frame: "radial-gradient(120% 80% at 50% 6%, #3a2614 0%, #20140b 60%, #140c07 100%)",
+  },
+  marines: {
+    label: "Marine", captain: "Akainu (Sakazuki)", tagline: "Anti-Fruit, Logia, contrôle",
+    accent: "#5B97D8", crest: "anchor",
+    frame: "radial-gradient(120% 80% at 50% 6%, #163049 0%, #0c1a29 60%, #08121c 100%)",
+  },
+  baroque: {
+    label: "Baroque Works", captain: "Crocodile (Mr. 0)", tagline: "Agro/tempo, poison & sable",
+    accent: "#C9A24B", crest: "hat",
+    frame: "radial-gradient(120% 80% at 50% 6%, #2c2618 0%, #1a160d 60%, #100d07 100%)",
+  },
+  redhair: {
+    label: "Red Hair", captain: "Shanks (Akagami)", tagline: "Puissance, Haki, intimidation",
+    accent: "#D2473C", crest: "hat",
+    frame: "radial-gradient(120% 80% at 50% 6%, #3a1614 0%, #200c0b 60%, #140707 100%)",
+  },
+};
 
 export default function Home() {
   const [selected, setSelected] = useState<DeckChoice | null>(null);
@@ -17,27 +49,25 @@ export default function Home() {
 
   const crew = (key: DeckChoice) => {
     const on = selected === key;
-    const isPirate = key === "mugiwara";
-    const accent = isPirate ? "#E8954A" : "#5B97D8";
-    const frame = isPirate
-      ? "radial-gradient(120% 80% at 50% 6%, #3a2614 0%, #20140b 60%, #140c07 100%)"
-      : "radial-gradient(120% 80% at 50% 6%, #163049 0%, #0c1a29 60%, #08121c 100%)";
+    const m = DECKS[key];
+    const Crest = m.crest === "hat" ? Hat : Anchor;
     return (
       <button
+        key={key}
         onClick={() => setSelected(key)}
-        className="relative w-64 rounded-2xl p-6 text-left overflow-hidden transition-all duration-200 hover:-translate-y-1"
-        style={{ background: frame, boxShadow: on ? `inset 0 0 0 2px ${accent}, 0 0 28px 2px ${accent}55` : "inset 0 0 0 1px rgba(255,255,255,.08), 0 10px 26px rgba(0,0,0,.5)" }}
+        className="relative w-60 rounded-2xl p-6 text-left overflow-hidden transition-all duration-200 hover:-translate-y-1"
+        style={{ background: m.frame, boxShadow: on ? `inset 0 0 0 2px ${m.accent}, 0 0 28px 2px ${m.accent}55` : "inset 0 0 0 1px rgba(255,255,255,.08), 0 10px 26px rgba(0,0,0,.5)" }}
       >
         <div className="absolute inset-0 flex items-center justify-center opacity-[0.10] pointer-events-none">
-          {isPirate ? <Hat size={150} color="#fff" /> : <Anchor size={150} color="#fff" />}
+          <Crest size={150} color="#fff" />
         </div>
         <div className="relative flex items-center gap-2 mb-3">
-          {isPirate ? <Hat size={22} color={accent} /> : <Anchor size={22} color={accent} />}
-          <h2 className="font-cinzel text-2xl font-bold" style={{ color: accent }}>{isPirate ? "Mugiwara" : "Marine"}</h2>
+          <Crest size={22} color={m.accent} />
+          <h2 className="font-cinzel text-xl font-bold" style={{ color: m.accent }}>{m.label}</h2>
         </div>
-        <p className="relative font-oswald text-sm text-white/75">Capitaine : {isPirate ? "Monkey D. Luffy" : "Akainu (Sakazuki)"}</p>
-        <p className="relative font-spectral italic text-xs text-white/45 mt-1">{isPirate ? "Diversité, synergies, sustain" : "Hiérarchie, Logia, contrôle"}</p>
-        {on && <div className="absolute top-3 right-3 font-oswald text-[9px] uppercase tracking-widest px-2 py-0.5 rounded-full" style={{ background: accent, color: "#0a0d12" }}>Choisi</div>}
+        <p className="relative font-oswald text-sm text-white/75">Capitaine : {m.captain}</p>
+        <p className="relative font-spectral italic text-xs text-white/45 mt-1">{m.tagline}</p>
+        {on && <div className="absolute top-3 right-3 font-oswald text-[9px] uppercase tracking-widest px-2 py-0.5 rounded-full" style={{ background: m.accent, color: "#0a0d12" }}>Choisi</div>}
       </button>
     );
   };
@@ -54,9 +84,8 @@ export default function Home() {
         <p className="font-oswald uppercase tracking-[.2em] text-xs text-white/45">Choisis ton équipage</p>
       </div>
 
-      <div className="flex flex-wrap gap-6 justify-center">
-        {crew("mugiwara")}
-        {crew("marines")}
+      <div className="flex flex-wrap gap-6 justify-center max-w-4xl">
+        {(Object.keys(DECKS) as DeckChoice[]).map((k) => crew(k))}
       </div>
 
       <button
