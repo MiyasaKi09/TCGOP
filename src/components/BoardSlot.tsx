@@ -10,6 +10,10 @@ interface BoardSlotProps {
   isPlayerSide: boolean;
   isValidTarget?: boolean;
   isValidDeploy?: boolean;
+  /** Cell is part of a Zone/AoE attack's impact area. */
+  isImpact?: boolean;
+  /** A selection is active and this cell is not an eligible choice. */
+  isDimmed?: boolean;
   onClick?: () => void;
   onDrop?: () => void;
 }
@@ -20,11 +24,13 @@ export default function BoardSlot({
   def,
   isValidTarget,
   isValidDeploy,
+  isImpact,
+  isDimmed,
   onClick,
   onDrop,
 }: BoardSlotProps) {
   const isFront = slot.startsWith("V");
-  const ring = isValidTarget ? "ring-target" : isValidDeploy ? "ring-deploy" : "";
+  const ring = isImpact ? "ring-impact" : isValidTarget ? "ring-target" : isValidDeploy ? "ring-deploy" : "";
 
   return (
     <div
@@ -32,7 +38,7 @@ export default function BoardSlot({
       onDragOver={(e) => { if (onDrop) e.preventDefault(); }}
       onDrop={(e) => { e.preventDefault(); onDrop?.(); }}
       data-inst={instance?.instanceId}
-      className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${ring}`}
+      className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${ring} ${isDimmed ? "slot-dim" : ""}`}
       style={
         instance
           ? undefined

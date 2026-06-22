@@ -11,9 +11,13 @@ import Card from "./Card";
 import CaptainCard from "./CaptainCard";
 import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
+import CaptainMenu from "./CaptainMenu";
+import ShipMenu from "./ShipMenu";
+import FullCard from "./FullCard";
 import EventConfirm from "./EventConfirm";
 import CombatVfxLayer from "./CombatVfxLayer";
 import PlayRevealLayer from "./PlayRevealLayer";
+import { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
@@ -35,6 +39,8 @@ type UIMode =
   | { type: "selectingSupportTarget"; instanceId: string }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
+  | { type: "captainMenu"; playerId: PlayerId }
+  | { type: "shipMenu"; instanceId: string; isYou: boolean }
   | { type: "cardDetail"; defId: string; instanceId?: string }
   | { type: "confirmEvent"; instanceId: string }
   | { type: "confirmShip"; instanceId: string }
@@ -45,6 +51,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     useGameEngine(playerDeck, aiDeck, "player1", difficulty);
   const [uiMode, setUiMode] = useState<UIMode>({ type: "idle" });
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
+  const [hoveredHand, setHoveredHand] = useState<{ id: string; rect: DOMRect } | null>(null);
 
   // Remember the rect of the last-clicked card, to zoom the detail/action panel from it.
   const zoomFromRef = useRef<DOMRect | null>(null);
@@ -128,6 +135,29 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     }
     return targets;
   }, [uiMode, validActions, aiPlayer]);
+
+  // Does the attack being aimed have the Zone (AoE) trait? Used to light up the
+  // whole enemy front as the impact area.
+  const attackIsZone = useMemo(() => {
+    if (uiMode.type !== "selectingTarget") return false;
+    const { attackerId, isSpecial } = uiMode;
+    if (attackerId.startsWith("captain_")) {
+      const pid = attackerId.replace("captain_", "") as PlayerId;
+      const cd = getCaptainDef(state.players[pid].captain.defId);
+      const atk = isSpecial ? cd.verso.specialAttack : cd.verso.baseAction;
+      return !!atk?.attackTraits?.includes("zone");
+    }
+    const inst = state.cards[attackerId];
+    if (!inst) return false;
+    const def = getCardDef(inst.defId);
+    const atk = isSpecial ? def.specialAttack : def.baseAction;
+    return !!atk?.attackTraits?.includes("zone");
+  }, [uiMode, state]);
+
+  const selecting =
+    uiMode.type === "selectingTarget" || uiMode.type === "selectingSupportTarget" ||
+    uiMode.type === "selectingSlot" || uiMode.type === "selectingEquipTarget" ||
+    uiMode.type === "selectingCaptainSlot";
 
   // --- Handlers ---
   const handleHandCardClick = (instanceId: string) => {
@@ -239,6 +269,16 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     }
   };
 
+  // Click on either side's captain (prow or verso). Attack-targeting takes
+  // priority; otherwise open its menu (powers + available actions).
+  const onCaptainClick = (playerId: PlayerId) => {
+    if (uiMode.type === "selectingTarget" && playerId === aiPlayer && attackTargets.has(`captain_${aiPlayer}`)) {
+      handleCaptainClick(playerId);
+      return;
+    }
+    if (uiMode.type === "idle") setUiMode({ type: "captainMenu", playerId });
+  };
+
   // Render the 3 slots of one line (front or back) as a vertical column of tokens.
   const renderLine = (slots: readonly string[], playerId: PlayerId) => {
     const isPlayerSide = playerId === humanPlayer;
@@ -257,16 +297,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           <div
             key={slot}
             data-inst={`captain_${playerId}`}
-            onClick={() => {
-              if (isTarget) handleCaptainClick(playerId);
-              else if (isPlayerSide && ps.captain.flipped && !ps.captain.tapped) {
-                const canCaptainAttack = validActions.some((a) => a.type === "captainAttack");
-                if (canCaptainAttack) {
-                  setUiMode({ type: "selectingTarget", attackerId: `captain_${playerId}`, isSpecial: false });
-                }
-              }
-            }}
-            className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex flex-col items-center justify-center p-1 cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"}`}
+            onClick={() => onCaptainClick(playerId)}
+            className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex flex-col items-center justify-center p-1 cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"} ${selecting && !isTarget ? "slot-dim" : ""}`}
             style={{ background: "radial-gradient(120% 80% at 50% 6%, #3a1414 0%, #1a0c0c 70%)", boxShadow: "inset 0 0 0 2px #E0463F" }}
           >
             <div className="font-oswald text-[8px] uppercase tracking-widest text-red-300/80 font-bold">★ Verso</div>
@@ -290,6 +322,9 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       const isValidTarget = (!isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
         || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
       const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
+      const isImpact = !isPlayerSide && attackIsZone && slot.startsWith("V") && isValidTarget;
+      const eligible = isValidTarget || isValidDeploy || isEquipTarget;
+      const isDimmed = selecting && !eligible;
 
       const act = () => {
         if (isValidDeploy) handleSlotClick(slot, isPlayerSide);
@@ -304,6 +339,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           isPlayerSide={isPlayerSide}
           isValidTarget={isValidTarget}
           isValidDeploy={isValidDeploy || isEquipTarget}
+          isImpact={isImpact}
+          isDimmed={isDimmed}
           onClick={act}
           onDrop={act}
         />
@@ -326,20 +363,33 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     );
 
     const captainTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+    const shipChip = ps.activeShip ? (
+      <button
+        onClick={() => setUiMode({ type: "shipMenu", instanceId: ps.activeShip!, isYou })}
+        className="font-oswald text-[10px] px-2 py-0.5 rounded-full text-cyan-100 transition-all hover:brightness-125"
+        style={{ background: "rgba(20,90,120,.7)", boxShadow: "inset 0 0 0 1px rgba(91,198,224,.45)" }}
+      >
+        ⚓ {getCardDef(state.cards[ps.activeShip].defId).name}
+      </button>
+    ) : null;
     const captainBlock = (
       <div className="flex flex-col items-center gap-1">
+        {!isYou && shipChip}
         <div
           data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
-          onClick={!isYou ? () => handleCaptainClick(playerId) : undefined}
-          className={`rounded-xl transition-all ${captainTarget ? "ring-target cursor-pointer" : ""}`}
+          onClick={() => onCaptainClick(playerId)}
+          className={`rounded-xl transition-all cursor-pointer ${captainTarget ? "ring-target" : ""} ${selecting && !captainTarget ? "slot-dim" : ""}`}
         >
           <CaptainCard captain={ps.captain} def={capDef} isOpponent={!isYou} />
         </div>
         {isYou && (
-          <div className="flex items-center gap-2 px-3 py-1 rounded-full" style={{ background: "rgba(6,12,20,.66)" }}>
-            <Bolt size={13} />
-            <span className="font-cinzel font-bold text-[13px]" style={{ color: "#E8B84B" }}>{ps.volonte}</span>
-            <span className="font-oswald text-[9px] uppercase tracking-wider text-white/45">Volonté</span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 px-3 py-1 rounded-full" style={{ background: "rgba(6,12,20,.66)" }}>
+              <Bolt size={13} />
+              <span className="font-cinzel font-bold text-[13px]" style={{ color: "#E8B84B" }}>{ps.volonte}</span>
+              <span className="font-oswald text-[9px] uppercase tracking-wider text-white/45">Volonté</span>
+            </div>
+            {shipChip}
           </div>
         )}
       </div>
@@ -517,6 +567,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex items-center gap-2 mb-1">
               <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Main</span>
               <span className="font-oswald text-[11px] font-bold text-white/60">{player.hand.length}</span>
+              <div className="hidden md:block"><StatusLegend types={["freeze", "burn", "poison", "immobilize", "desiccation"]} /></div>
               <div className="flex-1 h-px bg-white/10" />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1 items-end" style={{ minHeight: "170px" }}>
@@ -531,20 +582,26 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
                 });
                 const dragType = def.type === "character" || def.type === "object";
                 return (
-                  <Card
+                  <div
                     key={id}
-                    instance={card}
-                    def={def}
-                    width={118}
-                    selected={selectedHandCard === id}
-                    highlight={canPlay}
-                    draggable={canPlay && dragType}
-                    onDragStart={(e) => handleHandDragStart(e, id)}
-                    onClick={() => {
-                      if (canPlay) handleHandCardClick(id);
-                      else setUiMode({ type: "cardDetail", defId: card.defId, instanceId: id });
-                    }}
-                  />
+                    className="flex-shrink-0"
+                    onMouseEnter={(e) => setHoveredHand({ id, rect: e.currentTarget.getBoundingClientRect() })}
+                    onMouseLeave={() => setHoveredHand((h) => (h?.id === id ? null : h))}
+                  >
+                    <Card
+                      instance={card}
+                      def={def}
+                      width={118}
+                      selected={selectedHandCard === id}
+                      highlight={canPlay}
+                      draggable={canPlay && dragType}
+                      onDragStart={(e) => { setHoveredHand(null); handleHandDragStart(e, id); }}
+                      onClick={() => {
+                        if (canPlay) handleHandCardClick(id);
+                        else setUiMode({ type: "cardDetail", defId: card.defId, instanceId: id });
+                      }}
+                    />
+                  </div>
                 );
               })}
               {player.hand.length === 0 && <div className="font-spectral italic text-white/30 text-sm px-2">Main vide</div>}
@@ -556,17 +613,12 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex items-center justify-between font-oswald text-[10px] text-white/50 px-1">
               <span>Deck</span><span className="font-bold text-white/70">{player.deck.length}</span>
             </div>
-            {canActivateShip && player.activeShip && (
-              <button onClick={() => dispatch({ type: "activateShip", shipInstanceId: player.activeShip! })}
-                className="action-btn font-oswald px-3 py-2 bg-cyan-700/60 hover:bg-cyan-600/60 rounded-xl text-xs font-bold transition-all">⚓ Activer navire</button>
-            )}
-            {canFlip && (
-              <button onClick={() => setUiMode({ type: "selectingCaptainSlot" })}
-                className="action-btn font-oswald px-3 py-2 bg-red-700/60 hover:bg-red-600/60 rounded-xl text-xs font-bold transition-all">⚔ Engager Capitaine</button>
-            )}
-            {canKingHaki && (
-              <button onClick={() => dispatch({ type: "useHaki", hakiType: "king" })}
-                className="action-btn font-oswald px-3 py-2 bg-amber-600/70 hover:bg-amber-500/70 rounded-xl text-xs font-bold transition-all">👑 Haki des Rois</button>
+            {(canFlip || canActivateShip || canKingHaki) && (
+              <div className="font-oswald text-[9px] text-amber-300/85 leading-snug px-2 py-1.5 rounded-lg flex flex-col gap-0.5" style={{ background: "rgba(232,184,75,.1)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.25)" }}>
+                {canFlip && <span>⚔ Clique ton Capitaine pour l&apos;engager</span>}
+                {canKingHaki && <span>👑 Haki des Rois dispo (Capitaine)</span>}
+                {canActivateShip && <span>⚓ Clique ton Navire pour l&apos;activer</span>}
+              </div>
             )}
             <button onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }} disabled={isAiTurn || inCounterWindow}
               className="action-btn gold-surface font-oswald px-3 py-3 rounded-xl text-sm font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all">Fin de tour ➡</button>
@@ -617,10 +669,58 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
         );
       })()}
 
+      {uiMode.type === "captainMenu" && (() => {
+        const ps = state.players[uiMode.playerId];
+        const capDef = getCaptainDef(ps.captain.defId);
+        const isYou = uiMode.playerId === humanPlayer;
+        return (
+          <CaptainMenu
+            captain={ps.captain} def={capDef} state={state} validActions={validActions} isYou={isYou} originRect={zoomFromRef.current}
+            onFlip={() => setUiMode({ type: "selectingCaptainSlot" })}
+            onAttack={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: false })}
+            onKingHaki={() => { dispatch({ type: "useHaki", hakiType: "king" }); resetUI(); }}
+            onClose={resetUI}
+          />
+        );
+      })()}
+
+      {uiMode.type === "shipMenu" && (() => {
+        const inst = state.cards[uiMode.instanceId];
+        if (!inst) return null;
+        const def = getCardDef(inst.defId);
+        const canActivate = uiMode.isYou && validActions.some((a) => a.type === "activateShip" && a.shipInstanceId === uiMode.instanceId);
+        const used = def.shipActive?.oncePerGame && inst.usedOnceAbilities.includes(def.shipActive.name);
+        const reason = used ? "déjà utilisé" : !canActivate ? "Volonté insuffisante" : null;
+        return (
+          <ShipMenu
+            instance={inst} def={def} state={state} isYou={uiMode.isYou} canActivate={canActivate} activateReason={reason} originRect={zoomFromRef.current}
+            onActivate={() => { dispatch({ type: "activateShip", shipInstanceId: uiMode.instanceId }); resetUI(); }}
+            onClose={resetUI}
+          />
+        );
+      })()}
+
       {uiMode.type === "cardDetail" && (() => {
         const def = getCardDef(uiMode.defId);
         const inst = uiMode.instanceId ? state.cards[uiMode.instanceId] : undefined;
         return <CardDetail def={def} instance={inst} state={state} onClose={resetUI} originRect={zoomFromRef.current} />;
+      })()}
+
+      {/* Hand hover preview — large floating card above the hovered hand card */}
+      {hoveredHand && uiMode.type === "idle" && !inCounterWindow && (() => {
+        const card = state.cards[hoveredHand.id];
+        if (!card) return null;
+        const def = getCardDef(card.defId);
+        const PW = 250, PH = Math.round((419 / 300) * PW);
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+        const left = Math.min(Math.max(hoveredHand.rect.left + hoveredHand.rect.width / 2 - PW / 2, 8), vw - PW - 8);
+        let top = hoveredHand.rect.top - PH - 12;
+        if (top < 8) top = hoveredHand.rect.bottom + 12;
+        return (
+          <div className="fixed z-30 pointer-events-none animate-fade-in" style={{ left, top }}>
+            <FullCard def={def} instance={card} state={state} width={PW} />
+          </div>
+        );
       })()}
 
       {(uiMode.type === "confirmEvent" || uiMode.type === "confirmShip") && (() => {

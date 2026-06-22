@@ -3,6 +3,7 @@
 import type { CaptainInstance, CaptainDef } from "@/types";
 import { faction, hpColor, TRAIT_LABEL, CARD_ART, CARD_ART_VERSO, CARD_ART_FOCUS } from "@/data/cardArt";
 import { Sword, Shield, Crest } from "./icons";
+import StatusBadges from "./StatusBadges";
 
 interface CaptainCardProps {
   captain: CaptainInstance;
@@ -10,8 +11,6 @@ interface CaptainCardProps {
   isOpponent?: boolean;
   onClick?: () => void;
 }
-
-const STATUS_ICON: Record<string, string> = { burn: "🔥", poison: "☠", freeze: "❄" };
 
 export default function CaptainCard({ captain, def, isOpponent, onClick }: CaptainCardProps) {
   const fac = faction(def.faction);
@@ -84,8 +83,8 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
 
       {/* status */}
       {captain.statusEffects.length > 0 && (
-        <div className="relative flex gap-1.5 mt-1.5 text-sm">
-          {captain.statusEffects.map((e, i) => <span key={i}>{STATUS_ICON[e.type] ?? "•"}</span>)}
+        <div className="mt-1.5">
+          <StatusBadges effects={captain.statusEffects} compact />
         </div>
       )}
 

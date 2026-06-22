@@ -7,6 +7,7 @@ import {
 } from "@/data/cardArt";
 import { Sword, Shield, Heart, Crest } from "./icons";
 import FullCard from "./FullCard";
+import StatusBadges from "./StatusBadges";
 
 interface CardProps {
   instance: CardInstance;
@@ -20,13 +21,11 @@ interface CardProps {
   draggable?: boolean;
   onDragStart?: (e: DragEvent) => void;
   onDragEnd?: (e: DragEvent) => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 }
 
-const STATUS_ICON: Record<string, string> = {
-  burn: "🔥", poison: "☠", freeze: "❄", desiccation: "🏜", trap: "💣", immobilize: "🌸",
-};
-
-export default function Card({ instance, def, onClick, selected, highlight, small, width = 168, draggable, onDragStart, onDragEnd }: CardProps) {
+export default function Card({ instance, def, onClick, selected, highlight, small, width = 168, draggable, onDragStart, onDragEnd, onMouseEnter, onMouseLeave }: CardProps) {
   const art = CARD_ART[def.id];
   const fac = faction(def.faction);
   const isCharacter = def.type === "character";
@@ -75,8 +74,8 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
 
         {/* status + equipment row */}
         {(instance.statusEffects.length > 0 || instance.attachedObjects.length > 0) && (
-          <div className="absolute top-7 right-1 flex flex-col items-end gap-0.5 text-[10px] leading-none">
-            {instance.statusEffects.map((e, i) => <span key={i}>{STATUS_ICON[e.type] ?? "•"}</span>)}
+          <div className="absolute top-7 right-1 flex flex-col items-end gap-0.5 leading-none">
+            <StatusBadges effects={instance.statusEffects} compact />
             {instance.attachedObjects.length > 0 && (
               <span className="font-oswald font-bold text-[9px] px-1 rounded" style={{ background: "rgba(232,184,75,.25)", color: "#E8B84B" }}>⚔{instance.attachedObjects.length}</span>
             )}
@@ -117,6 +116,8 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
       className={`relative flex-shrink-0 cursor-grab active:cursor-grabbing transition-all duration-200 ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
       style={{ width, borderRadius: radius, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 3px rgba(232,184,75,.55)" : undefined, WebkitUserSelect: "none", userSelect: "none" }}
     >

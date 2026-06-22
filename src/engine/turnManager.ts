@@ -1102,8 +1102,11 @@ export function getValidActions(
     }
   }
 
-  // Captain attacks (if verso and on board)
-  if (player.captain.flipped && player.captain.slot && !player.captain.tapped) {
+  // Captain attacks (if verso and on board) — frozen/immobilized captains can't act
+  const captainDisabled = player.captain.statusEffects.some(
+    (e) => e.type === "freeze" || e.type === "immobilize"
+  );
+  if (player.captain.flipped && player.captain.slot && !player.captain.tapped && !captainDisabled) {
     const capDef = getCaptainDef(player.captain.defId);
     if (player.captain.deployedTurn !== state.turnNumber || capDef.verso.traits?.includes("rush")) {
       // Can attack — simplified: target any enemy front or captain

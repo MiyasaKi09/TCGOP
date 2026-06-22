@@ -1110,7 +1110,9 @@ function applyElementToCaptain(
       next = produce(next, (draft) => {
         draft.players[opponentId].captain.statusEffects.push({
           type: "freeze",
-          turnsRemaining: 1,
+          // 2 turns so it survives the start-of-turn decrement and actually
+          // skips the captain's next action (matches character freeze).
+          turnsRemaining: 2,
           damagePerTurn: 0,
           source: pending.attackerId,
         });
