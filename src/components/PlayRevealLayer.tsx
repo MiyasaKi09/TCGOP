@@ -4,10 +4,11 @@ import { useEffect, useRef } from "react";
 import { getCardDef } from "@/engine/cardRegistry";
 import FullCard from "./FullCard";
 import { announceDuration, type PlayAnnouncement } from "@/lib/announce";
+import { DEPLOY, TARGET } from "@/lib/theme";
 
 const SIDE = {
-  you: { color: "#5BC46A", label: "Vous" },
-  foe: { color: "#E0463F", label: "◆ Adversaire" },
+  you: { color: DEPLOY, label: "Vous" },
+  foe: { color: TARGET, label: "◆ Adversaire" },
 };
 
 function Reveal({ ann, onDone }: { ann: PlayAnnouncement; onDone: (id: number) => void }) {

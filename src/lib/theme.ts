@@ -136,6 +136,42 @@ export const STATUS_COLOR: Record<string, string> = {
   noHeal: "#FF8A80",
 };
 
+// --- Deck identities for the setup screen -------------------
+// Single source of truth for the 4 selectable decks (menu cosmetics).
+export interface DeckVisual {
+  label: string;
+  captain: string;
+  tagline: string;
+  /** Faction accent used for the ribbon + selected ring. */
+  accent: string;
+  /** Dark backdrop gradient behind the crest watermark. */
+  frame: string;
+  crest: "hat" | "anchor" | "skull";
+}
+
+export const DECK_VISUAL: Record<"mugiwara" | "marines" | "baroque" | "redhair", DeckVisual> = {
+  mugiwara: {
+    label: "Mugiwara", captain: "Monkey D. Luffy", tagline: "Diversité, synergies, sustain",
+    accent: PIRATE, crest: "hat",
+    frame: "radial-gradient(120% 80% at 50% 6%, #3a2614 0%, #20140b 60%, #140c07 100%)",
+  },
+  marines: {
+    label: "Marine", captain: "Akainu (Sakazuki)", tagline: "Anti-Fruit, Logia, contrôle",
+    accent: MARINE, crest: "anchor",
+    frame: "radial-gradient(120% 80% at 50% 6%, #163049 0%, #0c1a29 60%, #08121c 100%)",
+  },
+  baroque: {
+    label: "Baroque Works", captain: "Crocodile (Mr. 0)", tagline: "Agro/tempo, poison & sable",
+    accent: "#C9A24B", crest: "skull",
+    frame: "radial-gradient(120% 80% at 50% 6%, #2c2618 0%, #1a160d 60%, #100d07 100%)",
+  },
+  redhair: {
+    label: "Red Hair", captain: "Shanks (Akagami)", tagline: "Puissance, Haki, intimidation",
+    accent: "#D2473C", crest: "skull",
+    frame: "radial-gradient(120% 80% at 50% 6%, #3a1614 0%, #200c0b 60%, #140707 100%)",
+  },
+};
+
 // --- Element colours (mirror of vfx.ts ELEMENT_STYLE) -------
 // Used by card detail pills; the VFX layer keeps its richer style map.
 export const ELEMENT_COLOR: Record<string, string> = {
