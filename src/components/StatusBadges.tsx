@@ -41,7 +41,7 @@ export default function StatusBadges({ effects, compact }: { effects: StatusEffe
             key={i}
             title={`${m.label}${e.turnsRemaining >= 0 ? ` · ${e.turnsRemaining} tour(s)` : " · permanent"}`}
             className={`font-oswald font-bold rounded-full flex items-center ${compact ? "text-[9px] px-1 gap-0.5" : "text-[10px] px-1.5 py-0.5 gap-1"}`}
-            style={{ background: `${m.color}33`, color: m.color, boxShadow: `inset 0 0 0 1px ${m.color}66` }}
+            style={{ background: `${m.color}33`, color: m.color, border: "1px solid var(--ink-edge)", boxShadow: `inset 0 0 0 1px ${m.color}66` }}
           >
             <span>{m.icon}</span>
             {!compact && <span>{m.label}</span>}

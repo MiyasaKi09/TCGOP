@@ -75,7 +75,7 @@ export default function CaptainMenu({
         {/* PV + stats */}
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "rgba(8,12,18,.7)" }}>
+            <div className="hp-gauge w-full h-2.5 rounded-full">
               <div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, background: hpc }} />
             </div>
             <div className="font-oswald text-[10px] mt-0.5 font-bold" style={{ color: hpc }}>{captain.currentPv} / {side.pv} PV</div>

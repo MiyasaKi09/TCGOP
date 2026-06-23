@@ -322,6 +322,46 @@
   .speed-lines::before { display: none; }
 }
 
+/* Manga board atmosphere — screentone grain + ink vignette over the sea. */
+.manga-atmos { position: absolute; inset: 0; pointer-events: none; }
+.manga-atmos::before {
+  content: ""; position: absolute; inset: 0;
+  background-image: radial-gradient(rgba(0,0,0,.22) 1px, transparent 1.6px);
+  background-size: 7px 7px; opacity: .45; mix-blend-mode: multiply;
+}
+.manga-atmos::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(120% 92% at 50% 50%, transparent 50%, rgba(3,5,9,.6) 100%);
+}
+
+/* Manga "shout" status tag — ink-outlined pill with a glowing state dot. */
+.status-tag {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-family: var(--font-oswald), system-ui, sans-serif; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em; font-size: 12px; line-height: 1.5;
+  padding: .15rem .7rem; border-radius: var(--radius-chip);
+  border: 2px solid var(--ink-edge); background: rgba(8,12,18,.72);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+}
+.status-tag .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor; box-shadow: 0 0 8px currentColor;
+}
+
+/* Empty board cell — manga ink dashed frame. */
+.slot-empty {
+  border: 2px dashed rgba(255,255,255,.18);
+  background: rgba(6,10,16,.32);
+  border-radius: var(--radius-token);
+}
+
+/* HP bar with an ink outline (manga gauge). */
+.hp-gauge {
+  border: 1.5px solid var(--ink-edge);
+  background: rgba(8,12,18,.78);
+  overflow: hidden;
+}
+
 /* Ship bobbing on the swell */
 @keyframes ship-bob {
   0%, 100% { transform: translateY(0) rotate(-0.4deg); }

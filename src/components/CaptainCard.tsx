@@ -54,7 +54,7 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
 
       {/* PV bar */}
       <div className="relative mt-2">
-        <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "rgba(8,12,18,.7)" }}>
+        <div className="hp-gauge w-full h-2.5 rounded-full">
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: hpc }} />
         </div>
         <div className="font-oswald text-[10px] text-center mt-0.5 font-bold" style={{ color: hpc }}>{captain.currentPv} / {maxPv} PV</div>

@@ -312,7 +312,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
               <span className="text-atk">⚔{capDef.verso.atk}</span>
               <span className="text-def">🛡{capDef.verso.def}</span>
             </div>
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(8,12,18,.7)" }}>
+            <div className="hp-gauge w-full h-2 rounded-full">
               <div className="h-full rounded-full" style={{ width: `${pvPercent}%`, background: hpColor(pvPercent / 100) }} />
             </div>
             <div className="font-oswald text-[10px] font-bold mt-0.5" style={{ color: hpColor(pvPercent / 100) }}>{ps.captain.currentPv}/{capDef.verso.pv}</div>
@@ -372,7 +372,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       <button
         onClick={() => setUiMode({ type: "shipMenu", instanceId: ps.activeShip!, isYou })}
         className="font-oswald text-[10px] px-2 py-0.5 rounded-full text-cyan-100 transition-all hover:brightness-125"
-        style={{ background: "rgba(20,90,120,.7)", boxShadow: "inset 0 0 0 1px rgba(91,198,224,.45)" }}
+        style={{ background: "rgba(20,90,120,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(91,198,224,.45)" }}
       >
         ⚓ {getCardDef(state.cards[ps.activeShip].defId).name}
       </button>
@@ -453,29 +453,29 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
                 const card = state.cards[action.instanceId];
                 const def = getCardDef(card.defId);
                 return (
-                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-blue-600/80 hover:bg-blue-500/80 rounded-xl text-sm font-bold transition-all">
-                    🛡 {def.name} <span className="text-blue-200/70 text-xs">({def.cost}V)</span>
+                  <button key={i} onClick={() => dispatch(action)} className="btn action-btn px-4 py-2.5 text-sm" style={{ background: "linear-gradient(180deg,#3b82f6,#1d4ed8)", color: "#fff", boxShadow: "0 4px 0 #143a8a, 0 8px 18px rgba(0,0,0,.4)" }}>
+                    🛡 {def.name} <span className="text-blue-100/80 text-xs">({def.cost}V)</span>
                   </button>
                 );
               }
               if (action.type === "useShield") {
                 const blockerDef = getCardDef(state.cards[action.blockerInstanceId].defId);
                 return (
-                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-amber-700/80 hover:bg-amber-600/80 rounded-xl text-sm font-bold transition-all">
+                  <button key={i} onClick={() => dispatch(action)} className="btn btn-gold action-btn px-4 py-2.5 text-sm">
                     🛡 Bloquer ({blockerDef.name})
                   </button>
                 );
               }
               if (action.type === "useHaki") {
                 return (
-                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-purple-600/80 hover:bg-purple-500/80 rounded-xl text-sm font-bold transition-all">
+                  <button key={i} onClick={() => dispatch(action)} className="btn action-btn px-4 py-2.5 text-sm" style={{ background: "linear-gradient(180deg,#a855f7,#7c3aed)", color: "#fff", boxShadow: "0 4px 0 #4c1d95, 0 8px 18px rgba(0,0,0,.4)" }}>
                     👁 Haki Observation
                   </button>
                 );
               }
               if (action.type === "passCounter") {
                 return (
-                  <button key={i} onClick={() => dispatch(action)} className="action-btn font-oswald px-4 py-2.5 bg-white/10 hover:bg-white/20 rounded-xl text-sm transition-all text-white/80">
+                  <button key={i} onClick={() => dispatch(action)} className="btn btn-ghost action-btn px-4 py-2.5 text-sm">
                     Subir les dégâts
                   </button>
                 );
@@ -531,18 +531,22 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     >
       {/* Animated sea (behind everything; static .sea-bg shows through on low tier) */}
       <AmbientStage />
+      {/* Manga screentone + ink vignette over the sea */}
+      <div className="manga-atmos" />
 
       {/* HEADER */}
       <header className="halftone relative z-10 shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "2px solid var(--ink-edge)", boxShadow: "0 1px 0 rgba(232,184,75,.25)", background: "linear-gradient(180deg,rgba(8,12,18,.92),rgba(6,9,14,.62))" }}>
         <span className="font-cinzel font-extrabold text-[16px] tracking-wider text-gold">TCGOP</span>
         <span className="font-oswald text-[9px] uppercase tracking-[.18em] text-white/40 hidden sm:inline">Grand Line</span>
-        <div className={`ml-auto font-oswald text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>{statusText.text}</div>
+        <div className={`ml-auto status-tag ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
+          <span className="dot" />{statusText.text}
+        </div>
         <div className="flex items-center gap-2 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
           <Crest which={foeFac.crest} size={13} color={foeFac.accent} />
           <span className="font-oswald text-[11px] text-white/55">Main {opponent.hand.length} · Deck {opponent.deck.length}</span>
           {opponent.activeShip && (
             <button onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[opponent.activeShip!].defId, instanceId: opponent.activeShip! })}
-              className="font-oswald text-[10px] text-cyan-200/80 bg-cyan-900/20 rounded px-1.5 py-0.5 hover:bg-cyan-800/30 transition-all truncate max-w-[120px]">
+              className="font-oswald text-[10px] text-cyan-200/80 bg-cyan-900/30 rounded-md px-1.5 py-0.5 hover:bg-cyan-800/40 transition-all truncate max-w-[120px]" style={{ border: "1.5px solid var(--ink-edge)" }}>
               ⚓ {getCardDef(state.cards[opponent.activeShip].defId).name}
             </button>
           )}
@@ -632,7 +636,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
               <span>Deck</span><span className="font-bold text-white/70">{player.deck.length}</span>
             </div>
             {(canFlip || canActivateShip || canKingHaki) && (
-              <div className="font-oswald text-[9px] text-amber-300/85 leading-snug px-2 py-1.5 rounded-lg flex flex-col gap-0.5" style={{ background: "rgba(232,184,75,.1)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.25)" }}>
+              <div className="font-oswald text-[9px] text-amber-300/90 leading-snug px-2 py-1.5 rounded-lg flex flex-col gap-0.5" style={{ background: "rgba(232,184,75,.12)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.3)" }}>
                 {canFlip && <span>⚔ Clique ton Capitaine pour l&apos;engager</span>}
                 {canKingHaki && <span>👑 Haki des Rois dispo (Capitaine)</span>}
                 {canActivateShip && <span>⚓ Clique ton Navire pour l&apos;activer</span>}
