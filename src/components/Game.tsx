@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { DragEvent } from "react";
 import type { GameAction, Slot, PlayerId, DeckDef } from "@/types";
 import { useGameEngine } from "@/hooks/useGameEngine";
@@ -17,6 +17,7 @@ import FullCard from "./FullCard";
 import EventConfirm from "./EventConfirm";
 import CombatVfxLayer from "./CombatVfxLayer";
 import PlayRevealLayer from "./PlayRevealLayer";
+import VfxStage from "./vfx/VfxStage";
 import { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
@@ -52,6 +53,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
   const [uiMode, setUiMode] = useState<UIMode>({ type: "idle" });
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
   const [hoveredHand, setHoveredHand] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const [webglActive, setWebglActive] = useState(false);
+  const onVfxActiveChange = useCallback((a: boolean) => setWebglActive(a), []);
 
   // Remember the rect of the last-clicked card, to zoom the detail/action panel from it.
   const zoomFromRef = useRef<DOMRect | null>(null);
@@ -540,7 +543,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       </header>
 
       {/* Combat VFX + play-reveal overlays */}
-      <CombatVfxLayer events={vfxEvents} remove={removeVfx} />
+      <VfxStage onActiveChange={onVfxActiveChange} />
+      <CombatVfxLayer events={vfxEvents} remove={removeVfx} webglActive={webglActive} />
       <PlayRevealLayer announcements={announcements} dismiss={dismissAnnouncement} />
 
       {/* BOARD — two ships broadside */}

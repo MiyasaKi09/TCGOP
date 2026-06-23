@@ -1,6 +1,7 @@
 "use client";
 
 import { useLayoutEffect, useRef } from "react";
+import { EASE_SPRING, DUR_BASE } from "./motion";
 
 /**
  * Zoom-from-origin transition (FLIP). Pass the bounding rect of the element the
@@ -27,7 +28,7 @@ export function useFlipZoom<T extends HTMLElement = HTMLDivElement>(origin: DOMR
     void el.offsetWidth; // force reflow so the next change animates
 
     // …then animate up to the enlarged view.
-    el.style.transition = "transform .3s cubic-bezier(.2,.75,.25,1), opacity .22s ease-out";
+    el.style.transition = `transform ${DUR_BASE}ms ${EASE_SPRING}, opacity ${Math.round(DUR_BASE * 0.73)}ms ease-out`;
     el.style.transform = "translate(0px, 0px) scale(1)";
     el.style.opacity = "1";
 

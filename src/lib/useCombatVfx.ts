@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { GameState, PlayerId, PendingAttack } from "@/types";
 import { getCardDef, getCaptainDef } from "@/engine/cardRegistry";
 import { styleFor, type VfxElement } from "./vfx";
+import { vfxBus } from "./vfxBus";
 
 export type VfxKind = "attack" | "impact" | "heal" | "ko" | "banner";
 
@@ -203,7 +204,12 @@ export function useCombatVfx(
       }
     }
 
-    if (out.length) setEvents((es) => [...es, ...out]);
+    if (out.length) {
+      // Feed the imperative WebGL layer (no reconciliation), then React state
+      // for the DOM fallback / number+banner layer.
+      for (const ev of out) vfxBus.emit(ev);
+      setEvents((es) => [...es, ...out]);
+    }
     prev.current = snap;
   }, [state, shake]);
 
