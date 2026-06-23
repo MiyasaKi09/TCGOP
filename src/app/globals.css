@@ -137,18 +137,6 @@
 .animate-health-low { animation: health-low 1s ease-in-out infinite; }
 .animate-modal-enter { animation: modal-enter var(--dur-base, 300ms) var(--ease-spring, ease-out) forwards; }
 
-/* Glass morphism */
-.glass {
-  background: rgba(17, 24, 39, 0.7);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-.glass-light {
-  background: rgba(31, 41, 55, 0.5);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
 /* Card rarity glow effects */
 .rarity-glow-C { box-shadow: 0 0 0 1px #4b5563, 0 2px 8px rgba(0,0,0,0.4); }
 .rarity-glow-U { box-shadow: 0 0 0 1px #16a34a, 0 2px 8px rgba(22,163,74,0.15), 0 0 20px rgba(22,163,74,0.05); }
@@ -405,12 +393,6 @@
     linear-gradient(rgba(5,11,19,0.42), rgba(5,11,19,0.58)),
     url("/decks/sea.png") center / cover no-repeat;
   background-color: #0a1c2e;
-}
-
-/* Gold gradient surface (buttons, banners) */
-.gold-surface {
-  background: linear-gradient(180deg, #f0c760, #d9a434);
-  color: #0a0d12;
 }
 
 /* Thin vertical divider line for the VS column */
