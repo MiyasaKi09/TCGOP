@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Plateau final — Anime, terrain unique à plat</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800&family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--gd:#ffd36b;--atk:#ff7a8a;--def:#7fb6ff;--hp:#5fe39a;--foe:#ff7a8a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Poppins',sans-serif;background:#070d1c;color:#f2f6ff;-webkit-font-smoothing:antialiased}
+.phone{max-width:440px;margin:0 auto;height:100vh;min-height:780px;position:relative;overflow:hidden;display:flex;flex-direction:column;background:#070d1c}
+.glow{position:absolute;border-radius:50%;filter:blur(70px);opacity:.5;pointer-events:none;z-index:1}
+.g1{width:240px;height:240px;background:#3b6dff;top:30px;left:-70px}
+.g2{width:240px;height:240px;background:#ff5d7a;bottom:120px;right:-80px}
+header{position:relative;z-index:5;display:flex;align-items:center;gap:10px;padding:10px 16px}
+.brand{font-weight:800;font-size:17px;background:linear-gradient(90deg,#ffd36b,#ff8a5b);-webkit-background-clip:text;background-clip:text;color:transparent}
+.turn{margin-left:auto;font-size:11px;font-weight:700;color:#08130c;background:linear-gradient(90deg,#5fe39a,#37c97a);padding:6px 13px;border-radius:999px;box-shadow:0 4px 14px rgba(95,227,154,.45)}
+.board{position:relative;z-index:2;flex:1;display:flex;flex-direction:column;overflow:hidden}
+.half{position:relative;flex:1;display:flex;flex-direction:column;justify-content:center;gap:7px;padding:8px 12px}
+.floor{position:absolute;inset:0;background-size:cover;background-position:center;z-index:0;filter:saturate(1.15)}
+.floor.flip{transform:scaleY(-1)}
+.shade{position:absolute;inset:0;z-index:1}
+.shade.foe{background:linear-gradient(180deg,rgba(40,16,40,.5),rgba(10,14,28,.35) 50%,rgba(255,93,122,.14))}
+.shade.you{background:linear-gradient(0deg,rgba(16,40,30,.5),rgba(10,14,28,.35) 50%,rgba(95,227,154,.12))}
+.hero{position:relative;z-index:3;display:flex;align-items:center;gap:9px}
+.hero .pic{width:48px;height:48px;border-radius:50%;background-size:cover;background-position:center 16%;flex:none;border:2px solid var(--gd);box-shadow:0 0 18px rgba(255,211,107,.55)}
+.hero.foe .pic{border-color:var(--foe);box-shadow:0 0 18px rgba(255,122,138,.55)}
+.hero .info{flex:1;min-width:0}
+.hero .nm{font-family:'Cinzel';font-weight:700;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hbar{height:8px;border-radius:99px;background:rgba(255,255,255,.16);overflow:hidden;margin-top:3px}
+.hbar i{display:block;height:100%;border-radius:99px}
+.hero .nums{font-size:11px;font-weight:700;display:flex;gap:9px}
+.hero .a{color:var(--atk)}.hero .d{color:var(--def)}
+.vol{flex:none;font-family:'Cinzel';font-weight:800;font-size:13px;color:#08130c;background:linear-gradient(180deg,#ffe08a,#ffce5b);padding:3px 10px;border-radius:999px;box-shadow:0 3px 10px rgba(0,0,0,.4)}
+.rowlab{position:relative;z-index:3;font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,.5);padding-left:3px}
+.row{position:relative;z-index:3;display:flex;gap:8px;justify-content:center}
+.slot{flex:1;max-width:122px;min-width:0;height:66px;border-radius:16px;position:relative}
+.slot.empty{border:1.5px dashed rgba(255,255,255,.22);background:rgba(10,16,30,.4);display:flex;align-items:center;justify-content:center;font-size:9px;letter-spacing:.1em;color:rgba(255,255,255,.45)}
+.slot.unit{overflow:hidden;background:rgba(10,16,30,.6);border:1px solid rgba(255,255,255,.2);box-shadow:0 8px 20px rgba(0,0,0,.5)}
+.slot .art{position:absolute;inset:0;background-size:cover;background-position:center 22%}
+.slot .ov{position:absolute;left:0;right:0;bottom:0;padding:2px 6px;background:linear-gradient(180deg,transparent,rgba(8,12,24,.95))}
+.slot .nm{font-size:9px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slot .st{display:flex;gap:5px;font-size:10px;font-weight:700}
+.st .a{color:var(--atk)}.st .d{color:var(--def)}.st .h{color:var(--hp)}
+.cost{position:absolute;top:4px;left:4px;width:18px;height:18px;border-radius:50%;font-size:10px;font-weight:800;color:#08130c;background:linear-gradient(180deg,#ffe08a,#ffce5b);display:flex;align-items:center;justify-content:center;z-index:2;box-shadow:0 2px 7px rgba(0,0,0,.5)}
+.clash{position:relative;z-index:4;height:32px;display:flex;align-items:center;justify-content:center;gap:10px;
+  background:linear-gradient(180deg,rgba(8,12,24,.6),rgba(60,90,200,.25),rgba(8,12,24,.6));border-top:1px solid rgba(255,211,107,.35);border-bottom:1px solid rgba(255,211,107,.35)}
+.clash .l{width:54px;height:2px;border-radius:9px;background:linear-gradient(90deg,transparent,rgba(255,211,107,.8))}
+.clash .l2{background:linear-gradient(90deg,rgba(255,211,107,.8),transparent)}
+.clash .t{font-family:'Cinzel';font-weight:800;font-size:12px;letter-spacing:.14em;color:var(--gd);text-shadow:0 0 14px rgba(255,211,107,.6)}
+footer{position:relative;z-index:5;padding:7px 14px 18px;background:linear-gradient(0deg,rgba(7,13,28,.96),transparent)}
+.hand{display:flex;gap:9px;justify-content:center;margin-bottom:10px}
+.h{width:60px;height:86px;border-radius:14px;background-size:cover;background-position:center 20%;border:1px solid rgba(255,255,255,.22);box-shadow:0 10px 22px rgba(0,0,0,.6)}
+.h:nth-child(1){transform:rotate(-6deg) translateY(5px)}.h:nth-child(4){transform:rotate(6deg) translateY(5px)}
+.cta{display:flex;gap:9px}
+.btn{flex:1;font-family:'Poppins';font-weight:700;font-size:14px;padding:13px;border:none;border-radius:16px;color:#08130c;background:linear-gradient(135deg,#ffd36b,#ff9d5b);box-shadow:0 8px 22px rgba(255,157,91,.5)}
+.btn-x{flex:none;width:52px;border-radius:16px;border:1px solid rgba(255,255,255,.2);color:#fff;background:transparent}
+.tag{position:fixed;top:7px;left:7px;font-weight:600;font-size:10px;background:rgba(0,0,0,.55);color:#fff;padding:5px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.2);z-index:9}
+</style>
+</head>
+<body>
+<div class="tag">PLATEAU FINAL · Anime</div>
+<div class="phone">
+  <div class="glow g1"></div><div class="glow g2"></div>
+  <header><span class="brand">TCGOP</span><span class="turn">✦ Votre tour</span></header>
+  <div class="board">
+    <div class="half">
+      <div class="floor" style="background-image:url('/decks/marine-deck-v.png')"></div>
+      <div class="shade foe"></div>
+      <div class="hero foe"><div class="pic" style="background-image:url('/cards/akainu-recto.jpg')"></div>
+        <div class="info"><div class="nm">Akainu · Marine</div><div class="hbar"><i style="width:100%;background:linear-gradient(90deg,#ff7a8a,#ff5d7a)"></i></div></div>
+        <div class="nums"><span class="a">⚔9</span><span class="d">🛡4</span></div></div>
+      <div class="rowlab">Ligne arrière</div>
+      <div class="row">
+        <div class="slot empty">B1</div>
+        <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/tashigi.jpg')"></div><div class="ov"><div class="nm">Tashigi</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">5</span></div></div></div>
+        <div class="slot empty">B3</div>
+      </div>
+      <div class="rowlab">Ligne avant</div>
+      <div class="row">
+        <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/smoker.jpg')"></div><div class="ov"><div class="nm">Smoker</div><div class="st"><span class="a">5</span><span class="d">3</span><span class="h">6</span></div></div></div>
+        <div class="slot empty">V2</div>
+        <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/momonga.jpg')"></div><div class="ov"><div class="nm">Momonga</div><div class="st"><span class="a">4</span><span class="d">3</span><span class="h">5</span></div></div></div>
+      </div>
+    </div>
+    <div class="clash"><span class="l"></span><span class="t">⚔ TOUR 6</span><span class="l l2"></span></div>
+    <div class="half">
+      <div class="floor flip" style="background-image:url('/decks/mugiwara-deck-v.png')"></div>
+      <div class="shade you"></div>
+      <div class="rowlab">Ligne avant</div>
+      <div class="row">
+        <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/zoro.jpg')"></div><div class="ov"><div class="nm">Zoro</div><div class="st"><span class="a">6</span><span class="d">3</span><span class="h">7</span></div></div></div>
+        <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/sanji.jpg')"></div><div class="ov"><div class="nm">Sanji</div><div class="st"><span class="a">5</span><span class="d">2</span><span class="h">6</span></div></div></div>
+        <div class="slot empty">V3</div>
+      </div>
+      <div class="rowlab">Ligne arrière</div>
+      <div class="row">
+        <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/robin.jpg')"></div><div class="ov"><div class="nm">Robin</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">6</span></div></div></div>
+        <div class="slot empty">B2</div>
+        <div class="slot empty">B3</div>
+      </div>
+      <div class="hero"><div class="pic" style="background-image:url('/cards/luffy-recto.jpg')"></div>
+        <div class="info"><div class="nm">Luffy · Mugiwara</div><div class="hbar"><i style="width:78%;background:linear-gradient(90deg,#37c97a,#5fe39a)"></i></div></div>
+        <div class="vol">7 ⚡</div>
+        <div class="nums"><span class="a">⚔8</span><span class="d">🛡3</span></div></div>
+    </div>
+  </div>
+  <footer>
+    <div class="hand">
+      <div class="h" style="background-image:url('/cards/nami.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/usopp.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/chopper.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/franky.jpg')"></div>
+    </div>
+    <div class="cta"><button class="btn">Fin de tour ➜</button><button class="btn-x">✕</button></div>
+  </footer>
+</div>
+</body>
+</html>
