@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Plateau v2 — full art + commandement</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--gd:#ffd36b;--atk:#ff7a8a;--def:#7fb6ff;--hp:#5fe39a;--foe:#ff7a8a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Poppins',sans-serif;background:#070d1c;color:#f2f6ff;-webkit-font-smoothing:antialiased}
+.phone{max-width:440px;margin:0 auto;height:100vh;min-height:840px;position:relative;overflow:hidden;display:flex;flex-direction:column;background:#070d1c}
+.glow{position:absolute;border-radius:50%;filter:blur(75px);opacity:.5;pointer-events:none;z-index:1}
+.g1{width:240px;height:240px;background:#3b6dff;top:60px;left:-80px}.g2{width:240px;height:240px;background:#ff5d7a;bottom:160px;right:-80px}
+/* TOP BAR — turn lives here now */
+header{position:relative;z-index:6;display:flex;align-items:center;gap:10px;padding:9px 14px;background:linear-gradient(180deg,rgba(7,13,28,.95),rgba(7,13,28,.4))}
+.brand{font-weight:800;font-size:16px;background:linear-gradient(90deg,#ffd36b,#ff8a5b);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tn{display:flex;align-items:center;gap:8px;margin:0 auto;font-family:'Cinzel';font-weight:800;font-size:14px;color:var(--gd);letter-spacing:.06em}
+.tn .ring{width:26px;height:26px;border-radius:50%;border:2px solid var(--gd);display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 0 12px rgba(255,211,107,.4)}
+.you-turn{font-size:11px;font-weight:700;color:#08130c;background:linear-gradient(90deg,#5fe39a,#37c97a);padding:5px 11px;border-radius:999px}
+.board{position:relative;z-index:2;flex:1;display:flex;flex-direction:column;overflow:hidden}
+.half{position:relative;flex:1;display:flex;flex-direction:column;justify-content:center;gap:5px;padding:6px 10px}
+.floor{position:absolute;inset:0;background-size:cover;background-position:center;z-index:0;filter:saturate(1.15)}
+.floor.flip{transform:scaleY(-1)}
+.shade{position:absolute;inset:0;z-index:1}
+.shade.foe{background:linear-gradient(180deg,rgba(40,16,40,.55),rgba(10,14,28,.4) 50%,rgba(255,93,122,.12))}
+.shade.you{background:linear-gradient(0deg,rgba(16,40,30,.55),rgba(10,14,28,.4) 50%,rgba(95,227,154,.1))}
+/* COMMAND BAR — dedicated home for Captain + Ship + Volonté */
+.cmd{position:relative;z-index:4;display:flex;align-items:stretch;gap:8px}
+.capcard{flex:none;width:116px;border-radius:12px;overflow:hidden;position:relative;border:2px solid var(--gd);box-shadow:0 0 16px rgba(255,211,107,.4)}
+.capcard.foe{border-color:var(--foe);box-shadow:0 0 16px rgba(255,122,138,.4)}
+.capcard .art{position:absolute;inset:0;background-size:cover;background-position:center 14%}
+.capcard .sh{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,10,20,.15),rgba(6,10,20,.92))}
+.capcard .in{position:relative;padding:4px 7px;height:100%;display:flex;flex-direction:column;justify-content:flex-end}
+.capcard .role{font-size:7px;letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,.65)}
+.capcard .nm{font-family:'Cinzel';font-weight:700;font-size:12px;line-height:1}
+.hp{display:flex;align-items:center;gap:5px;margin-top:3px}
+.hp .bar{flex:1;height:7px;border-radius:99px;background:rgba(0,0,0,.5);overflow:hidden}
+.hp .bar i{display:block;height:100%;border-radius:99px}
+.hp .v{font-size:10px;font-weight:800}
+.capcard .ad{position:absolute;top:4px;right:5px;display:flex;flex-direction:column;gap:2px;align-items:flex-end}
+.capcard .ad span{font-size:10px;font-weight:800;background:rgba(6,10,20,.7);border-radius:6px;padding:0 5px;line-height:1.5}
+.shipslot{flex:none;width:70px;border-radius:12px;position:relative;overflow:hidden;border:1px solid rgba(127,182,255,.45);background:rgba(10,18,34,.55)}
+.shipslot .art{position:absolute;inset:0;background-size:cover;background-position:center}
+.shipslot .lab{position:absolute;left:0;right:0;bottom:0;font-size:8px;text-align:center;letter-spacing:.1em;color:#bcdcff;background:rgba(6,12,24,.8);padding:1px}
+.shipslot.empty{display:flex;align-items:center;justify-content:center;border-style:dashed;color:rgba(188,220,255,.6);font-size:9px;letter-spacing:.1em}
+.res{flex:1;display:flex;flex-direction:column;justify-content:center;gap:5px;padding-left:2px}
+.will{display:flex;align-items:center;gap:6px}
+.will .lbl{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.6)}
+.pips{display:flex;gap:3px}
+.pip{width:11px;height:11px;border-radius:50%;background:rgba(255,255,255,.14);box-shadow:inset 0 0 0 1px rgba(255,255,255,.15)}
+.pip.on{background:linear-gradient(180deg,#ffe08a,#ffce5b);box-shadow:0 0 7px rgba(255,206,91,.8)}
+.will .v{font-family:'Cinzel';font-weight:800;font-size:13px;color:var(--gd)}
+.counts{display:flex;gap:6px;font-size:10px;color:rgba(255,255,255,.6)}
+.counts span{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:2px 7px}
+/* battlefield rows — FULL ART tiles */
+.rowlab{position:relative;z-index:3;font-size:8px;letter-spacing:.24em;text-transform:uppercase;color:rgba(255,255,255,.5);padding-left:3px}
+.row{position:relative;z-index:3;display:flex;gap:8px;justify-content:center}
+.slot{flex:1;max-width:122px;min-width:0;height:60px;border-radius:14px;position:relative}
+.slot.empty{border:1.5px dashed rgba(255,255,255,.2);background:rgba(10,16,30,.34);display:flex;align-items:center;justify-content:center;font-size:9px;letter-spacing:.1em;color:rgba(255,255,255,.4)}
+.slot.unit{overflow:hidden;border:1px solid rgba(255,255,255,.2);box-shadow:0 7px 18px rgba(0,0,0,.5)}
+.slot.unit .art{position:absolute;inset:0;background-size:cover;background-position:center 16%}
+/* only minimal cue on board: a thin HP bar shows ONLY when damaged */
+.dmg{position:absolute;left:6px;right:6px;bottom:4px;height:4px;border-radius:99px;background:rgba(0,0,0,.55);overflow:hidden;z-index:2}
+.dmg i{display:block;height:100%;border-radius:99px;background:var(--gd)}
+.slot.sel{border:2px solid var(--gd);box-shadow:0 0 0 2px rgba(255,211,107,.4),0 0 22px rgba(255,211,107,.5)}
+/* info popover on click */
+.pop{position:absolute;left:50%;bottom:68px;transform:translateX(-50%);width:178px;z-index:20;
+  background:rgba(10,16,30,.97);border:1px solid rgba(255,211,107,.5);border-radius:14px;padding:9px 10px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
+.pop:after{content:"";position:absolute;left:50%;bottom:-7px;transform:translateX(-50%);border:7px solid transparent;border-top-color:rgba(255,211,107,.5)}
+.pop .ph{display:flex;align-items:center;gap:6px}
+.pop .pc{width:18px;height:18px;border-radius:50%;background:linear-gradient(180deg,#ffe08a,#ffce5b);color:#08130c;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center}
+.pop .pn{font-family:'Cinzel';font-weight:700;font-size:13px}
+.pop .stats{display:flex;gap:8px;margin:6px 0;font-size:12px;font-weight:700}
+.pop .a{color:var(--atk)}.pop .d{color:var(--def)}.pop .h{color:var(--hp)}
+.pop .acts{display:flex;gap:6px}
+.pop .acts button{flex:1;font-family:'Poppins';font-weight:700;font-size:10px;padding:6px;border:none;border-radius:8px;color:#08130c;background:linear-gradient(135deg,#ffd36b,#ff9d5b)}
+.pop .acts .sp{background:linear-gradient(135deg,#ff7a8a,#ff5d7a);color:#fff}
+/* center waterline — clean, no boxy turn pill */
+.water{position:relative;z-index:4;height:14px;background:linear-gradient(180deg,transparent,rgba(90,160,255,.35),transparent)}
+.water:before{content:"";position:absolute;left:8%;right:8%;top:50%;height:2px;transform:translateY(-50%);
+  background:linear-gradient(90deg,transparent,rgba(255,211,107,.7),rgba(255,255,255,.5),rgba(255,211,107,.7),transparent);box-shadow:0 0 12px rgba(255,211,107,.5)}
+footer{position:relative;z-index:6;padding:7px 14px 16px;background:linear-gradient(0deg,rgba(7,13,28,.97),transparent)}
+.hand{display:flex;gap:9px;justify-content:center;margin-bottom:9px}
+.h{width:58px;height:84px;border-radius:13px;background-size:cover;background-position:center 18%;border:1px solid rgba(255,255,255,.22);box-shadow:0 10px 22px rgba(0,0,0,.6)}
+.h:nth-child(1){transform:rotate(-7deg) translateY(6px)}.h:nth-child(4){transform:rotate(7deg) translateY(6px)}
+.cta{display:flex;gap:9px}
+.btn{flex:1;font-family:'Poppins';font-weight:700;font-size:14px;padding:13px;border:none;border-radius:16px;color:#08130c;background:linear-gradient(135deg,#ffd36b,#ff9d5b);box-shadow:0 8px 22px rgba(255,157,91,.5)}
+.btn-x{flex:none;width:52px;border-radius:16px;border:1px solid rgba(255,255,255,.2);color:#fff;background:transparent}
+.tag{position:fixed;top:7px;left:7px;font-weight:600;font-size:10px;background:rgba(0,0,0,.55);color:#fff;padding:5px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.2);z-index:30}
+.hint{position:fixed;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,.6);background:rgba(0,0,0,.5);padding:3px 10px;border-radius:999px;z-index:30}
+</style>
+</head>
+<body>
+<div class="tag">PLATEAU v2 · full-art + commandement</div>
+<div class="phone">
+  <div class="glow g1"></div><div class="glow g2"></div>
+  <header>
+    <span class="brand">TCGOP</span>
+    <span class="tn"><span class="ring">6</span>TOUR</span>
+    <span class="you-turn">✦ À toi</span>
+  </header>
+  <div class="board">
+    <!-- FOE -->
+    <div class="half">
+      <div class="floor" style="background-image:url('/decks/marine-deck-v.png')"></div>
+      <div class="shade foe"></div>
+      <div class="cmd">
+        <div class="capcard foe"><div class="art" style="background-image:url('/cards/akainu-recto.jpg')"></div><div class="sh"></div>
+          <div class="ad"><span class="a" style="color:var(--atk)">⚔9</span><span class="d" style="color:var(--def)">🛡4</span></div>
+          <div class="in"><div class="role">Capitaine</div><div class="nm">Akainu</div>
+            <div class="hp"><div class="bar"><i style="width:100%;background:var(--foe)"></i></div><span class="v" style="color:var(--foe)">45</span></div></div>
+        </div>
+        <div class="shipslot empty">⚓<br>Navire</div>
+        <div class="res">
+          <div class="counts" style="justify-content:flex-end"><span>✋ 6</span><span>🂠 44</span></div>
+          <div class="will" style="justify-content:flex-end"><span class="lbl">Volonté</span><span class="v">5</span></div>
+        </div>
+      </div>
+      <div class="rowlab">Ligne arrière</div>
+      <div class="row">
+        <div class="slot empty">B1</div>
+        <div class="slot unit"><div class="art" style="background-image:url('/cards/tashigi.jpg')"></div></div>
+        <div class="slot empty">B3</div>
+      </div>
+      <div class="rowlab">Ligne avant</div>
+      <div class="row">
+        <div class="slot unit"><div class="art" style="background-image:url('/cards/smoker.jpg')"></div><div class="dmg"><i style="width:70%;background:var(--gd)"></i></div></div>
+        <div class="slot empty">V2</div>
+        <div class="slot unit"><div class="art" style="background-image:url('/cards/momonga.jpg')"></div></div>
+      </div>
+    </div>
+
+    <div class="water"></div>
+
+    <!-- YOU -->
+    <div class="half">
+      <div class="floor flip" style="background-image:url('/decks/mugiwara-deck-v.png')"></div>
+      <div class="shade you"></div>
+      <div class="rowlab">Ligne avant</div>
+      <div class="row">
+        <!-- selected unit shows its info popover (full art otherwise) -->
+        <div class="slot unit sel"><div class="art" style="background-image:url('/cards/zoro.jpg')"></div>
+          <div class="pop"><div class="ph"><span class="pc">3</span><span class="pn">Zoro</span></div>
+            <div class="stats"><span class="a">⚔ 6</span><span class="d">🛡 3</span><span class="h">❤ 7</span></div>
+            <div class="acts"><button>Attaquer</button><button class="sp">Spéciale ★</button></div></div>
+        </div>
+        <div class="slot unit"><div class="art" style="background-image:url('/cards/sanji.jpg')"></div></div>
+        <div class="slot empty">V3</div>
+      </div>
+      <div class="rowlab">Ligne arrière</div>
+      <div class="row">
+        <div class="slot unit"><div class="art" style="background-image:url('/cards/robin.jpg')"></div><div class="dmg"><i style="width:55%;background:var(--atk)"></i></div></div>
+        <div class="slot empty">B2</div>
+        <div class="slot empty">B3</div>
+      </div>
+      <div class="cmd">
+        <div class="capcard"><div class="art" style="background-image:url('/cards/luffy-recto.jpg')"></div><div class="sh"></div>
+          <div class="ad"><span class="a" style="color:var(--atk)">⚔8</span><span class="d" style="color:var(--def)">🛡3</span></div>
+          <div class="in"><div class="role">Capitaine</div><div class="nm">Luffy</div>
+            <div class="hp"><div class="bar"><i style="width:78%;background:linear-gradient(90deg,#37c97a,#5fe39a)"></i></div><span class="v" style="color:var(--hp)">39</span></div></div>
+        </div>
+        <div class="shipslot"><div class="art" style="background-image:url('/cards/going-merry.jpg')"></div><div class="lab">Going Merry</div></div>
+        <div class="res">
+          <div class="will"><span class="lbl">Volonté</span>
+            <span class="pips"><i class="pip on"></i><i class="pip on"></i><i class="pip on"></i><i class="pip on"></i><i class="pip on"></i><i class="pip on"></i><i class="pip on"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i></span>
+            <span class="v">7</span></div>
+          <div class="counts"><span>✋ 5</span><span>🂠 41</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer>
+    <div class="hand">
+      <div class="h" style="background-image:url('/cards/nami.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/usopp.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/chopper.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/franky.jpg')"></div>
+    </div>
+    <div class="cta"><button class="btn">Fin de tour ➜</button><button class="btn-x">✕</button></div>
+  </footer>
+</div>
+<div class="hint">Carte cliquée = infos + actions · sinon pleine illustration</div>
+</body>
+</html>
