@@ -6,7 +6,7 @@ import { ELEMENT_STYLE, HEAL_COLOR } from "@/lib/vfx";
 import type { VfxEvent } from "@/lib/useCombatVfx";
 
 const DURATION: Record<VfxEvent["kind"], number> = {
-  attack: 560, banner: 1150, impact: 880, heal: 920, ko: 760,
+  attack: 560, banner: 1150, impact: 880, heal: 920, ko: 760, spawn: 500,
 };
 
 function Node({ ev, onDone, webglActive }: { ev: VfxEvent; onDone: (id: number) => void; webglActive: boolean }) {
@@ -43,6 +43,12 @@ function Node({ ev, onDone, webglActive }: { ev: VfxEvent; onDone: (id: number) 
   // Pixi owns the KO burst entirely.
   if (webglActive && ev.kind === "ko") return null;
 
+  // The cinematic CutInLayer now owns special/captain naming (DOM, always on).
+  if (ev.kind === "banner") return null;
+
+  // Deploy slam: Pixi draws dust; the DOM punch is the .vfx-slam token flash.
+  if (ev.kind === "spawn") return null;
+
   // --- Projectile from attacker → target (+ optional screen tint on big hits) ---
   if (ev.kind === "attack") {
     const dx = (ev.toX ?? 0) - (ev.fromX ?? 0);
@@ -63,15 +69,7 @@ function Node({ ev, onDone, webglActive }: { ev: VfxEvent; onDone: (id: number) 
     );
   }
 
-  // --- Special / captain banner ---
-  if (ev.kind === "banner") {
-    return (
-      <div className={`vfx-banner ${ev.big ? "vfx-banner-big" : ""}`} style={{ ["--c" as string]: st.color, ["--g" as string]: st.glow } as CSSProperties}>
-        <span className="vfx-banner-name">{ev.label}</span>
-        {ev.sub && <span className="vfx-banner-sub">{ev.sub}</span>}
-      </div>
-    );
-  }
+  // (Special/captain banner is now owned by the cinematic CutInLayer.)
 
   // --- Impact burst + damage number ---
   if (ev.kind === "impact") {

@@ -16,6 +16,8 @@ import { spawnImpact } from "./effects/impact";
 import { spawnLightning } from "./effects/lightning";
 import { spawnHeal } from "./effects/heal";
 import { spawnKO } from "./effects/ko";
+import { spawnCutInFx } from "./effects/cutin";
+import { spawnSlam } from "./effects/slam";
 
 export interface VfxStageHandle { destroy(): void; }
 
@@ -108,12 +110,14 @@ export async function createVfxStage(host: HTMLElement, opts: StageOptions = {})
     if (lost) return;
     switch (ev.kind) {
       case "attack":
+        if (ev.big) spawnCutInFx(api, ev);
         if (ev.element === "thunder") spawnLightning(api, ev);
         else spawnProjectile(api, ev);
         break;
       case "impact": spawnImpact(api, ev); break;
       case "heal": spawnHeal(api, ev); break;
       case "ko": spawnKO(api, ev); break;
+      case "spawn": spawnSlam(api, ev); break;
       // banner text stays in the DOM layer (crisp/localised)
     }
   }

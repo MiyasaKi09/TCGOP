@@ -18,6 +18,8 @@ import EventConfirm from "./EventConfirm";
 import CombatVfxLayer from "./CombatVfxLayer";
 import PlayRevealLayer from "./PlayRevealLayer";
 import VfxStage from "./vfx/VfxStage";
+import CutInLayer from "./vfx/CutInLayer";
+import AmbientStage from "./vfx/AmbientStage";
 import { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
@@ -521,12 +523,15 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
   return (
     <div
-      className="sea-bg h-screen flex flex-col overflow-hidden text-white"
+      className="sea-bg h-screen flex flex-col overflow-hidden text-white relative"
       style={{ userSelect: "none", WebkitUserSelect: "none" }}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Animated sea (behind everything; static .sea-bg shows through on low tier) */}
+      <AmbientStage />
+
       {/* HEADER */}
-      <header className="shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "1px solid rgba(232,184,75,.18)", background: "linear-gradient(180deg,rgba(8,12,18,.9),rgba(6,9,14,.6))" }}>
+      <header className="relative z-10 shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "1px solid rgba(232,184,75,.18)", background: "linear-gradient(180deg,rgba(8,12,18,.9),rgba(6,9,14,.6))" }}>
         <span className="font-cinzel font-extrabold text-[16px] tracking-wider" style={{ color: "#E8B84B" }}>TCGOP</span>
         <span className="font-oswald text-[9px] uppercase tracking-[.18em] text-white/40 hidden sm:inline">Grand Line</span>
         <div className={`ml-auto font-oswald text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>{statusText.text}</div>
@@ -545,10 +550,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       {/* Combat VFX + play-reveal overlays */}
       <VfxStage onActiveChange={onVfxActiveChange} />
       <CombatVfxLayer events={vfxEvents} remove={removeVfx} webglActive={webglActive} />
+      <CutInLayer />
       <PlayRevealLayer announcements={announcements} dismiss={dismissAnnouncement} />
 
       {/* BOARD — two ships broadside */}
-      <main ref={boardRef} className="flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
+      <main ref={boardRef} className="relative z-10 flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
         <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(humanPlayer, true)}</section>
 
         <div className="shrink-0 flex flex-col items-center justify-center gap-2 px-0.5">
@@ -564,7 +570,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       </main>
 
       {/* FOOTER — hand + actions */}
-      <footer className="shrink-0 px-3 pb-2 pt-1 flex flex-col gap-1.5" style={{ background: "linear-gradient(0deg,rgba(6,9,14,.75),transparent)" }}>
+      <footer className="relative z-10 shrink-0 px-3 pb-2 pt-1 flex flex-col gap-1.5" style={{ background: "linear-gradient(0deg,rgba(6,9,14,.75),transparent)" }}>
         <div className="flex items-end gap-3">
           {/* Hand */}
           <div className="flex-1 min-w-0">
@@ -575,7 +581,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
               <div className="flex-1 h-px bg-white/10" />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1 items-end" style={{ minHeight: "170px" }}>
-              {player.hand.map((id) => {
+              {player.hand.map((id, i) => {
                 const card = state.cards[id];
                 if (!card) return null;
                 const def = getCardDef(card.defId);
@@ -585,10 +591,16 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
                   return false;
                 });
                 const dragType = def.type === "character" || def.type === "object";
+                // Subtle fan: rotate/lift cards by distance from the hand's centre.
+                const off = i - (player.hand.length - 1) / 2;
+                const rot = Math.max(-7, Math.min(7, off * 2));
+                const ty = Math.min(14, Math.abs(off) * 2.4);
+                const hovered = hoveredHand?.id === id;
                 return (
                   <div
                     key={id}
-                    className="flex-shrink-0"
+                    className="flex-shrink-0 transition-transform duration-200"
+                    style={{ transform: hovered ? "rotate(0deg) translateY(-6px)" : `rotate(${rot}deg) translateY(${ty}px)`, transformOrigin: "bottom center" }}
                     onMouseEnter={(e) => setHoveredHand({ id, rect: e.currentTarget.getBoundingClientRect() })}
                     onMouseLeave={() => setHoveredHand((h) => (h?.id === id ? null : h))}
                   >

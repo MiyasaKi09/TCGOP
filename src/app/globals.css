@@ -94,7 +94,7 @@
 .animate-status-burn { animation: status-burn 1.5s ease-in-out infinite; }
 .animate-status-freeze { animation: status-freeze 2s ease-in-out infinite; }
 .animate-health-low { animation: health-low 1s ease-in-out infinite; }
-.animate-modal-enter { animation: modal-enter 0.2s ease-out forwards; }
+.animate-modal-enter { animation: modal-enter var(--dur-base, 300ms) var(--ease-spring, ease-out) forwards; }
 
 /* Glass morphism */
 .glass {
@@ -453,3 +453,69 @@
   box-shadow: inset 0 0 0 1px var(--c), 0 8px 30px rgba(0,0,0,.6);
 }
 @media (prefers-reduced-motion: reduce) { .vfx-reveal-pop { animation-duration: .15s; } }
+
+/* ============================================================ */
+/* === SIGNATURE CUT-IN (special / captain attacks) =========== */
+/* ============================================================ */
+.cutin-root { position: fixed; inset: 0; z-index: 38; cursor: pointer; }
+.cutin-vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse 120% 70% at 50% 50%, transparent 26%, rgba(3,5,9,.8) 100%);
+  animation: cutin-fade var(--cutin-dur, 1500ms) ease forwards;
+}
+.cutin-band {
+  position: absolute; left: 0; right: 0; top: 30%; height: 40%;
+  display: flex; align-items: center; gap: 26px; padding: 0 6%;
+  background: linear-gradient(100deg, rgba(6,8,12,0) 0%, rgba(6,8,12,.88) 16%, rgba(6,8,12,.88) 84%, rgba(6,8,12,0) 100%);
+  border-top: 2px solid var(--c); border-bottom: 2px solid var(--c);
+  box-shadow: 0 0 70px -12px var(--c);
+}
+.cutin-band-l { justify-content: flex-start; animation: cutin-band-l var(--cutin-dur, 1500ms) cubic-bezier(.16,1,.3,1) forwards; }
+.cutin-band-r { justify-content: flex-end; flex-direction: row-reverse; animation: cutin-band-r var(--cutin-dur, 1500ms) cubic-bezier(.16,1,.3,1) forwards; }
+.cutin-art {
+  width: 222px; height: 296px; max-height: 92%; flex: none; border-radius: 14px;
+  background-size: cover; background-position: center 16%;
+  box-shadow: 0 0 0 2px var(--c), 0 18px 50px rgba(0,0,0,.6);
+  animation: cutin-art var(--cutin-dur, 1500ms) cubic-bezier(.16,1,.3,1) forwards;
+}
+.cutin-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cutin-attack {
+  font-family: var(--font-bangers), system-ui, sans-serif;
+  font-size: clamp(30px, 5.2vw, 66px); line-height: 1; letter-spacing: .02em;
+  text-shadow: 0 3px 0 rgba(0,0,0,.5), 0 0 24px var(--c);
+  animation: cutin-name var(--cutin-dur, 1500ms) ease forwards;
+}
+.cutin-name {
+  font-family: var(--font-cinzel), Georgia, serif; font-weight: 800; color: #fff;
+  font-size: clamp(16px, 2.4vw, 30px); text-shadow: 0 2px 8px #000;
+  animation: cutin-name var(--cutin-dur, 1500ms) ease forwards; animation-delay: 60ms;
+}
+@keyframes cutin-fade { 0% { opacity: 0; } 12% { opacity: 1; } 82% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes cutin-band-l { 0% { transform: translateX(-8%); opacity: 0; } 10% { opacity: 1; } 18% { transform: translateX(0); } 84% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(-6%); opacity: 0; } }
+@keyframes cutin-band-r { 0% { transform: translateX(8%); opacity: 0; } 10% { opacity: 1; } 18% { transform: translateX(0); } 84% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(6%); opacity: 0; } }
+@keyframes cutin-art { 0% { transform: translateX(-40px) scale(.92); opacity: 0; } 16% { opacity: 1; } 30% { transform: translateX(0) scale(1); } 84% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes cutin-name { 0% { transform: translateY(16px); opacity: 0; } 24% { opacity: 0; } 38% { transform: translateY(0); opacity: 1; } 84% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .cutin-art { display: none; }
+  .cutin-band-l, .cutin-band-r, .cutin-attack, .cutin-name, .cutin-vignette { animation-duration: .45s !important; }
+}
+
+/* --- Deploy slam (token punch) --- */
+.vfx-slam { animation: vfx-slam .42s cubic-bezier(.2,.9,.3,1); }
+@keyframes vfx-slam {
+  0% { transform: translateY(-16px) scale(1.1, .88); }
+  42% { transform: translateY(0) scale(.92, 1.1); }
+  72% { transform: scale(1.04, .97); }
+  100% { transform: none; }
+}
+
+/* --- 3D captain flip (recto ↔ verso reveal) --- */
+.cap-flip-face { animation: cap-flip-in .55s cubic-bezier(.2,.8,.3,1); }
+@keyframes cap-flip-in {
+  0% { transform: perspective(820px) rotateY(-92deg); opacity: .2; }
+  55% { opacity: 1; }
+  100% { transform: perspective(820px) rotateY(0deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vfx-slam, .cap-flip-face { animation-duration: .2s; }
+}

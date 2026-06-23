@@ -149,6 +149,10 @@ export function buildAnnouncement(
 
 /** Per-kind reveal duration in ms (also used to pace the AI loop). */
 export function announceDuration(a: PlayAnnouncement): number {
+  // Special / captain attacks play a full cinematic cut-in — hold longer so the
+  // engine's busyUntilRef stalls the AI loop until it finishes.
+  if (a.kind === "specialAttack" || a.kind === "fruitSpecialAttack") return 1700;
+  if (a.kind === "captainAttack") return 1600;
   if (a.toast) return a.kind === "endTurn" ? 550 : 750;
   if (!a.big) return 700;
   return 1150;

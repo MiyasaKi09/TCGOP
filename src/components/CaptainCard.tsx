@@ -24,8 +24,9 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
 
   return (
     <div
+      key={captain.flipped ? "verso" : "recto"}
       onClick={onClick}
-      className={`relative rounded-xl overflow-hidden w-40 p-2.5 transition-all duration-300 cursor-pointer ${captain.tapped ? "saturate-50 opacity-70" : isOpponent ? "" : "hover:brightness-110"}`}
+      className={`cap-flip-face relative rounded-xl overflow-hidden w-40 p-2.5 transition-all duration-300 cursor-pointer ${captain.tapped ? "saturate-50 opacity-70" : isOpponent ? "" : "hover:brightness-110"}`}
       style={{ background: fac.frame, boxShadow: `inset 0 0 0 2px ${edge}, 0 8px 22px rgba(0,0,0,.5)` }}
     >
       {art ? (

@@ -6,7 +6,7 @@ import { getCardDef, getCaptainDef } from "@/engine/cardRegistry";
 import { styleFor, type VfxElement } from "./vfx";
 import { vfxBus } from "./vfxBus";
 
-export type VfxKind = "attack" | "impact" | "heal" | "ko" | "banner";
+export type VfxKind = "attack" | "impact" | "heal" | "ko" | "banner" | "spawn";
 
 export interface VfxEvent {
   id: number;
@@ -21,6 +21,11 @@ export interface VfxEvent {
   big?: boolean;     // captain / special — grander
   label?: string;    // banner text
   sub?: string;      // banner subtitle
+  // Cut-in metadata (attack events) — who is attacking, for the cinematic.
+  defId?: string;
+  attackerIsCaptain?: boolean;
+  attackerName?: string;
+  attackName?: string;
 }
 
 const REDUCED = typeof window !== "undefined" &&
@@ -130,14 +135,28 @@ export function useCombatVfx(
       const from = centerOf(pa.attackerId);
       const to = centerOf(targetId(pa, state));
       const st = styleFor(pa.element, pa.hasHaki);
-      const big = pa.isSpecial || pa.attackerId.startsWith("captain_");
+      const isCap = pa.attackerId.startsWith("captain_");
+      const big = pa.isSpecial || isCap;
       const { label, sub } = attackLabel(state, pa);
+      // attacker identity for the cut-in
+      let defId: string | undefined, attackerName: string | undefined;
+      try {
+        if (isCap) {
+          const pid = pa.attackerId.replace("captain_", "") as PlayerId;
+          const cap = getCaptainDef(state.players[pid].captain.defId);
+          defId = cap.id; attackerName = cap.name;
+        } else {
+          const d = getCardDef(state.cards[pa.attackerId].defId);
+          defId = d.id; attackerName = d.name;
+        }
+      } catch { /* keep undefined */ }
       if (from && to) {
         out.push({
           id: idc.current++, kind: "attack", element: st.key,
           fromX: from.x, fromY: from.y, toX: to.x, toY: to.y,
           isSpecial: pa.isSpecial, zone: pa.attackTraits.includes("zone") || pa.attackTraits.includes("total"),
           impact: pa.attackTraits.includes("impact") || pa.pushback, big,
+          defId, attackerIsCaptain: isCap, attackerName, attackName: pa.isSpecial ? label : undefined,
         });
       }
       // wind-up lunge on attacker
@@ -201,6 +220,15 @@ export function useCombatVfx(
       if (!snap.board.has(id)) {
         const c = centerOf(id); // token may still be in the DOM this frame
         if (c) out.push({ id: idc.current++, kind: "ko", element: "physical", toX: c.x, toY: c.y });
+      }
+    }
+
+    // --- 4. Spawn: a unit was deployed onto the board → slam ---
+    for (const id of snap.board) {
+      if (!p.board.has(id)) {
+        const c = centerOf(id);
+        if (c) out.push({ id: idc.current++, kind: "spawn", element: "physical", toX: c.x, toY: c.y });
+        flash(id, "vfx-slam", 430);
       }
     }
 
