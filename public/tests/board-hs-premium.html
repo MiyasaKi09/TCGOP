@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Plateau HS — un seul terrain, à plat</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800&family=Oswald:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--gd:#e8b84b;--atk:#ff6b6b;--def:#5aa0ff;--hp:#46cf7a;--foe:#e0584d}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Oswald',sans-serif;background:#04070c;color:#eaf0f7;-webkit-font-smoothing:antialiased}
+.phone{max-width:440px;margin:0 auto;height:100vh;min-height:780px;position:relative;overflow:hidden;display:flex;flex-direction:column;
+  background:#04070c}
+/* HUD */
+header{position:relative;z-index:5;display:flex;align-items:center;gap:10px;padding:9px 14px;background:linear-gradient(180deg,rgba(6,12,20,.95),rgba(6,12,20,.5));border-bottom:1px solid rgba(232,184,75,.2)}
+.brand{font-family:'Cinzel';font-weight:800;color:var(--gd);letter-spacing:.06em;font-size:15px}
+.turn{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#9fe6a8;background:rgba(70,207,122,.12);border:1px solid rgba(70,207,122,.4);padding:4px 11px;border-radius:999px}
+.turn b{width:7px;height:7px;border-radius:50%;background:var(--hp);box-shadow:0 0 8px var(--hp)}
+/* ONE BOARD */
+.board{position:relative;z-index:2;flex:1;display:flex;flex-direction:column;overflow:hidden}
+.half{position:relative;flex:1;display:flex;flex-direction:column;justify-content:center;gap:7px;padding:8px 10px}
+.floor{position:absolute;inset:0;background-size:cover;background-position:center;z-index:0}
+.floor.flip{transform:scaleY(-1)}
+.shade{position:absolute;inset:0;z-index:1;background:linear-gradient(180deg,rgba(4,9,16,.55),rgba(4,9,16,.35) 45%,rgba(4,9,16,.6))}
+.hero{position:relative;z-index:3;display:flex;align-items:center;gap:9px;padding:0 2px}
+.hero .pic{width:46px;height:46px;border-radius:50%;background-size:cover;background-position:center 16%;flex:none;
+  border:2px solid var(--gd);box-shadow:0 4px 12px rgba(0,0,0,.6)}
+.hero.foe .pic{border-color:var(--foe)}
+.hero .info{flex:1;min-width:0}
+.hero .nm{font-family:'Cinzel';font-weight:700;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hbar{height:7px;border-radius:99px;background:rgba(0,0,0,.55);overflow:hidden;margin-top:3px;border:1px solid rgba(0,0,0,.5)}
+.hbar i{display:block;height:100%}
+.hero .nums{font-size:11px;font-weight:700;color:rgba(255,255,255,.85);display:flex;gap:9px;margin-top:2px}
+.hero .a{color:var(--atk)}.hero .d{color:var(--def)}
+.vol{flex:none;font-family:'Cinzel';font-weight:800;font-size:13px;color:var(--gd);background:rgba(6,12,20,.7);border:1px solid rgba(232,184,75,.4);padding:3px 9px;border-radius:999px}
+/* rows */
+.rowlab{position:relative;z-index:3;font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,.4);padding-left:3px}
+.row{position:relative;z-index:3;display:flex;gap:8px;justify-content:center}
+.slot{flex:1;max-width:120px;min-width:0;height:64px;border-radius:11px;position:relative}
+.slot.empty{border:1px dashed rgba(255,255,255,.22);background:rgba(6,12,20,.32);display:flex;align-items:center;justify-content:center;font-size:9px;letter-spacing:.1em;color:rgba(255,255,255,.4)}
+.slot.unit{overflow:hidden;background:#0b1018;border:1px solid rgba(255,255,255,.18);box-shadow:0 6px 16px rgba(0,0,0,.6)}
+.slot .art{position:absolute;inset:0;background-size:cover;background-position:center 22%}
+.slot .ov{position:absolute;left:0;right:0;bottom:0;padding:2px 5px;background:linear-gradient(180deg,transparent,rgba(3,7,12,.96))}
+.slot .nm{font-size:9px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slot .st{display:flex;gap:5px;font-size:10px;font-weight:700}
+.st .a{color:var(--atk)}.st .d{color:var(--def)}.st .h{color:var(--hp)}
+.cost{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:rgba(4,8,12,.92);border:1.5px solid var(--gd);color:var(--gd);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;z-index:2}
+/* center clash — joins the two halves into ONE board */
+.clash{position:relative;z-index:4;height:30px;display:flex;align-items:center;justify-content:center;gap:10px;
+  background:linear-gradient(180deg,rgba(4,9,16,.7),rgba(10,30,48,.5),rgba(4,9,16,.7));border-top:1px solid rgba(232,184,75,.25);border-bottom:1px solid rgba(232,184,75,.25)}
+.clash .l{width:60px;height:1px;background:linear-gradient(90deg,transparent,rgba(232,184,75,.7))}
+.clash .l2{background:linear-gradient(90deg,rgba(232,184,75,.7),transparent)}
+.clash .t{font-family:'Cinzel';font-weight:800;font-size:12px;letter-spacing:.16em;color:var(--gd);text-shadow:0 0 12px rgba(232,184,75,.5)}
+/* hand */
+footer{position:relative;z-index:5;padding:7px 12px 16px;background:linear-gradient(0deg,rgba(4,7,12,.96),rgba(4,7,12,.55))}
+.hand{display:flex;gap:8px;justify-content:center;margin-bottom:9px}
+.h{width:60px;height:84px;border-radius:10px;background-size:cover;background-position:center 20%;border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 18px rgba(0,0,0,.65)}
+.h:nth-child(1){transform:rotate(-6deg) translateY(5px)}.h:nth-child(4){transform:rotate(6deg) translateY(5px)}
+.cta{display:flex;gap:8px}
+.btn{flex:1;font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:14px;padding:12px;border:none;border-radius:12px;background:linear-gradient(180deg,#f0c760,#d9a434);color:#0a0d12;box-shadow:0 5px 16px rgba(217,164,52,.4)}
+.btn-x{flex:none;width:52px;border-radius:12px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.16)}
+.tag{position:fixed;top:7px;left:7px;font-size:10px;background:rgba(0,0,0,.6);color:#fff;padding:4px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.15);z-index:9}
+</style>
+</head>
+<body>
+<div class="tag">PLATEAU · un seul terrain, à plat</div>
+<div class="phone">
+  <header><span class="brand">⚓ TCGOP</span><span class="turn"><b></b>Votre tour</span></header>
+  <div class="board">
+    <!-- FOE HALF -->
+    <div class="half">
+      <div class="floor" style="background-image:url('/decks/marine-deck-v.png')"></div>
+      <div class="shade"></div>
+      <div class="hero foe"><div class="pic" style="background-image:url('/cards/akainu-recto.jpg')"></div>
+        <div class="info"><div class="nm">Akainu · Marine</div><div class="hbar"><i style="width:100%;background:var(--foe)"></i></div></div>
+        <div class="nums"><span class="a">⚔9</span><span class="d">🛡4</span></div></div>
+      <div class="rowlab">Ligne arrière</div>
+      <div class="row">
+        <div class="slot empty">B1</div>
+        <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/tashigi.jpg')"></div><div class="ov"><div class="nm">Tashigi</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">5</span></div></div></div>
+        <div class="slot empty">B3</div>
+      </div>
+      <div class="rowlab">Ligne avant</div>
+      <div class="row">
+        <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/smoker.jpg')"></div><div class="ov"><div class="nm">Smoker</div><div class="st"><span class="a">5</span><span class="d">3</span><span class="h">6</span></div></div></div>
+        <div class="slot empty">V2</div>
+        <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/momonga.jpg')"></div><div class="ov"><div class="nm">Momonga</div><div class="st"><span class="a">4</span><span class="d">3</span><span class="h">5</span></div></div></div>
+      </div>
+    </div>
+    <div class="clash"><span class="l"></span><span class="t">⚔ TOUR 6</span><span class="l l2"></span></div>
+    <!-- YOU HALF -->
+    <div class="half">
+      <div class="floor flip" style="background-image:url('/decks/mugiwara-deck-v.png')"></div>
+      <div class="shade"></div>
+      <div class="rowlab">Ligne avant</div>
+      <div class="row">
+        <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/zoro.jpg')"></div><div class="ov"><div class="nm">Zoro</div><div class="st"><span class="a">6</span><span class="d">3</span><span class="h">7</span></div></div></div>
+        <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/sanji.jpg')"></div><div class="ov"><div class="nm">Sanji</div><div class="st"><span class="a">5</span><span class="d">2</span><span class="h">6</span></div></div></div>
+        <div class="slot empty">V3</div>
+      </div>
+      <div class="rowlab">Ligne arrière</div>
+      <div class="row">
+        <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/robin.jpg')"></div><div class="ov"><div class="nm">Robin</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">6</span></div></div></div>
+        <div class="slot empty">B2</div>
+        <div class="slot empty">B3</div>
+      </div>
+      <div class="hero"><div class="pic" style="background-image:url('/cards/luffy-recto.jpg')"></div>
+        <div class="info"><div class="nm">Luffy · Mugiwara</div><div class="hbar"><i style="width:78%;background:var(--hp)"></i></div></div>
+        <div class="vol">7 ⚡</div>
+        <div class="nums"><span class="a">⚔8</span><span class="d">🛡3</span></div></div>
+    </div>
+  </div>
+  <footer>
+    <div class="hand">
+      <div class="h" style="background-image:url('/cards/nami.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/usopp.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/chopper.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/franky.jpg')"></div>
+    </div>
+    <div class="cta"><button class="btn">Fin de tour ➜</button><button class="btn-x">✕</button></div>
+  </footer>
+</div>
+</body>
+</html>
