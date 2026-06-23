@@ -45,7 +45,7 @@ export default function CaptainMenu({
   const side = captain.flipped ? def.verso : def.recto;
   const ratio = Math.max(0, captain.currentPv / side.pv);
   const hpc = hpColor(ratio);
-  const edge = captain.flipped ? "#E0463F" : "#E8B84B";
+  const edge = captain.flipped ? "var(--color-target)" : "var(--color-gold)";
 
   const canFlip = isYou && !captain.flipped && validActions.some((a) => a.type === "flipCaptain");
   const canAttack = isYou && captain.flipped && validActions.some((a) => a.type === "captainAttack");
@@ -57,8 +57,8 @@ export default function CaptainMenu({
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-40 p-4" onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
-      <div ref={zoomRef} className="rounded-2xl p-4 flex flex-col gap-2.5 w-[330px] max-h-[88vh] overflow-y-auto"
-        style={{ background: "rgba(10,14,20,.96)", boxShadow: `inset 0 0 0 1px ${edge}55, 0 24px 70px rgba(0,0,0,.6)`, userSelect: "none", willChange: "transform" }}
+      <div ref={zoomRef} className="panel halftone p-4 flex flex-col gap-2.5 w-[330px] max-h-[88vh] overflow-y-auto"
+        style={{ boxShadow: `inset 0 0 0 1.5px ${edge}, var(--shadow-modal)`, userSelect: "none", willChange: "transform" }}
         onClick={(e) => e.stopPropagation()}>
 
         {/* header */}
@@ -81,8 +81,8 @@ export default function CaptainMenu({
             <div className="font-oswald text-[10px] mt-0.5 font-bold" style={{ color: hpc }}>{captain.currentPv} / {side.pv} PV</div>
           </div>
           <div className="font-oswald font-bold text-[13px] flex gap-2">
-            <span style={{ color: "#FF7062" }}>⚔{side.atk}</span>
-            <span style={{ color: "#7FB0E8" }}>🛡{side.def}</span>
+            <span className="text-atk">⚔{side.atk}</span>
+            <span className="text-def">🛡{side.def}</span>
           </div>
         </div>
 
@@ -96,11 +96,11 @@ export default function CaptainMenu({
 
         {/* powers of the current side */}
         <div className="flex flex-col gap-1.5">
-          {!captain.flipped && def.recto.attacks.map((atk, i) => <AbilityRow key={i} a={atk} accent="#FF7062" kind="★" />)}
-          {!captain.flipped && def.recto.surcharge && <AbilityRow a={def.recto.surcharge} accent="#E8B84B" kind="⚡" />}
-          {captain.flipped && <AbilityRow a={def.verso.baseAction} accent="#5BC46A" kind="⚔" />}
-          {captain.flipped && <AbilityRow a={def.verso.specialAttack} accent="#FF7062" kind="★" />}
-          {captain.flipped && def.verso.surcharge && <AbilityRow a={def.verso.surcharge} accent="#E8B84B" kind="⚡" />}
+          {!captain.flipped && def.recto.attacks.map((atk, i) => <AbilityRow key={i} a={atk} accent="var(--color-atk)" kind="★" />)}
+          {!captain.flipped && def.recto.surcharge && <AbilityRow a={def.recto.surcharge} accent="var(--color-gold)" kind="⚡" />}
+          {captain.flipped && <AbilityRow a={def.verso.baseAction} accent="var(--color-deploy)" kind="⚔" />}
+          {captain.flipped && <AbilityRow a={def.verso.specialAttack} accent="var(--color-atk)" kind="★" />}
+          {captain.flipped && def.verso.surcharge && <AbilityRow a={def.verso.surcharge} accent="var(--color-gold)" kind="⚡" />}
           {captain.flipped && def.verso.naturalHaki && def.verso.naturalHaki.length > 0 && (
             <div className="font-oswald text-[9px] text-purple-300/80">👁 Haki naturel : {def.verso.naturalHaki.join(", ")}</div>
           )}
@@ -125,23 +125,21 @@ export default function CaptainMenu({
         {isYou && (
           <div className="flex flex-col gap-1.5 pt-0.5">
             {canFlip && (
-              <button onClick={onFlip} className="action-btn font-oswald px-3 py-2 rounded-xl text-xs font-bold transition-all" style={{ background: "rgba(176,40,40,.7)" }}>⚔ Engager le Capitaine</button>
+              <button onClick={onFlip} className="btn btn-danger action-btn px-3 py-2 text-xs">⚔ Engager le Capitaine</button>
             )}
             {captain.flipped && (
-              <button onClick={onAttack} disabled={!canAttack}
-                className="action-btn font-oswald px-3 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ background: "rgba(224,70,63,.7)" }}>
+              <button onClick={onAttack} disabled={!canAttack} className="btn btn-danger action-btn px-3 py-2 text-xs">
                 ⚔ Attaquer{!canAttack && attackReason ? ` — ${attackReason}` : ""}
               </button>
             )}
             {canKingHaki && (
-              <button onClick={onKingHaki} className="action-btn font-oswald px-3 py-2 rounded-xl text-xs font-bold transition-all" style={{ background: "rgba(190,140,30,.75)" }}>👑 Haki des Rois</button>
+              <button onClick={onKingHaki} className="btn btn-gold action-btn px-3 py-2 text-xs">👑 Haki des Rois</button>
             )}
-            <button onClick={onClose} className="font-oswald px-3 py-1.5 rounded-lg text-xs text-white/55 transition-all" style={{ background: "rgba(255,255,255,.06)" }}>Fermer</button>
+            <button onClick={onClose} className="btn btn-ghost action-btn px-3 py-1.5 text-xs">Fermer</button>
           </div>
         )}
         {!isYou && (
-          <button onClick={onClose} className="font-oswald px-3 py-1.5 rounded-lg text-xs text-white/55 transition-all" style={{ background: "rgba(255,255,255,.06)" }}>Fermer</button>
+          <button onClick={onClose} className="btn btn-ghost action-btn px-3 py-1.5 text-xs">Fermer</button>
         )}
       </div>
     </div>

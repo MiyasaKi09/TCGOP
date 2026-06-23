@@ -72,9 +72,10 @@ export default function Home() {
       <button
         key={key}
         onClick={() => onPick(key)}
-        className="relative w-52 rounded-2xl p-5 text-left overflow-hidden transition-all duration-200 hover:-translate-y-1"
-        style={{ background: m.frame, boxShadow: on ? `inset 0 0 0 2px ${m.accent}, 0 0 28px 2px ${m.accent}55` : "inset 0 0 0 1px rgba(255,255,255,.08), 0 10px 26px rgba(0,0,0,.5)" }}
+        className="panel-clip relative w-52 p-5 text-left overflow-hidden transition-all duration-200 hover:-translate-y-1"
+        style={{ background: m.frame, border: "2px solid var(--ink-edge)", boxShadow: on ? `inset 0 0 0 2px ${m.accent}, 0 0 28px 2px ${m.accent}55` : "inset 0 0 0 1px rgba(255,255,255,.08), 0 10px 26px rgba(0,0,0,.5)" }}
       >
+        <div className="halftone absolute inset-0 opacity-40 pointer-events-none" />
         <div className="absolute inset-0 flex items-center justify-center opacity-[0.10] pointer-events-none">
           <Crest size={130} color="#fff" />
         </div>
@@ -91,14 +92,14 @@ export default function Home() {
 
   return (
     <main className="sea-bg min-h-screen flex flex-col items-center gap-7 p-8 py-12">
-      <div className="flex flex-col items-center gap-2">
+      <div className="speed-lines flex flex-col items-center gap-2 px-10 py-4">
         <div className="flex items-center gap-3">
-          <SkullCross size={26} color="#E8B84B" />
-          <h1 className="font-cinzel text-3xl sm:text-4xl font-extrabold tracking-wide text-center" style={{ color: "#E8B84B", textShadow: "0 4px 24px rgba(0,0,0,.6)" }}>
+          <SkullCross size={26} color="var(--color-gold)" />
+          <h1 className="font-cinzel text-3xl sm:text-4xl font-extrabold tracking-wide text-center text-gold" style={{ textShadow: "0 2px 0 var(--ink-edge), 0 4px 24px rgba(0,0,0,.7)" }}>
             One Piece Grand Line TCG
           </h1>
         </div>
-        <p className="font-oswald uppercase tracking-[.2em] text-xs text-white/45">Prépare le duel</p>
+        <p className="font-oswald uppercase tracking-[.2em] text-xs text-white/50">Prépare le duel</p>
       </div>
 
       <section className="flex flex-col items-center gap-3">
@@ -125,9 +126,9 @@ export default function Home() {
                 key={l.key}
                 onClick={() => setLevel(l.key)}
                 className="w-44 rounded-xl px-4 py-3 text-left transition-all duration-200"
-                style={{ background: on ? "linear-gradient(180deg,#2a2f3a,#1a1e26)" : "rgba(255,255,255,.04)", boxShadow: on ? "inset 0 0 0 2px #E8B84B, 0 0 22px 1px #E8B84B33" : "inset 0 0 0 1px rgba(255,255,255,.07)" }}
+                style={{ background: on ? "linear-gradient(180deg,#2a2f3a,#1a1e26)" : "rgba(255,255,255,.04)", border: "2px solid var(--ink-edge)", boxShadow: on ? "inset 0 0 0 2px var(--color-gold), 0 0 22px 1px #E8B84B33" : "inset 0 0 0 1px rgba(255,255,255,.07)" }}
               >
-                <div className="font-oswald font-bold text-sm" style={{ color: on ? "#E8B84B" : "rgba(255,255,255,.8)" }}>{l.label}</div>
+                <div className="font-oswald font-bold text-sm" style={{ color: on ? "var(--color-gold)" : "rgba(255,255,255,.8)" }}>{l.label}</div>
                 <div className="font-spectral italic text-[11px] text-white/45 mt-0.5">{l.sub}</div>
               </button>
             );
@@ -138,9 +139,7 @@ export default function Home() {
       <button
         onClick={startGame}
         disabled={!ready}
-        className={`action-btn font-oswald font-bold uppercase tracking-wider px-10 py-3.5 rounded-xl text-lg transition-all mt-1 ${
-          ready ? "gold-surface shadow-xl cursor-pointer" : "bg-white/5 text-white/30 cursor-not-allowed"
-        }`}
+        className={`btn action-btn text-lg px-10 py-3.5 mt-1 ${ready ? "btn-gold" : "btn-ghost"}`}
       >
         Commencer le combat
       </button>

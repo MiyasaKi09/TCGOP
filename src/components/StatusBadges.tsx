@@ -1,23 +1,29 @@
 "use client";
 
 import type { StatusEffect } from "@/types";
+import { STATUS_COLOR } from "@/lib/theme";
 
 interface StatusMeta { icon: string; label: string; color: string; }
 
-// Visual language shared across board tokens, captain, menus and the legend.
-export const STATUS_META: Record<string, StatusMeta> = {
-  burn: { icon: "🔥", label: "Brûlé", color: "#E0653C" },
-  poison: { icon: "☠", label: "Empoisonné", color: "#8FB84A" },
-  freeze: { icon: "❄", label: "Gelé", color: "#5CC6E0" },
-  desiccation: { icon: "🏜", label: "Dessèchement", color: "#C2925A" },
-  trap: { icon: "💣", label: "Piégé", color: "#E0463F" },
-  immobilize: { icon: "🌸", label: "Immobilisé", color: "#E879B0" },
-  sleep: { icon: "💤", label: "Endormi", color: "#9B8CE0" },
-  loseAction: { icon: "⏸", label: "Action perdue", color: "#C9A82E" },
-  selfKO: { icon: "⌛", label: "Sursis", color: "#E0463F" },
-  noStealth: { icon: "👁", label: "Repéré", color: "#7FB0E8" },
-  noHeal: { icon: "🚫", label: "Soins bloqués", color: "#FF8A80" },
+// Icon + label per status; colours come from the shared theme tokens.
+const STATUS_TEXT: Record<string, { icon: string; label: string }> = {
+  burn: { icon: "🔥", label: "Brûlé" },
+  poison: { icon: "☠", label: "Empoisonné" },
+  freeze: { icon: "❄", label: "Gelé" },
+  desiccation: { icon: "🏜", label: "Dessèchement" },
+  trap: { icon: "💣", label: "Piégé" },
+  immobilize: { icon: "🌸", label: "Immobilisé" },
+  sleep: { icon: "💤", label: "Endormi" },
+  loseAction: { icon: "⏸", label: "Action perdue" },
+  selfKO: { icon: "⌛", label: "Sursis" },
+  noStealth: { icon: "👁", label: "Repéré" },
+  noHeal: { icon: "🚫", label: "Soins bloqués" },
 };
+
+// Visual language shared across board tokens, captain, menus and the legend.
+export const STATUS_META: Record<string, StatusMeta> = Object.fromEntries(
+  Object.entries(STATUS_TEXT).map(([k, v]) => [k, { ...v, color: STATUS_COLOR[k] ?? "#aaa" }])
+);
 
 function turnsLabel(n: number): string {
   return n < 0 ? "∞" : String(n);

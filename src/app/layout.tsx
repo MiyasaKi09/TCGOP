@@ -24,7 +24,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="fr" className={`${cinzel.variable} ${oswald.variable} ${spectral.variable} ${bangers.variable}`}>
-      <body className="min-h-screen antialiased text-white" style={{ background: "#06080c", fontFamily: "var(--font-spectral), Georgia, serif" }}>
+      <body className="min-h-screen antialiased text-white" style={{ background: "var(--color-ink-900)", fontFamily: "var(--font-spectral), Georgia, serif" }}>
         {children}
       </body>
     </html>

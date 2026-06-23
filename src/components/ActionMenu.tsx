@@ -69,10 +69,10 @@ export default function ActionMenu({
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-40 p-4" onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
-      <div className="rounded-2xl p-4 flex flex-col gap-3 animate-fade-in" style={{ background: "rgba(10,14,20,.94)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.3), 0 24px 70px rgba(0,0,0,.6)", userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
+      <div className="panel panel-gold halftone p-4 flex flex-col gap-3 animate-fade-in" style={{ userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Cliquez une attaque sur la carte</span>
-          <span className="font-oswald font-bold text-sm" style={{ color: "#E8B84B" }}>{playerVol} Vol.</span>
+          <span className="font-oswald font-bold text-sm text-gold">{playerVol} Vol.</span>
         </div>
 
         <div ref={zoomRef} style={{ willChange: "transform" }}><FullCard def={def} instance={instance} state={state} width={360} actions={actions} /></div>
@@ -99,8 +99,8 @@ export default function ActionMenu({
         )}
 
         <div className="flex gap-2">
-          <button onClick={onViewDetail} className="action-btn flex-1 py-2 rounded-xl text-xs text-white/70 transition-all" style={{ background: "rgba(255,255,255,.06)" }}>Détails</button>
-          <button onClick={onClose} className="flex-1 py-2 rounded-xl text-xs text-white/50 transition-all" style={{ background: "rgba(255,255,255,.04)" }}>Fermer</button>
+          <button onClick={onViewDetail} className="btn btn-ghost action-btn flex-1 py-2 text-xs">Détails</button>
+          <button onClick={onClose} className="btn btn-ghost action-btn flex-1 py-2 text-xs">Fermer</button>
         </div>
       </div>
     </div>

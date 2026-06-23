@@ -28,7 +28,7 @@ export default function CardDetail({ def, instance, state, onClose, originRect }
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="rounded-2xl p-4 flex gap-4 max-h-[92vh] overflow-y-auto animate-fade-in" style={{ background: "rgba(10,14,20,.94)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.28), 0 24px 70px rgba(0,0,0,.6)" }} onClick={(e) => e.stopPropagation()}>
+      <div className="panel panel-gold halftone p-4 flex gap-4 max-h-[92vh] overflow-y-auto animate-fade-in" onClick={(e) => e.stopPropagation()}>
         <div ref={zoomRef} style={{ willChange: "transform" }}><FullCard def={def} instance={instance} state={state} width={340} /></div>
 
         <div className="flex flex-col gap-2.5 w-[240px]">
@@ -50,7 +50,7 @@ export default function CardDetail({ def, instance, state, onClose, originRect }
 
           {def.synergies && def.synergies.length > 0 && (
             <div className="rounded-xl p-2.5" style={{ background: "rgba(232,184,75,.1)" }}>
-              <div className="font-oswald text-[9px] uppercase tracking-wider font-bold mb-1" style={{ color: "#E8B84B" }}>Synergies</div>
+              <div className="font-oswald text-[9px] uppercase tracking-wider font-bold mb-1 text-gold">Synergies</div>
               {def.synergies.map((s, i) => {
                 let name = s.partnerId;
                 try { name = getCardDef(s.partnerId).name; } catch { /* keep id */ }

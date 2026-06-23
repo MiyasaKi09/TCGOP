@@ -4,6 +4,7 @@ import type { CardDef, CardInstance, GameState } from "@/types";
 import { getEffectiveAtk, getEffectiveDef } from "@/engine/board";
 import { getCardDef } from "@/engine/cardRegistry";
 import { CARD_ART, CARD_ART_VERSO, faction, TRAIT_COLOR, TRAIT_LABEL, QUOTE, roleOf, setCode } from "@/data/cardArt";
+import { ELEMENT_COLOR } from "@/lib/theme";
 import { Heart, Crest } from "./icons";
 
 export interface CardActions {
@@ -19,7 +20,7 @@ interface FullCardProps {
   actions?: CardActions;
 }
 
-const ELEMENT = { fire: ["Feu", "#E0653C"], water: ["Eau", "#3C9FE0"], thunder: ["Foudre", "#C9A82E"], ice: ["Glace", "#5CC6E0"], sand: ["Sable", "#C2925A"], poison: ["Poison", "#8FB84A"] } as const;
+const ELEMENT_LABEL = { fire: "Feu", water: "Eau", thunder: "Foudre", ice: "Glace", sand: "Sable", poison: "Poison" } as const;
 const ATK_TRAIT: Record<string, string> = { range: "Portée", piercing: "Perçant", zone: "Zone", total: "Total" };
 const SHADOW = "0 1px 3px #000, 0 0 6px rgba(0,0,0,.85)";
 
@@ -66,8 +67,9 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
     const cost = isSpecial ? `${(a as { cost: number }).cost} Vol.` : "0 Vol.";
     const atkVal = heal ? null : `ATK ${isSpecial ? atk + (a as { atkBonus: number }).atkBonus : atk}`;
     const icon = isSpecial ? "★" : support ? "✦" : "⚔";
-    const accent = isSpecial ? "#FF7062" : "#5BC46A";
-    const el = a.element ? ELEMENT[a.element as keyof typeof ELEMENT] : null;
+    const accent = isSpecial ? "var(--color-atk)" : "var(--color-deploy)";
+    const elKey = a.element as keyof typeof ELEMENT_LABEL | undefined;
+    const el = elKey && ELEMENT_LABEL[elKey] ? { label: ELEMENT_LABEL[elKey], color: ELEMENT_COLOR[elKey] } : null;
     const clickable = !!act;
     const disabled = !!act?.disabled;
     return (
@@ -80,7 +82,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
           <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
             <span style={{ color: accent, fontSize: 11 }}>{icon}</span>
             <span style={{ fontFamily: "var(--font-spectral)", fontWeight: 700, fontVariant: "small-caps", fontSize: 12.5, color: "#fff", letterSpacing: ".02em" }}>{a.name}</span>
-            {el && <span style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, color: "#fff", background: el[1], borderRadius: 99, padding: "0 6px" }}>{el[0]}</span>}
+            {el && <span style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, color: "#fff", background: el.color, borderRadius: 99, padding: "0 6px" }}>{el.label}</span>}
             {a.attackTraits?.map((t) => <span key={t} style={{ fontFamily: "var(--font-oswald)", fontSize: 8.5, color: "#fff", background: "rgba(255,255,255,.22)", borderRadius: 99, padding: "0 6px" }}>{ATK_TRAIT[t] ?? t}</span>)}
             {clickable && !disabled && <span style={{ color: accent, fontSize: 10, fontWeight: 700 }}>▸</span>}
           </div>
@@ -97,7 +99,7 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
 
   return (
     <div data-zoomsrc="" style={{ width, height: Math.round(H * scale), flex: "none" }}>
-      <div style={{ position: "absolute", width: W, height: H, transform: `scale(${scale})`, transformOrigin: "top left", borderRadius: 16, overflow: "hidden", background: "#0b0e13", boxShadow: "0 10px 30px rgba(0,0,0,.5)" }}>
+      <div style={{ position: "absolute", width: W, height: H, transform: `scale(${scale})`, transformOrigin: "top left", borderRadius: 16, overflow: "hidden", background: "var(--color-ink-800)", border: "2px solid var(--ink-edge)", boxShadow: "var(--shadow-panel)" }}>
         {/* illustration */}
         {art ? (
           <div style={{ position: "absolute", inset: 0, backgroundImage: `url('${art}')`, backgroundSize: "cover", backgroundPosition: "center 16%" }} />
@@ -113,12 +115,12 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
         <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: 46, background: "linear-gradient(90deg,rgba(6,9,14,.55),transparent)" }} />
 
         {/* cost (top-left, gold) */}
-        <div style={{ position: "absolute", top: 4, left: 13, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1, zIndex: 5 }}>{def.cost}</div>
+        <div style={{ position: "absolute", top: 4, left: 13, fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "var(--color-gold)", textShadow: "0 2px 0 var(--ink-edge), 0 2px 6px rgba(0,0,0,.95)", lineHeight: 1, zIndex: 5 }}>{def.cost}</div>
 
         {/* PV (top-right, gold + heart) — characters only */}
         {isChar && (
           <div style={{ position: "absolute", top: 6, right: 12, display: "flex", alignItems: "flex-start", gap: 3, zIndex: 5 }}>
-            <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "#E8B84B", textShadow: "0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
+            <span style={{ fontFamily: "var(--font-oswald)", fontWeight: 700, fontSize: 48, color: "var(--color-gold)", textShadow: "0 2px 0 var(--ink-edge), 0 2px 6px rgba(0,0,0,.95)", lineHeight: 1 }}>{curPv}</span>
             <Heart size={18} color="#D8453C" style={{ marginTop: 7 }} />
           </div>
         )}

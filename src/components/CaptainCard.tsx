@@ -19,7 +19,7 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
   const ratio = Math.max(0, captain.currentPv / maxPv);
   const pct = ratio * 100;
   const hpc = hpColor(ratio);
-  const edge = captain.flipped ? "#E0463F" : "#E8B84B";
+  const edge = captain.flipped ? "var(--color-target)" : "var(--color-gold)";
   const art = captain.flipped ? (CARD_ART_VERSO[def.id] ?? CARD_ART[def.id]) : CARD_ART[def.id];
 
   return (
@@ -27,7 +27,7 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
       key={captain.flipped ? "verso" : "recto"}
       onClick={onClick}
       className={`cap-flip-face relative rounded-xl overflow-hidden w-40 p-2.5 transition-all duration-300 cursor-pointer ${captain.tapped ? "saturate-50 opacity-70" : isOpponent ? "" : "hover:brightness-110"}`}
-      style={{ background: fac.frame, boxShadow: `inset 0 0 0 2px ${edge}, 0 8px 22px rgba(0,0,0,.5)` }}
+      style={{ background: fac.frame, border: "2px solid var(--ink-edge)", boxShadow: `inset 0 0 0 2px ${edge}, 0 8px 22px rgba(0,0,0,.5)` }}
     >
       {art ? (
         <>
@@ -63,10 +63,10 @@ export default function CaptainCard({ captain, def, isOpponent, onClick }: Capta
       {/* stats */}
       <div className="relative flex gap-2 mt-2">
         <div className="flex-1 flex items-center justify-center gap-1 py-1 rounded-lg" style={{ background: "rgba(255,80,70,.12)" }}>
-          <Sword size={12} /><span className="font-oswald font-bold text-[13px]" style={{ color: "#FF7062" }}>{side.atk}</span>
+          <Sword size={12} /><span className="font-oswald font-bold text-[13px] text-atk">{side.atk}</span>
         </div>
         <div className="flex-1 flex items-center justify-center gap-1 py-1 rounded-lg" style={{ background: "rgba(120,170,230,.12)" }}>
-          <Shield size={12} /><span className="font-oswald font-bold text-[13px]" style={{ color: "#7FB0E8" }}>{side.def}</span>
+          <Shield size={12} /><span className="font-oswald font-bold text-[13px] text-def">{side.def}</span>
         </div>
       </div>
 

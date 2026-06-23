@@ -41,7 +41,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
         onClick={onClick}
         data-zoomsrc=""
         className={`relative w-full h-full rounded-xl overflow-hidden cursor-pointer transition-all duration-150 ${instance.tapped ? "saturate-[.7] brightness-90" : "hover:brightness-110"}`}
-        style={{ background: "#0b0e13", boxShadow: "0 5px 16px rgba(0,0,0,.5)" }}
+        style={{ background: "var(--color-ink-800)", border: "2px solid var(--ink-edge)", boxShadow: "var(--shadow-token)" }}
       >
         {art ? (
           <div className="absolute inset-0" style={{ backgroundImage: `url('${art}')`, backgroundSize: "172%", backgroundPosition: CARD_ART_FOCUS[def.id] ?? "50% 30%", backgroundRepeat: "no-repeat" }} />
@@ -58,8 +58,8 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
         <div className="absolute top-0 left-0 right-0 h-9" style={{ background: "linear-gradient(180deg,rgba(4,6,10,.62),transparent)" }} />
 
         {/* cost */}
-        <div className="absolute top-1 left-1 w-5 h-5 rounded-full flex items-center justify-center font-oswald font-bold text-[12px]"
-          style={{ background: "rgba(8,10,14,.85)", border: "1.5px solid #E8B84B", color: "#E8B84B", boxShadow: "0 1px 4px rgba(0,0,0,.5)" }}>
+        <div className="absolute top-1 left-1 w-5 h-5 rounded-full flex items-center justify-center font-oswald font-bold text-[12px] text-gold"
+          style={{ background: "rgba(8,10,14,.85)", border: "1.5px solid var(--color-gold)", boxShadow: "0 1px 4px rgba(0,0,0,.5)" }}>
           {def.cost}
         </div>
 
@@ -77,7 +77,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
           <div className="absolute top-7 right-1 flex flex-col items-end gap-0.5 leading-none">
             <StatusBadges effects={instance.statusEffects} compact />
             {instance.attachedObjects.length > 0 && (
-              <span className="font-oswald font-bold text-[9px] px-1 rounded" style={{ background: "rgba(232,184,75,.25)", color: "#E8B84B" }}>⚔{instance.attachedObjects.length}</span>
+              <span className="font-oswald font-bold text-[9px] px-1 rounded text-gold" style={{ background: "rgba(232,184,75,.25)" }}>⚔{instance.attachedObjects.length}</span>
             )}
           </div>
         )}
@@ -87,8 +87,8 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
           <div className="font-oswald font-semibold text-[12px] text-white text-center truncate" style={{ textShadow: "0 1px 3px #000" }}>{def.name}</div>
           {isCharacter && (
             <div className="flex justify-center items-center gap-2 mt-0.5 font-oswald font-bold text-[14px]">
-              <span className="flex items-center gap-0.5" style={{ color: "#FF7062" }}><Sword size={11} />{def.atk}</span>
-              <span className="flex items-center gap-0.5" style={{ color: "#7FB0E8" }}><Shield size={11} />{def.def}</span>
+              <span className="flex items-center gap-0.5 text-atk"><Sword size={11} />{def.atk}</span>
+              <span className="flex items-center gap-0.5 text-def"><Shield size={11} />{def.def}</span>
               <span className="flex items-center gap-0.5" style={{ color: hpc }}><Heart size={12} color={hpc} />{instance.currentPv}</span>
             </div>
           )}
@@ -119,7 +119,7 @@ export default function Card({ instance, def, onClick, selected, highlight, smal
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       className={`relative flex-shrink-0 cursor-grab active:cursor-grabbing transition-all duration-200 ${selected ? "scale-105 -translate-y-3" : "hover:-translate-y-1.5 hover:brightness-110"}`}
-      style={{ width, borderRadius: radius, boxShadow: selected ? "0 0 0 2px #E8B84B, 0 0 22px 3px rgba(232,184,75,.55)" : undefined, WebkitUserSelect: "none", userSelect: "none" }}
+      style={{ width, borderRadius: radius, boxShadow: selected ? "0 0 0 2px var(--color-gold), 0 0 22px 3px rgba(232,184,75,.55)" : undefined, WebkitUserSelect: "none", userSelect: "none" }}
     >
       <FullCard def={def} instance={instance} width={width} />
       {highlight && <div className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-green-500 shadow-lg shadow-green-500/50 animate-pulse z-10" />}

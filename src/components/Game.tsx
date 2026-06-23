@@ -24,7 +24,7 @@ import { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
-import { faction } from "@/data/cardArt";
+import { faction, hpColor } from "@/data/cardArt";
 import { Bolt, SkullCross, Crest } from "./icons";
 
 initializeRegistry();
@@ -304,18 +304,18 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             data-inst={`captain_${playerId}`}
             onClick={() => onCaptainClick(playerId)}
             className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex flex-col items-center justify-center p-1 cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"} ${selecting && !isTarget ? "slot-dim" : ""}`}
-            style={{ background: "radial-gradient(120% 80% at 50% 6%, #3a1414 0%, #1a0c0c 70%)", boxShadow: "inset 0 0 0 2px #E0463F" }}
+            style={{ background: "radial-gradient(120% 80% at 50% 6%, #3a1414 0%, #1a0c0c 70%)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 2px var(--color-target)" }}
           >
             <div className="font-oswald text-[8px] uppercase tracking-widest text-red-300/80 font-bold">★ Verso</div>
             <div className="font-cinzel text-[11px] font-bold text-white text-center leading-tight truncate w-full">{capDef.name}</div>
             <div className="flex justify-center gap-2 text-[11px] my-1 font-oswald font-bold">
-              <span style={{ color: "#FF7062" }}>⚔{capDef.verso.atk}</span>
-              <span style={{ color: "#7FB0E8" }}>🛡{capDef.verso.def}</span>
+              <span className="text-atk">⚔{capDef.verso.atk}</span>
+              <span className="text-def">🛡{capDef.verso.def}</span>
             </div>
             <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(8,12,18,.7)" }}>
-              <div className="h-full rounded-full" style={{ width: `${pvPercent}%`, background: pvPercent > 50 ? "#5BC46A" : pvPercent > 25 ? "#E8C53B" : "#FF7062" }} />
+              <div className="h-full rounded-full" style={{ width: `${pvPercent}%`, background: hpColor(pvPercent / 100) }} />
             </div>
-            <div className="font-oswald text-[10px] font-bold mt-0.5" style={{ color: pvPercent <= 25 ? "#FF7062" : "#5BC46A" }}>{ps.captain.currentPv}/{capDef.verso.pv}</div>
+            <div className="font-oswald text-[10px] font-bold mt-0.5" style={{ color: hpColor(pvPercent / 100) }}>{ps.captain.currentPv}/{capDef.verso.pv}</div>
           </div>
         );
       }
@@ -391,7 +391,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2 px-3 py-1 rounded-full" style={{ background: "rgba(6,12,20,.66)" }}>
               <Bolt size={13} />
-              <span className="font-cinzel font-bold text-[13px]" style={{ color: "#E8B84B" }}>{ps.volonte}</span>
+              <span className="font-cinzel font-bold text-[13px] text-gold">{ps.volonte}</span>
               <span className="font-oswald text-[9px] uppercase tracking-wider text-white/45">Volonté</span>
             </div>
             {shipChip}
@@ -431,7 +431,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
     return (
       <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
-        <div className="rounded-2xl p-6 max-w-lg shadow-2xl animate-modal-enter" style={{ background: "rgba(12,16,22,.92)", boxShadow: "inset 0 0 0 1px rgba(224,70,63,.5), 0 20px 60px rgba(0,0,0,.6)" }}>
+        <div className="panel halftone p-6 max-w-lg animate-modal-enter" style={{ boxShadow: "inset 0 0 0 1.5px rgba(224,70,63,.55), var(--shadow-modal)" }}>
           <div className="flex items-center gap-2 mb-4">
             <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
             <h3 className="font-cinzel text-lg font-bold text-red-400 uppercase tracking-wider">Attaque entrante</h3>
@@ -493,11 +493,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     const won = state.winner === humanPlayer;
     return (
       <div className="sea-bg min-h-screen flex flex-col items-center justify-center gap-8">
-        <div className={`font-cinzel text-6xl font-black tracking-tight ${won ? "text-green-400" : "text-red-400"}`} style={{ textShadow: "0 4px 24px rgba(0,0,0,.6)" }}>
-          {won ? "VICTOIRE !" : "DÉFAITE…"}
+        <div className="speed-lines px-16 py-6">
+          <div className={`font-cinzel text-6xl font-black tracking-tight ${won ? "text-green-400" : "text-red-400"}`} style={{ textShadow: "0 3px 0 var(--ink-edge), 0 4px 24px rgba(0,0,0,.7)" }}>
+            {won ? "VICTOIRE !" : "DÉFAITE…"}
+          </div>
         </div>
         <div className="font-oswald text-white/50 text-lg uppercase tracking-widest">Tour {state.turnNumber}</div>
-        <button onClick={() => window.location.reload()} className="action-btn gold-surface font-oswald font-bold px-10 py-4 rounded-xl text-lg shadow-xl transition-all">
+        <button onClick={() => window.location.reload()} className="btn btn-gold action-btn px-10 py-4 text-lg">
           Rejouer
         </button>
       </div>
@@ -531,8 +533,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       <AmbientStage />
 
       {/* HEADER */}
-      <header className="relative z-10 shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "1px solid rgba(232,184,75,.18)", background: "linear-gradient(180deg,rgba(8,12,18,.9),rgba(6,9,14,.6))" }}>
-        <span className="font-cinzel font-extrabold text-[16px] tracking-wider" style={{ color: "#E8B84B" }}>TCGOP</span>
+      <header className="halftone relative z-10 shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "2px solid var(--ink-edge)", boxShadow: "0 1px 0 rgba(232,184,75,.25)", background: "linear-gradient(180deg,rgba(8,12,18,.92),rgba(6,9,14,.62))" }}>
+        <span className="font-cinzel font-extrabold text-[16px] tracking-wider text-gold">TCGOP</span>
         <span className="font-oswald text-[9px] uppercase tracking-[.18em] text-white/40 hidden sm:inline">Grand Line</span>
         <div className={`ml-auto font-oswald text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>{statusText.text}</div>
         <div className="flex items-center gap-2 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
@@ -559,9 +561,9 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
         <div className="shrink-0 flex flex-col items-center justify-center gap-2 px-0.5">
           <div className="vs-line flex-1 w-px" />
-          <div className="flex flex-col items-center gap-1 py-3 px-1.5 rounded-full" style={{ background: "rgba(6,18,30,.8)", border: "1px solid rgba(232,184,75,.45)" }}>
-            <SkullCross size={15} color="#E8B84B" />
-            <span className="font-cinzel font-bold text-[10px] tracking-widest" style={{ color: "#E8B84B", writingMode: "vertical-rl" }}>TOUR {state.turnNumber}</span>
+          <div className="speed-lines flex flex-col items-center gap-1 py-3 px-1.5 rounded-full" style={{ background: "rgba(6,18,30,.82)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.45)" }}>
+            <SkullCross size={15} color="var(--color-gold)" />
+            <span className="font-cinzel font-bold text-[10px] tracking-widest text-gold" style={{ writingMode: "vertical-rl" }}>TOUR {state.turnNumber}</span>
           </div>
           <div className="vs-line flex-1 w-px" />
         </div>
@@ -570,7 +572,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       </main>
 
       {/* FOOTER — hand + actions */}
-      <footer className="relative z-10 shrink-0 px-3 pb-2 pt-1 flex flex-col gap-1.5" style={{ background: "linear-gradient(0deg,rgba(6,9,14,.75),transparent)" }}>
+      <footer className="relative z-10 shrink-0 px-3 pb-2 pt-1 flex flex-col gap-1.5" style={{ background: "linear-gradient(0deg,rgba(6,9,14,.8),transparent)", borderTop: "2px solid var(--ink-edge)", boxShadow: "0 -1px 0 rgba(232,184,75,.2)" }}>
         <div className="flex items-end gap-3">
           {/* Hand */}
           <div className="flex-1 min-w-0">
@@ -637,15 +639,15 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
               </div>
             )}
             <button onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }} disabled={isAiTurn || inCounterWindow}
-              className="action-btn gold-surface font-oswald px-3 py-3 rounded-xl text-sm font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all">Fin de tour ➡</button>
+              className="btn btn-gold action-btn px-3 py-3 text-sm">Fin de tour ➡</button>
             {uiMode.type !== "idle" && (
-              <button onClick={resetUI} className="font-oswald px-3 py-1.5 bg-white/8 hover:bg-white/15 rounded-lg text-xs text-white/55 transition-all">✕ Annuler</button>
+              <button onClick={resetUI} className="btn btn-ghost action-btn px-3 py-1.5 text-xs">✕ Annuler</button>
             )}
           </div>
         </div>
 
         {/* Log */}
-        <div className="rounded-lg px-2.5 py-1.5 max-h-[68px] overflow-y-auto" style={{ background: "rgba(8,12,18,.6)", border: "1px solid rgba(255,255,255,.06)" }}>
+        <div className="halftone rounded-lg px-2.5 py-1.5 max-h-[68px] overflow-y-auto" style={{ background: "rgba(8,12,18,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.05)" }}>
           {state.log.slice(-12).reverse().map((entry, i) => (
             <div key={i} className={`font-spectral py-0.5 text-xs ${i === 0 ? "text-white/80" : "text-white/45"}`}>
               <span className="font-mono text-[10px] text-white/30">T{entry.turn}</span>{" "}

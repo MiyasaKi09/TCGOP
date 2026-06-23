@@ -47,10 +47,10 @@ export default function EventConfirm({ def, playerVol, onConfirm, onCancel }: Ev
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50" onClick={onCancel}>
-      <div className="glass rounded-2xl p-5 max-w-md w-full mx-4 shadow-2xl animate-modal-enter" style={{ boxShadow: "inset 0 0 0 1px rgba(232,184,75,.3), 0 20px 60px rgba(0,0,0,.5)" }} onClick={(e) => e.stopPropagation()}>
+      <div className="panel panel-gold halftone p-5 max-w-md w-full mx-4 animate-modal-enter" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xl">{isShip ? "⚓" : "✦"}</span>
-          <h3 className="font-oswald text-sm font-bold uppercase tracking-wider" style={{ color: "#E8B84B" }}>
+          <h3 className="font-oswald text-sm font-bold uppercase tracking-wider text-gold">
             {isShip ? "Deployer navire" : "Jouer evenement"}
           </h3>
         </div>
@@ -110,17 +110,13 @@ export default function EventConfirm({ def, playerVol, onConfirm, onCancel }: Ev
           <button
             onClick={canAfford ? onConfirm : undefined}
             disabled={!canAfford}
-            className={`action-btn font-oswald flex-1 px-4 py-3 rounded-xl text-sm font-bold transition-all ${
-              canAfford
-                ? "gold-surface shadow-lg"
-                : "bg-gray-800/40 text-gray-600 cursor-not-allowed border border-gray-700/20"
-            }`}
+            className={`btn action-btn flex-1 px-4 py-3 text-sm ${canAfford ? "btn-gold" : "btn-ghost"}`}
           >
             {canAfford ? "Confirmer" : "Volonte insuffisante"}
           </button>
           <button
             onClick={onCancel}
-            className="flex-1 px-4 py-3 rounded-xl bg-gray-800/30 hover:bg-gray-700/30 text-gray-400 text-sm border border-gray-700/20 transition-all"
+            className="btn btn-ghost action-btn flex-1 px-4 py-3 text-sm"
           >
             Annuler
           </button>

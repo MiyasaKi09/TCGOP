@@ -1,9 +1,21 @@
 // ============================================================
-// Visual theme for the "Navires" redesign — art, factions, traits.
-// Pure data; consumed by Card / CaptainCard / BoardSlot / Game.
+// Card ART DATA (illustration paths, focus points, flavour) for the
+// "Navires" redesign. Visual TOKENS (colours, faction identity,
+// rarity, traits, hp ramp) live in src/lib/theme.ts — the single
+// source of truth — and are re-exported here for back-compat.
 // ============================================================
 
-export const GOLD = "#E8B84B";
+import {
+  GOLD,
+  faction,
+  hpColor,
+  RARITY_BORDER,
+  TRAIT_COLOR,
+  type FactionVisual,
+} from "@/lib/theme";
+
+export { GOLD, faction, hpColor, RARITY_BORDER, TRAIT_COLOR };
+export type { FactionVisual };
 
 /** defId → recto (default) full-illustration art. */
 export const CARD_ART: Record<string, string> = {
@@ -92,66 +104,6 @@ export const CARD_ART_FOCUS: Record<string, string> = {
   "MR-010": "50% 26%",
 };
 
-export interface FactionVisual {
-  /** Bright accent (labels, edges). */
-  accent: string;
-  /** Default border colour for tokens without a rarity override. */
-  border: string;
-  /** Backdrop gradient for frame tokens (no illustration). */
-  frame: string;
-  /** Soft ambiance wash for a player's half / ship. */
-  ambiance: string;
-  /** Crest glyph. */
-  crest: "hat" | "anchor";
-  /** Top-down vertical deck art (bow up). */
-  shipImg: string;
-  /** Display label. */
-  label: string;
-}
-
-const PIRATE: FactionVisual = {
-  accent: "#E8954A",
-  border: "rgba(232,149,74,.6)",
-  frame: "radial-gradient(120% 80% at 50% 6%, #3a2614 0%, #20140b 60%, #140c07 100%)",
-  ambiance: "radial-gradient(120% 100% at 50% 100%, rgba(232,149,74,.18), transparent 70%)",
-  crest: "hat",
-  shipImg: "/decks/mugiwara-deck-v.png",
-  label: "Mugiwara",
-};
-
-const MARINE: FactionVisual = {
-  accent: "#5B97D8",
-  border: "rgba(62,120,184,.6)",
-  frame: "radial-gradient(120% 80% at 50% 6%, #163049 0%, #0c1a29 60%, #08121c 100%)",
-  ambiance: "radial-gradient(120% 100% at 50% 0%, rgba(62,120,184,.18), transparent 70%)",
-  crest: "anchor",
-  shipImg: "/decks/marine-deck-v.png",
-  label: "Marine",
-};
-
-const FACTION: Record<string, FactionVisual> = {
-  pirate: PIRATE,
-  marine: MARINE,
-  revolutionary: PIRATE,
-  independent: MARINE,
-};
-
-export function faction(key: string): FactionVisual {
-  return FACTION[key] ?? PIRATE;
-}
-
-/** Trait → dot/pill colour (board tokens & detail). */
-export const TRAIT_COLOR: Record<string, string> = {
-  shield: "#C2925A",
-  range: "#E0883C",
-  stealth: "#5B8FE0",
-  rush: "#D08A3C",
-  cursed: "#A86FD0",
-  logia: "#6E9AC0",
-  piercing: "#6FAE6A",
-  conqueror: "#E8B84B",
-};
-
 export const TRAIT_LABEL: Record<string, string> = {
   shield: "Bouclier",
   range: "Portée",
@@ -162,21 +114,6 @@ export const TRAIT_LABEL: Record<string, string> = {
   piercing: "Perçant",
   conqueror: "Conquérant",
 };
-
-/** Rarity → border colour for tokens / cards. */
-export const RARITY_BORDER: Record<string, string> = {
-  C: "rgba(165,170,180,.55)",
-  U: "rgba(74,168,107,.6)",
-  R: "rgba(59,130,196,.6)",
-  SR: "rgba(168,95,208,.65)",
-  L: "rgba(232,184,75,.8)",
-  CAP: "rgba(232,184,75,.85)",
-};
-
-/** Current-PV colour ramp (green → amber → red). */
-export function hpColor(ratio: number): string {
-  return ratio > 0.5 ? "#5BC46A" : ratio > 0.25 ? "#E8C53B" : "#FF7062";
-}
 
 /** Flavour quotes shown vertically next to the name. */
 export const QUOTE: Record<string, string> = {
