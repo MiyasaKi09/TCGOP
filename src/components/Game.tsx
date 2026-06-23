@@ -8,7 +8,6 @@ import { getCardDef, getCaptainDef } from "@/engine/cardRegistry";
 import { initializeRegistry } from "@/engine/init";
 import BoardSlot from "./BoardSlot";
 import Card from "./Card";
-import CaptainCard from "./CaptainCard";
 import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
 import CaptainMenu from "./CaptainMenu";
@@ -24,8 +23,8 @@ import { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
-import { faction, hpColor } from "@/data/cardArt";
-import { Bolt, SkullCross, Crest } from "./icons";
+import { faction, hpColor, CARD_ART, CARD_ART_VERSO } from "@/data/cardArt";
+import { Crest } from "./icons";
 
 initializeRegistry();
 
@@ -293,29 +292,29 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     return slots.map((s) => {
       const slot = s as Slot;
 
-      // Captain verso occupying this slot
+      // Captain verso occupying this slot (compact, art-first token)
       if (captainSlot === slot) {
         const capDef = getCaptainDef(ps.captain.defId);
         const isTarget = !isPlayerSide && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
         const pvPercent = Math.max(0, (ps.captain.currentPv / capDef.verso.pv) * 100);
+        const capArt = CARD_ART_VERSO[capDef.id] ?? CARD_ART[capDef.id];
         return (
           <div
             key={slot}
             data-inst={`captain_${playerId}`}
             onClick={() => onCaptainClick(playerId)}
-            className={`relative w-[5.5rem] h-[7.3rem] rounded-xl flex flex-col items-center justify-center p-1 cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"} ${selecting && !isTarget ? "slot-dim" : ""}`}
-            style={{ background: "radial-gradient(120% 80% at 50% 6%, #3a1414 0%, #1a0c0c 70%)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 2px var(--color-target)" }}
+            className={`relative flex-1 min-w-0 max-w-[120px] h-[3.9rem] rounded-xl overflow-hidden cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"} ${selecting && !isTarget ? "slot-dim" : ""}`}
+            style={{ background: "#1a0c0c", boxShadow: "inset 0 0 0 2px var(--color-target)" }}
           >
-            <div className="font-oswald text-[8px] uppercase tracking-widest text-red-300/80 font-bold">★ Verso</div>
-            <div className="font-cinzel text-[11px] font-bold text-white text-center leading-tight truncate w-full">{capDef.name}</div>
-            <div className="flex justify-center gap-2 text-[11px] my-1 font-oswald font-bold">
-              <span className="text-atk">⚔{capDef.verso.atk}</span>
-              <span className="text-def">🛡{capDef.verso.def}</span>
+            {capArt && <div className="absolute inset-0" style={{ backgroundImage: `url('${capArt}')`, backgroundSize: "cover", backgroundPosition: "center 14%" }} />}
+            <div className="absolute inset-0" style={{ background: "linear-gradient(180deg,rgba(6,10,20,.1),rgba(6,10,20,.9))" }} />
+            <div className="absolute top-0.5 left-1 font-oswald text-[7px] uppercase tracking-widest text-red-200 font-bold">★ Verso</div>
+            <div className="absolute left-1 right-1 bottom-1">
+              <div className="font-cinzel text-[10px] font-bold text-white truncate leading-none">{capDef.name}</div>
+              <div className="hp-gauge w-full h-1.5 rounded-full mt-1">
+                <div className="h-full rounded-full" style={{ width: `${pvPercent}%`, background: hpColor(pvPercent / 100) }} />
+              </div>
             </div>
-            <div className="hp-gauge w-full h-2 rounded-full">
-              <div className="h-full rounded-full" style={{ width: `${pvPercent}%`, background: hpColor(pvPercent / 100) }} />
-            </div>
-            <div className="font-oswald text-[10px] font-bold mt-0.5" style={{ color: hpColor(pvPercent / 100) }}>{ps.captain.currentPv}/{capDef.verso.pv}</div>
           </div>
         );
       }
@@ -353,63 +352,111 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     });
   };
 
-  // One ship (deck art + captain at the prow + front/back columns).
-  const renderShip = (playerId: PlayerId, isYou: boolean) => {
+  // The command bar for one player: dedicated Captain card + Ship slot + Volonté.
+  const renderCommand = (playerId: PlayerId, isYou: boolean) => {
     const ps = state.players[playerId];
     const capDef = getCaptainDef(ps.captain.defId);
-    const fac = faction(capDef.faction);
-    const front = <div className="flex flex-col gap-2">{renderLine(FRONT_SLOTS, playerId)}</div>;
-    const back = <div className="flex flex-col gap-2">{renderLine(BACK_SLOTS, playerId)}</div>;
-    // Front line toward the centre (battle line): your front on the right, foe's front on the left.
-    const columns = (
-      <div className="flex gap-2 justify-center">
-        {isYou ? <>{back}{front}</> : <>{front}{back}</>}
+    const side = ps.captain.flipped ? capDef.verso : capDef.recto;
+    const ratio = Math.max(0, ps.captain.currentPv / side.pv);
+    const hpc = hpColor(ratio);
+    const capArt = ps.captain.flipped ? (CARD_ART_VERSO[capDef.id] ?? CARD_ART[capDef.id]) : CARD_ART[capDef.id];
+    const capTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+
+    // Captain command card
+    const capCard = (
+      <div
+        data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
+        onClick={() => onCaptainClick(playerId)}
+        className={`cap-cmd ${isYou ? "" : "foe"} ${capTarget ? "ring-target" : ""} ${selecting && !capTarget ? "slot-dim" : ""} ${ps.captain.tapped ? "saturate-50 opacity-80" : ""}`}
+      >
+        {capArt && <div className="art" style={{ backgroundImage: `url('${capArt}')` }} />}
+        <div className="sh" />
+        <div className="absolute top-1 right-1.5 flex flex-col items-end gap-0.5 font-oswald font-bold text-[10px]">
+          <span className="text-atk">⚔{side.atk}</span>
+          <span className="text-def">🛡{side.def}</span>
+        </div>
+        <div className="in">
+          <div className="font-oswald text-[7px] uppercase tracking-widest text-white/70">Capitaine</div>
+          <div className="font-cinzel text-[12px] font-bold text-white leading-none truncate">{capDef.name}</div>
+          <div className="flex items-center gap-1.5 mt-1">
+            <div className="hp-gauge flex-1 h-1.5 rounded-full"><div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, background: hpc }} /></div>
+            <span className="font-oswald text-[10px] font-bold" style={{ color: hpc }}>{ps.captain.currentPv}</span>
+          </div>
+        </div>
       </div>
     );
 
-    const captainTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
-    const shipChip = ps.activeShip ? (
-      <button
-        onClick={() => setUiMode({ type: "shipMenu", instanceId: ps.activeShip!, isYou })}
-        className="font-oswald text-[10px] px-2 py-0.5 rounded-full text-cyan-100 transition-all hover:brightness-125"
-        style={{ background: "rgba(20,90,120,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(91,198,224,.45)" }}
-      >
-        ⚓ {getCardDef(state.cards[ps.activeShip].defId).name}
-      </button>
-    ) : null;
-    const captainBlock = (
-      <div className="flex flex-col items-center gap-1">
-        {!isYou && shipChip}
-        <div
-          data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
-          onClick={() => onCaptainClick(playerId)}
-          className={`rounded-xl transition-all cursor-pointer ${captainTarget ? "ring-target" : ""} ${selecting && !captainTarget ? "slot-dim" : ""}`}
-        >
-          <CaptainCard captain={ps.captain} def={capDef} isOpponent={!isYou} />
-        </div>
-        {isYou && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full" style={{ background: "rgba(6,12,20,.66)" }}>
-              <Bolt size={13} />
+    // Ship slot
+    const shipSlot = ps.activeShip ? (() => {
+      const shipDef = getCardDef(state.cards[ps.activeShip!].defId);
+      const shipArt = CARD_ART[shipDef.id];
+      return (
+        <button onClick={() => setUiMode({ type: "shipMenu", instanceId: ps.activeShip!, isYou })} className="ship-cmd">
+          {shipArt && <div className="absolute inset-0" style={{ backgroundImage: `url('${shipArt}')`, backgroundSize: "cover", backgroundPosition: "center" }} />}
+          <div className="absolute inset-x-0 bottom-0 text-[8px] text-center text-cyan-100 truncate px-1" style={{ background: "rgba(6,12,24,.8)" }}>⚓ {shipDef.name}</div>
+        </button>
+      );
+    })() : (
+      <div className="ship-cmd empty">⚓<br />Navire</div>
+    );
+
+    // Volonté + counts
+    const pipsOn = Math.min(ps.volonte, 10);
+    const pips = Array.from({ length: 10 }, (_, i) => <i key={i} className={`will-pip ${i < pipsOn ? "on" : ""}`} />);
+    const res = (
+      <div className="flex-1 flex flex-col justify-center gap-1.5 min-w-0">
+        {isYou ? (
+          <>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-oswald text-[8px] uppercase tracking-widest text-white/55">Volonté</span>
+              <span className="flex gap-[3px]">{pips}</span>
               <span className="font-cinzel font-bold text-[13px] text-gold">{ps.volonte}</span>
-              <span className="font-oswald text-[9px] uppercase tracking-wider text-white/45">Volonté</span>
             </div>
-            {shipChip}
-          </div>
+            <div className="flex gap-2 font-oswald text-[10px] text-white/55">
+              <span>✋ {ps.hand.length}</span><span>🂠 {ps.deck.length}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex gap-2 font-oswald text-[10px] text-white/55 justify-end"><span>✋ {ps.hand.length}</span><span>🂠 {ps.deck.length}</span></div>
+            <div className="flex items-center gap-1.5 justify-end">
+              <span className="font-oswald text-[8px] uppercase tracking-widest text-white/55">Volonté</span>
+              <span className="font-cinzel font-bold text-[13px] text-gold">{ps.volonte}</span>
+            </div>
+          </>
         )}
       </div>
     );
 
+    return <div className="g-cmd">{capCard}{shipSlot}{res}</div>;
+  };
+
+  // One player's half of the single, flat battlefield: ship deck + 2 lines + command.
+  const renderHalf = (playerId: PlayerId, isYou: boolean) => {
+    const capDef = getCaptainDef(state.players[playerId].captain.defId);
+    const fac = faction(capDef.faction);
+    const front = <div className="g-row">{renderLine(FRONT_SLOTS, playerId)}</div>;
+    const back = <div className="g-row">{renderLine(BACK_SLOTS, playerId)}</div>;
+    const lab = (t: string) => <div className="g-rowlab">{t}</div>;
+
     return (
-      <div className={`relative h-full ${isYou ? "animate-ship-bob" : "animate-ship-bob2"}`} style={{ aspectRatio: "941 / 1672", maxWidth: "340px", width: "100%" }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={fac.shipImg} alt="" draggable={false}
-          className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
-          style={{ transform: isYou ? undefined : "scaleY(-1)", filter: "drop-shadow(0 8px 20px rgba(0,0,0,.55))" }} />
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-2">
-          {isYou ? <>{captainBlock}{columns}</> : <>{columns}{captainBlock}</>}
-        </div>
-      </div>
+      <section className="g-half">
+        <div className={`g-floor ${isYou ? "flip" : ""}`} style={{ backgroundImage: `url('${fac.shipImg}')` }} />
+        <div className={`g-shade ${isYou ? "you" : "foe"}`} />
+        {isYou ? (
+          <>
+            {lab("Ligne avant")}{front}
+            {lab("Ligne arrière")}{back}
+            {renderCommand(playerId, true)}
+          </>
+        ) : (
+          <>
+            {renderCommand(playerId, false)}
+            {lab("Ligne arrière")}{back}
+            {lab("Ligne avant")}{front}
+          </>
+        )}
+      </section>
     );
   };
 
@@ -537,7 +584,10 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       {/* HEADER */}
       <header className="halftone relative z-10 shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "2px solid var(--ink-edge)", boxShadow: "0 1px 0 rgba(232,184,75,.25)", background: "linear-gradient(180deg,rgba(8,12,18,.92),rgba(6,9,14,.62))" }}>
         <span className="font-cinzel font-extrabold text-[16px] tracking-wider text-gold">TCGOP</span>
-        <span className="font-oswald text-[9px] uppercase tracking-[.18em] text-white/40 hidden sm:inline">Grand Line</span>
+        <div className="flex items-center gap-1.5 ml-1">
+          <span className="turn-ring">{state.turnNumber}</span>
+          <span className="font-oswald text-[8px] uppercase tracking-[.18em] text-white/45 hidden sm:inline">Tour</span>
+        </div>
         <div className={`ml-auto status-tag ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
           <span className="dot" />{statusText.text}
         </div>
@@ -559,20 +609,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       <CutInLayer />
       <PlayRevealLayer announcements={announcements} dismiss={dismissAnnouncement} />
 
-      {/* BOARD — two ships broadside */}
-      <main ref={boardRef} className="relative z-10 flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
-        <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(humanPlayer, true)}</section>
-
-        <div className="shrink-0 flex flex-col items-center justify-center gap-2 px-0.5">
-          <div className="vs-line flex-1 w-px" />
-          <div className="speed-lines flex flex-col items-center gap-1 py-3 px-1.5 rounded-full" style={{ background: "rgba(6,18,30,.82)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.45)" }}>
-            <SkullCross size={15} color="var(--color-gold)" />
-            <span className="font-cinzel font-bold text-[10px] tracking-widest text-gold" style={{ writingMode: "vertical-rl" }}>TOUR {state.turnNumber}</span>
-          </div>
-          <div className="vs-line flex-1 w-px" />
-        </div>
-
-        <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(aiPlayer, false)}</section>
+      {/* BOARD — single flat terrain: foe deck on top, your deck below, cut at the waterline */}
+      <main ref={boardRef} className="relative z-10 flex-1 min-h-0 flex flex-col overflow-hidden">
+        {renderHalf(aiPlayer, false)}
+        <div className="waterline" />
+        {renderHalf(humanPlayer, true)}
       </main>
 
       {/* FOOTER — hand + actions */}
