@@ -281,6 +281,49 @@
   .btn:active:not(:disabled) { transform: none; }
 }
 
+/* ============================================================ */
+/* === MOTION — entrance & micro-interactions (premium feel) === */
+/* ============================================================ */
+
+/* Staggered entrance: set --d (delay ms) inline on each item. */
+@keyframes enter-up {
+  0%   { opacity: 0; transform: translateY(18px) scale(.97); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.enter { animation: enter-up .55s var(--ease-out-expo) both; animation-delay: var(--d, 0ms); }
+
+@keyframes enter-fade { from { opacity: 0; } to { opacity: 1; } }
+.enter-fade { animation: enter-fade .6s ease both; animation-delay: var(--d, 0ms); }
+
+/* Gentle floating sheen that sweeps a surface (premium highlight). */
+@keyframes sheen-sweep { 0% { transform: translateX(-130%) skewX(-18deg); } 100% { transform: translateX(230%) skewX(-18deg); } }
+.sheen { position: relative; overflow: hidden; }
+.sheen::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.10), transparent);
+  transform: translateX(-130%) skewX(-18deg); pointer-events: none;
+}
+.sheen:hover::after { animation: sheen-sweep .9s var(--ease-out); }
+
+/* Soft hover lift for interactive premium cards. */
+.lift { transition: transform var(--dur-base) var(--ease-spring), box-shadow var(--dur-base) ease, filter var(--dur-base) ease; }
+.lift:hover { transform: translateY(-4px); filter: brightness(1.05); }
+
+@media (prefers-reduced-motion: reduce) {
+  .enter, .enter-fade { animation: none; opacity: 1; transform: none; }
+  .sheen:hover::after { animation: none; }
+  .lift:hover { transform: none; }
+}
+
+/* Premium surface — clean, minimalist (hairline + soft depth, no heavy ink). */
+.surface {
+  position: relative;
+  background: linear-gradient(180deg, rgba(22,28,38,.92), rgba(11,14,19,.96));
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 16px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.05) inset, 0 12px 30px rgba(0,0,0,.45);
+}
+
 /* Pill / chip. */
 .chip {
   font-family: var(--font-oswald), system-ui, sans-serif; font-weight: 700;
