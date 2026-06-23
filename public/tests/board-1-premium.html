@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Plateau A — Premium</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800&family=Oswald:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--gd:#e8b84b;--atk:#ff6b6b;--def:#5aa0ff;--hp:#46cf7a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Oswald',sans-serif;background:#03070d;color:#eaf0f7;-webkit-font-smoothing:antialiased}
+.phone{max-width:440px;margin:0 auto;height:100vh;min-height:760px;position:relative;overflow:hidden;display:flex;flex-direction:column;
+  background:radial-gradient(120% 80% at 50% 0%,#16314e,#061019 60%,#03070d),url('/decks/sea.png') center/cover;background-blend-mode:overlay}
+.vign{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 50%,transparent 45%,rgba(2,5,9,.8));pointer-events:none;z-index:1}
+/* HUD */
+header{position:relative;z-index:3;display:flex;align-items:center;gap:10px;padding:9px 14px;background:linear-gradient(180deg,rgba(6,12,20,.9),transparent)}
+.brand{font-family:'Cinzel';font-weight:800;color:var(--gd);letter-spacing:.06em;font-size:15px}
+.turn{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#9fe6a8;background:rgba(70,207,122,.12);border:1px solid rgba(70,207,122,.4);padding:4px 11px;border-radius:999px}
+.turn b{width:7px;height:7px;border-radius:50%;background:var(--hp);box-shadow:0 0 8px var(--hp)}
+.mini{font-size:11px;color:rgba(255,255,255,.55);display:flex;gap:8px}
+.mini span{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);padding:2px 7px;border-radius:7px}
+/* ARENA */
+.arena{position:relative;z-index:2;flex:1;display:flex;flex-direction:column;justify-content:center;gap:4px;padding:4px 8px}
+.half{position:relative;flex:1;display:flex;align-items:center;gap:8px}
+.cap{flex:none;width:74px;text-align:center}
+.capimg{width:64px;height:64px;border-radius:50%;background-size:cover;background-position:center 18%;margin:0 auto;
+  border:2px solid var(--gd);box-shadow:0 0 0 3px rgba(0,0,0,.5),0 6px 16px rgba(0,0,0,.6)}
+.capimg.foe{border-color:#e0584d}
+.capnm{font-family:'Cinzel';font-weight:700;font-size:10px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.capbar{height:5px;border-radius:99px;background:rgba(0,0,0,.5);overflow:hidden;margin-top:3px;border:1px solid rgba(0,0,0,.6)}
+.capbar i{display:block;height:100%;background:var(--hp)}
+/* deck floor with depth */
+.deck{position:relative;flex:1;align-self:stretch;display:flex;flex-direction:column;justify-content:center;gap:6px;padding:6px 4px}
+.floor{position:absolute;inset:6px 0;border-radius:16px;overflow:hidden;opacity:.5;
+  background-size:cover;background-position:center;transform:perspective(700px) rotateX(34deg) scale(1.04);transform-origin:center;
+  box-shadow:inset 0 0 50px rgba(0,0,0,.6)}
+.rowlbl{position:absolute;font-size:8px;letter-spacing:.2em;color:rgba(255,255,255,.35);text-transform:uppercase}
+.row{position:relative;z-index:2;display:flex;gap:7px;justify-content:center}
+.row.back{transform:scale(.9);opacity:.92}
+.slot{flex:1;max-width:118px;min-width:0;height:62px;border-radius:11px;position:relative;
+  border:1px dashed rgba(255,255,255,.16);background:rgba(255,255,255,.03)}
+.slot.unit{border:1px solid rgba(255,255,255,.14);background:#0b1018;overflow:hidden;box-shadow:0 5px 14px rgba(0,0,0,.5)}
+.slot .art{position:absolute;inset:0;background-size:cover;background-position:center 22%}
+.slot .ov{position:absolute;left:0;right:0;bottom:0;padding:2px 5px;background:linear-gradient(180deg,transparent,rgba(4,8,12,.95))}
+.slot .nm{font-size:9px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slot .st{display:flex;gap:5px;font-size:10px;font-weight:700}
+.st .a{color:var(--atk)}.st .d{color:var(--def)}.st .h{color:var(--hp)}
+.cost{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:rgba(4,8,12,.9);border:1.5px solid var(--gd);
+  color:var(--gd);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;z-index:2}
+.empty{display:flex;align-items:center;justify-content:center;font-size:9px;letter-spacing:.12em;color:rgba(255,255,255,.28)}
+.clash{position:relative;z-index:3;display:flex;align-items:center;gap:10px;padding:1px 10px}
+.clash .l{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(232,184,75,.6),transparent)}
+.clash .t{font-family:'Cinzel';font-weight:800;font-size:12px;letter-spacing:.16em;color:var(--gd);text-shadow:0 0 12px rgba(232,184,75,.4)}
+/* HAND */
+footer{position:relative;z-index:3;padding:6px 12px 16px;background:linear-gradient(0deg,rgba(3,7,13,.92),transparent)}
+.hand{display:flex;gap:8px;justify-content:center;margin-bottom:9px}
+.h{width:60px;height:84px;border-radius:10px;background-size:cover;background-position:center 20%;border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 18px rgba(0,0,0,.6)}
+.h:nth-child(1){transform:rotate(-6deg) translateY(5px)}.h:nth-child(4){transform:rotate(6deg) translateY(5px)}
+.cta{display:flex;gap:8px}
+.btn{flex:1;font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:14px;padding:12px;border:none;border-radius:12px;background:linear-gradient(180deg,#f0c760,#d9a434);color:#0a0d12;box-shadow:0 5px 16px rgba(217,164,52,.4)}
+.btn-x{flex:none;width:52px;border-radius:12px;background:rgba(255,255,255,.07);color:#fff;border:1px solid rgba(255,255,255,.14)}
+.tag{position:fixed;top:7px;left:7px;font-size:10px;background:rgba(0,0,0,.6);color:#fff;padding:4px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.15);z-index:9}
+</style>
+</head>
+<body>
+<div class="tag">PLATEAU A · Premium</div>
+<div class="phone">
+  <div class="vign"></div>
+  <header><span class="brand">⚓ TCGOP</span><span class="turn"><b></b>Votre tour</span></header>
+  <div class="arena">
+    <!-- FOE -->
+    <div class="half">
+      <div class="cap"><div class="capimg foe" style="background-image:url('/cards/akainu-recto.jpg')"></div><div class="capnm">Akainu</div><div class="capbar"><i style="width:100%;background:#e0584d"></i></div></div>
+      <div class="deck">
+        <div class="floor" style="background-image:url('/decks/marine-deck-v.png')"></div>
+        <div class="row back">
+          <div class="slot empty">B1 · Arrière</div>
+          <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/tashigi.jpg')"></div><div class="ov"><div class="nm">Tashigi</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">5</span></div></div></div>
+          <div class="slot empty">B3</div>
+        </div>
+        <div class="row front">
+          <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/smoker.jpg')"></div><div class="ov"><div class="nm">Smoker</div><div class="st"><span class="a">5</span><span class="d">3</span><span class="h">6</span></div></div></div>
+          <div class="slot empty">V2 · Avant</div>
+          <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/momonga.jpg')"></div><div class="ov"><div class="nm">Momonga</div><div class="st"><span class="a">4</span><span class="d">3</span><span class="h">5</span></div></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="clash"><div class="l"></div><div class="t">⚔ TOUR 6 ⚔</div><div class="l"></div></div>
+    <!-- YOU -->
+    <div class="half">
+      <div class="cap"><div class="capimg" style="background-image:url('/cards/luffy-recto.jpg')"></div><div class="capnm">Luffy</div><div class="capbar"><i style="width:78%"></i></div></div>
+      <div class="deck">
+        <div class="floor" style="background-image:url('/decks/mugiwara-deck-v.png')"></div>
+        <div class="row front">
+          <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/zoro.jpg')"></div><div class="ov"><div class="nm">Zoro</div><div class="st"><span class="a">6</span><span class="d">3</span><span class="h">7</span></div></div></div>
+          <div class="slot unit"><span class="cost">2</span><div class="art" style="background-image:url('/cards/sanji.jpg')"></div><div class="ov"><div class="nm">Sanji</div><div class="st"><span class="a">5</span><span class="d">2</span><span class="h">6</span></div></div></div>
+          <div class="slot empty">V3 · Avant</div>
+        </div>
+        <div class="row back">
+          <div class="slot unit"><span class="cost">3</span><div class="art" style="background-image:url('/cards/robin.jpg')"></div><div class="ov"><div class="nm">Robin</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">6</span></div></div></div>
+          <div class="slot empty">B2 · Arrière</div>
+          <div class="slot empty">B3</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer>
+    <div class="hand">
+      <div class="h" style="background-image:url('/cards/nami.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/usopp.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/chopper.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/franky.jpg')"></div>
+    </div>
+    <div class="cta"><button class="btn">Fin de tour ➜</button><button class="btn-x">✕</button></div>
+  </footer>
+</div>
+</body>
+</html>

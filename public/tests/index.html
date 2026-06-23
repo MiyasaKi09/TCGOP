@@ -3,46 +3,43 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>TCGOP — 6 tests de design</title>
+<title>TCGOP — tests de plateau</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',sans-serif;background:#0b0e13;color:#e7edf5;padding:20px 16px 40px}
 .wrap{max-width:560px;margin:0 auto}
-h1{font-size:22px;font-weight:800;margin-bottom:4px}
-p.sub{color:#8b97a7;font-size:13px;margin-bottom:18px}
-a.card{display:flex;align-items:center;gap:14px;text-decoration:none;color:inherit;
-  background:#161b22;border:1px solid #262d38;border-radius:14px;padding:14px 16px;margin-bottom:11px;transition:transform .15s,border-color .15s}
-a.card:active{transform:scale(.98)}
-a.card:hover{border-color:#e8b84b}
-.num{flex:none;width:38px;height:38px;border-radius:10px;background:#0e1116;border:1px solid #2c3442;
-  display:flex;align-items:center;justify-content:center;font-weight:800;color:#e8b84b}
-.t{font-weight:700;font-size:15px}
-.d{color:#8b97a7;font-size:12px;margin-top:2px}
+h1{font-size:21px;font-weight:800;margin-bottom:4px}
+p.sub{color:#8b97a7;font-size:13px;margin-bottom:8px;line-height:1.5}
+.hd{font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#e8b84b;margin:20px 2px 10px}
+a.card{display:flex;align-items:center;gap:14px;text-decoration:none;color:inherit;background:#161b22;border:1px solid #262d38;border-radius:14px;padding:14px 16px;margin-bottom:11px;transition:transform .15s,border-color .15s}
+a.card:active{transform:scale(.98)} a.card:hover{border-color:#e8b84b}
+.num{flex:none;width:38px;height:38px;border-radius:10px;background:#0e1116;border:1px solid #2c3442;display:flex;align-items:center;justify-content:center;font-weight:800;color:#e8b84b}
+.t{font-weight:700;font-size:15px}.d{color:#8b97a7;font-size:12px;margin-top:2px}
 .arr{margin-left:auto;color:#5a6675;font-size:20px}
-.note{margin-top:20px;font-size:12px;color:#6b7686;line-height:1.5}
+.old a.card{opacity:.55}
+.note{margin-top:18px;font-size:12px;color:#6b7686;line-height:1.55}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>🎨 6 directions de design</h1>
-  <p class="sub">Ouvre chaque test, compare, et dis-moi le(s) numéro(s) que tu préfères (tu peux mixer).</p>
+  <h1>⚔️ Tests de plateau</h1>
+  <p class="sub">Cette fois le <b>champ de bataille est central</b> : chaque bateau = un pont avec sa <b>ligne avant</b> (au contact, vers le centre) et sa <b>ligne arrière</b> (3 emplacements chacune), les deux flottes face à face. Vise une qualité type Hearthstone.</p>
 
-  <a class="card" href="./1-premium-dark.html">
-    <div class="num">1</div><div><div class="t">Premium Dark</div><div class="d">Sombre épuré, verre dépoli, accents or — propre et lisible.</div></div><div class="arr">›</div></a>
-  <a class="card" href="./2-manga-ink.html">
-    <div class="num">2</div><div><div class="t">Manga Ink</div><div class="d">Cases d'encre noires, halftone, lettrage BD, onomatopées.</div></div><div class="arr">›</div></a>
-  <a class="card" href="./3-wanted-poster.html">
-    <div class="num">3</div><div><div class="t">Avis de recherche</div><div class="d">Parchemin sépia, sceaux, primes — très identitaire One Piece.</div></div><div class="arr">›</div></a>
-  <a class="card" href="./4-esport-hud.html">
-    <div class="num">4</div><div><div class="t">E-sport HUD</div><div class="d">Sci-fi, angles coupés, jauges, dense en info, cyan/or.</div></div><div class="arr">›</div></a>
-  <a class="card" href="./5-anime-premium.html">
-    <div class="num">5</div><div><div class="t">Anime Premium</div><div class="d">Dégradés riches, lueurs, arrondi vibrant, glassmorphism.</div></div><div class="arr">›</div></a>
-  <a class="card" href="./6-minimal-flat.html">
-    <div class="num">6</div><div><div class="t">Minimal Flat</div><div class="d">Plat, très lisible, max d'info compacte — minimaliste.</div></div><div class="arr">›</div></a>
+  <div class="hd">▶ Les bons plateaux (lignes avant / arrière)</div>
+  <a class="card" href="./board-1-premium.html"><div class="num">A</div><div><div class="t">Premium</div><div class="d">Sombre élégant, pont en profondeur 3D, slots soignés, accents or.</div></div><div class="arr">›</div></a>
+  <a class="card" href="./board-2-anime.html"><div class="num">B</div><div><div class="t">Anime</div><div class="d">Dégradés, lueurs, vibrant, arrondi — énergique et premium.</div></div><div class="arr">›</div></a>
+  <a class="card" href="./board-3-parchment.html"><div class="num">C</div><div><div class="t">Parchemin / One Piece</div><div class="d">Carte au trésor sépia, sceaux, très identitaire.</div></div><div class="arr">›</div></a>
 
-  <p class="note">Ce sont des maquettes statiques (non jouables) du plateau, avec les vrais bateaux/mer/cartes, pour comparer le style. Une fois ton choix fait, j'applique la direction retenue à tout le jeu (UX + UI + animations).</p>
+  <p class="note">Compare A / B / C : même disposition (lignes avant/arrière, capitaines, main), seul le style change. Dis-moi laquelle tu préfères (ou un mix) et ce qu'il manque — ensuite je l'implémente vraiment dans le jeu, jouable, avec les animations.</p>
+
+  <div class="hd old" style="color:#5a6675">Anciens essais (mauvaise disposition — à ignorer)</div>
+  <div class="old">
+    <a class="card" href="./1-premium-dark.html"><div class="num">1</div><div><div class="t">Premium Dark</div></div><div class="arr">›</div></a>
+    <a class="card" href="./4-esport-hud.html"><div class="num">4</div><div><div class="t">E-sport HUD</div></div><div class="arr">›</div></a>
+    <a class="card" href="./6-minimal-flat.html"><div class="num">6</div><div><div class="t">Minimal Flat</div></div><div class="arr">›</div></a>
+  </div>
 </div>
 </body>
 </html>
