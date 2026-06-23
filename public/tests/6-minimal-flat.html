@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Test 6 — Minimal Flat</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0e1116;--card:#161b22;--line:#262d38;--mut:#8b97a7;--atk:#ff6b6b;--def:#5aa0ff;--hp:#46cf7a;--gd:#e8b84b}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:#e7edf5;-webkit-font-smoothing:antialiased}
+.phone{max-width:440px;margin:0 auto;min-height:100vh;position:relative;overflow:hidden;background:var(--bg)}
+.sea{position:absolute;top:0;left:0;right:0;height:100%;background:linear-gradient(rgba(14,17,22,.82),rgba(14,17,22,.92)),url('/decks/sea.png') center/cover;opacity:.5}
+.content{position:relative}
+header{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.brand{font-weight:800;font-size:15px;letter-spacing:-.01em}.brand b{color:var(--gd)}
+.turn{margin-left:auto;font-size:11px;font-weight:600;color:var(--hp);display:flex;align-items:center;gap:6px}
+.turn b{width:7px;height:7px;border-radius:50%;background:var(--hp)}
+.meta{font-size:11px;color:var(--mut);display:flex;gap:10px}
+.board{padding:12px 14px}
+.lbl{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.08em;margin:10px 2px 6px}
+.fleet{display:flex;align-items:center;gap:10px;padding:10px;background:var(--card);border:1px solid var(--line);border-radius:14px}
+.ship{width:72px;flex:none}.ship img{width:100%;opacity:.92}
+.units{display:flex;gap:8px;flex:1}
+.u{flex:1;min-width:0;background:#0f141b;border:1px solid var(--line);border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:4px}
+.u .top{display:flex;align-items:center;gap:6px}
+.av{width:30px;height:30px;border-radius:7px;background-size:cover;background-position:center 20%;flex:none}
+.u .nm{font-size:11px;font-weight:600;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.u .cc{font-size:9px;color:var(--mut)}
+.bar{height:5px;border-radius:99px;background:#222a35;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:var(--hp)}
+.st{display:flex;gap:8px;font-size:11px;font-weight:700}
+.st .a{color:var(--atk)}.st .d{color:var(--def)}.st .h{color:var(--hp)}
+.cap{flex:none;width:120px;border-color:rgba(232,184,75,.35)}
+.cap .av{width:36px;height:36px}
+.vs{display:flex;align-items:center;gap:10px;margin:12px 2px}
+.vs .l{flex:1;height:1px;background:var(--line)}
+.vs .t{font-size:11px;font-weight:700;color:var(--gd);letter-spacing:.1em}
+footer{position:absolute;left:0;right:0;bottom:0;padding:12px 14px 18px;background:var(--bg);border-top:1px solid var(--line)}
+.hand{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
+.h{width:58px;height:82px;border-radius:9px;background-size:cover;background-position:center 20%;border:1px solid var(--line)}
+.cta{display:flex;gap:8px}
+.btn{flex:1;font-family:'Inter';font-weight:700;font-size:14px;padding:13px;border:none;border-radius:11px;background:var(--gd);color:#1a1408}
+.btn-x{flex:none;width:52px;border-radius:11px;background:#1b212b;color:var(--mut);border:1px solid var(--line)}
+.tag{position:fixed;top:8px;left:8px;font-size:10px;font-weight:600;background:#1b212b;color:#cdd7e3;padding:4px 9px;border-radius:6px;z-index:9;border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="tag">TEST 6 · Minimal Flat</div>
+<div class="phone">
+  <div class="sea"></div>
+  <div class="content">
+    <header><span class="brand">TCG<b>OP</b></span><span class="turn"><b></b>Votre tour</span></header>
+    <div class="board">
+      <div class="lbl"><span>⚓ Marine · Adversaire</span><span class="meta">Main 6 · Deck 44</span></div>
+      <div class="fleet">
+        <div class="ship"><img src="/decks/marine-deck-v.png"/></div>
+        <div class="units">
+          <div class="u cap"><div class="top"><div class="av" style="background-image:url('/cards/akainu-recto.jpg')"></div><div><div class="nm">Akainu</div><div class="cc">Capitaine</div></div></div><div class="bar"><i style="width:100%"></i></div><div class="st"><span class="a">⚔9</span><span class="d">🛡4</span><span class="h">45</span></div></div>
+          <div class="u"><div class="top"><div class="av" style="background-image:url('/cards/smoker.jpg')"></div><div class="nm">Smoker</div></div><div class="bar"><i style="width:100%"></i></div><div class="st"><span class="a">5</span><span class="d">3</span><span class="h">6</span></div></div>
+          <div class="u"><div class="top"><div class="av" style="background-image:url('/cards/tashigi.jpg')"></div><div class="nm">Tashigi</div></div><div class="bar"><i style="width:80%;background:var(--gd)"></i></div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">4</span></div></div>
+        </div>
+      </div>
+      <div class="vs"><div class="l"></div><div class="t">TOUR 6</div><div class="l"></div></div>
+      <div class="lbl"><span style="color:var(--gd)">🏴‍☠️ Mugiwara · Vous</span><span class="meta">Volonté 7 · Main 5</span></div>
+      <div class="fleet">
+        <div class="ship"><img src="/decks/mugiwara-deck-v.png"/></div>
+        <div class="units">
+          <div class="u cap"><div class="top"><div class="av" style="background-image:url('/cards/luffy-recto.jpg')"></div><div><div class="nm">Luffy</div><div class="cc">Capitaine</div></div></div><div class="bar"><i style="width:78%"></i></div><div class="st"><span class="a">⚔8</span><span class="d">🛡3</span><span class="h">39</span></div></div>
+          <div class="u"><div class="top"><div class="av" style="background-image:url('/cards/zoro.jpg')"></div><div class="nm">Zoro</div></div><div class="bar"><i style="width:100%"></i></div><div class="st"><span class="a">6</span><span class="d">3</span><span class="h">7</span></div></div>
+          <div class="u"><div class="top"><div class="av" style="background-image:url('/cards/sanji.jpg')"></div><div class="nm">Sanji</div></div><div class="bar"><i style="width:66%;background:var(--gd)"></i></div><div class="st"><span class="a">5</span><span class="d">2</span><span class="h">4</span></div></div>
+        </div>
+      </div>
+    </div>
+    <footer>
+      <div class="hand">
+        <div class="h" style="background-image:url('/cards/nami.jpg')"></div>
+        <div class="h" style="background-image:url('/cards/usopp.jpg')"></div>
+        <div class="h" style="background-image:url('/cards/chopper.jpg')"></div>
+        <div class="h" style="background-image:url('/cards/robin.jpg')"></div>
+      </div>
+      <div class="cta"><button class="btn">Fin de tour</button><button class="btn-x">✕</button></div>
+    </footer>
+  </div>
+</div>
+</body>
+</html>

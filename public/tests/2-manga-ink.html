@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Test 2 — Manga Ink</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bangers&family=Oswald:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Oswald',sans-serif;background:#0a0a0a;color:#111;-webkit-font-smoothing:antialiased}
+.phone{max-width:440px;margin:0 auto;min-height:100vh;position:relative;overflow:hidden;
+  background:url('/decks/sea.png') center/cover;}
+.phone::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(0,0,0,.5) 1.3px,transparent 1.5px);
+  background-size:6px 6px;mix-blend-mode:multiply;opacity:.5;pointer-events:none}
+.ink{border:3px solid #0a0a0a;box-shadow:4px 4px 0 #0a0a0a}
+header{position:relative;display:flex;align-items:center;gap:8px;padding:10px 12px;background:#fff;border-bottom:3px solid #000}
+.brand{font-family:'Bangers';font-size:24px;letter-spacing:1px;color:#111;-webkit-text-stroke:0}
+.turn{margin-left:auto;font-family:'Bangers';font-size:18px;color:#fff;background:#e0463f;padding:2px 12px;
+  border:2px solid #000;transform:rotate(-3deg);box-shadow:3px 3px 0 #000}
+.board{position:relative;padding:14px 12px}
+.lbl{display:inline-block;font-family:'Bangers';font-size:16px;background:#111;color:#fff;padding:2px 10px;
+  transform:skewX(-8deg);margin:4px 0}
+.fleet{position:relative;display:flex;align-items:center;gap:8px;padding:8px;background:#fff;margin-bottom:6px}
+.fleet.ink{border:3px solid #0a0a0a;box-shadow:5px 5px 0 #0a0a0a}
+.ship{width:80px;flex:none}
+.ship img{width:100%;display:block;filter:contrast(1.05) drop-shadow(2px 2px 0 rgba(0,0,0,.4))}
+.units{display:flex;gap:7px;flex:1}
+.card{flex:1;min-width:0;background:#fff;border:3px solid #000;position:relative;box-shadow:3px 3px 0 #000}
+.card .art{height:60px;background-size:cover;background-position:center 22%;border-bottom:3px solid #000;filter:contrast(1.1) saturate(1.1)}
+.card .nm{font-family:'Bangers';font-size:12px;color:#111;padding:1px 5px;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .st{display:flex;gap:6px;padding:0 5px 4px;font-weight:700;font-size:11px}
+.st .a{color:#d11} .st .d{color:#1769c4} .st .h{color:#1a8a3a}
+.cap{flex:none;width:110px}
+.cap .art{height:72px}
+.hpbar{height:9px;background:#fff;border:2px solid #000;margin:3px 5px}
+.hpbar i{display:block;height:100%;background:repeating-linear-gradient(45deg,#e0463f,#e0463f 4px,#b8362d 4px,#b8362d 8px)}
+.boom{position:absolute;font-family:'Bangers';color:#ffd23f;-webkit-text-stroke:2px #000;font-size:34px;
+  transform:rotate(-12deg);right:60px;top:120px;text-shadow:3px 3px 0 #000;z-index:5}
+.vs{text-align:center;font-family:'Bangers';font-size:40px;color:#fff;-webkit-text-stroke:3px #000;margin:2px 0}
+footer{position:absolute;left:0;right:0;bottom:0;padding:10px 12px 16px;background:#fff;border-top:3px solid #000}
+.hand{display:flex;gap:7px;justify-content:center;margin-bottom:10px}
+.h{width:60px;height:84px;background-size:cover;background-position:center 20%;border:3px solid #000;box-shadow:3px 3px 0 #000}
+.h:nth-child(1){transform:rotate(-7deg)} .h:nth-child(3){transform:rotate(7deg)}
+.cta{display:flex;gap:8px}
+.btn{flex:1;font-family:'Bangers';letter-spacing:1px;font-size:20px;padding:9px;border:3px solid #000;box-shadow:4px 4px 0 #000;cursor:pointer}
+.btn-gold{background:#ffd23f;color:#111} .btn-x{flex:none;width:54px;background:#fff}
+.tag{position:fixed;top:8px;left:8px;font-family:'Oswald';font-weight:700;font-size:10px;background:#111;color:#fff;padding:4px 9px;z-index:9}
+</style>
+</head>
+<body>
+<div class="tag">TEST 2 · Manga Ink</div>
+<div class="phone">
+  <header><span class="brand">TCGOP</span><span class="turn">VOTRE TOUR !</span></header>
+  <div class="board">
+    <div class="lbl">⚓ MARINE</div>
+    <div class="fleet ink">
+      <div class="ship"><img src="/decks/marine-deck-v.png"/></div>
+      <div class="units">
+        <div class="card cap"><div class="art" style="background-image:url('/cards/akainu-recto.jpg')"></div><div class="nm">AKAINU</div><div class="hpbar"><i style="width:100%"></i></div><div class="st"><span class="a">⚔9</span><span class="d">🛡4</span></div></div>
+        <div class="card"><div class="art" style="background-image:url('/cards/smoker.jpg')"></div><div class="nm">SMOKER</div><div class="st"><span class="a">5</span><span class="d">3</span><span class="h">6</span></div></div>
+        <div class="card"><div class="art" style="background-image:url('/cards/tashigi.jpg')"></div><div class="nm">TASHIGI</div><div class="st"><span class="a">4</span><span class="d">2</span><span class="h">5</span></div></div>
+      </div>
+    </div>
+    <div class="boom">DON!!</div>
+    <div class="vs">VS</div>
+    <div class="lbl">🏴‍☠️ MUGIWARA</div>
+    <div class="fleet ink">
+      <div class="ship"><img src="/decks/mugiwara-deck-v.png"/></div>
+      <div class="units">
+        <div class="card cap"><div class="art" style="background-image:url('/cards/luffy-recto.jpg')"></div><div class="nm">LUFFY</div><div class="hpbar"><i style="width:78%"></i></div><div class="st"><span class="a">⚔8</span><span class="d">🛡3</span></div></div>
+        <div class="card"><div class="art" style="background-image:url('/cards/zoro.jpg')"></div><div class="nm">ZORO</div><div class="st"><span class="a">6</span><span class="d">3</span><span class="h">7</span></div></div>
+        <div class="card"><div class="art" style="background-image:url('/cards/sanji.jpg')"></div><div class="nm">SANJI</div><div class="st"><span class="a">5</span><span class="d">2</span><span class="h">6</span></div></div>
+      </div>
+    </div>
+  </div>
+  <footer>
+    <div class="hand">
+      <div class="h" style="background-image:url('/cards/nami.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/usopp.jpg')"></div>
+      <div class="h" style="background-image:url('/cards/chopper.jpg')"></div>
+    </div>
+    <div class="cta"><button class="btn btn-gold">FIN DE TOUR</button><button class="btn btn-x">✕</button></div>
+  </footer>
+</div>
+</body>
+</html>
