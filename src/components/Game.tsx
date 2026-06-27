@@ -20,12 +20,15 @@ import PlayRevealLayer from "./PlayRevealLayer";
 import VfxStage from "./vfx/VfxStage";
 import CutInLayer from "./vfx/CutInLayer";
 import AmbientStage from "./vfx/AmbientStage";
+import DeckBackdrop from "./board/DeckBackdrop";
+import VolonteGauge from "./board/VolonteGauge";
+import Pile from "./board/Pile";
 import { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
 import { faction } from "@/data/cardArt";
-import { Bolt, SkullCross, Crest } from "./icons";
+import { SkullCross, Crest } from "./icons";
 
 initializeRegistry();
 
@@ -353,61 +356,61 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     });
   };
 
-  // One ship (deck art + captain at the prow + front/back columns).
-  const renderShip = (playerId: PlayerId, isYou: boolean) => {
+  // One crew line (3 slots) laid out as a horizontal row on the deck.
+  const renderRow = (slots: readonly string[], playerId: PlayerId) => (
+    <div className="flex gap-2 justify-center">{renderLine(slots, playerId)}</div>
+  );
+
+  // A captain at the side of the deck: card + Navire/Fruit slots + Pioche/Défausse.
+  const renderCaptain = (playerId: PlayerId, isYou: boolean) => {
     const ps = state.players[playerId];
     const capDef = getCaptainDef(ps.captain.defId);
-    const fac = faction(capDef.faction);
-    const front = <div className="flex flex-col gap-2">{renderLine(FRONT_SLOTS, playerId)}</div>;
-    const back = <div className="flex flex-col gap-2">{renderLine(BACK_SLOTS, playerId)}</div>;
-    // Front line toward the centre (battle line): your front on the right, foe's front on the left.
-    const columns = (
-      <div className="flex gap-2 justify-center">
-        {isYou ? <>{back}{front}</> : <>{front}{back}</>}
-      </div>
+    const captainTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+
+    const navireSlot = (
+      <button
+        onClick={() => { if (ps.activeShip) setUiMode({ type: "shipMenu", instanceId: ps.activeShip, isYou }); }}
+        disabled={!ps.activeShip}
+        title={ps.activeShip ? getCardDef(state.cards[ps.activeShip].defId).name : "Navire"}
+        className="flex flex-col items-center gap-0.5 group disabled:cursor-default"
+      >
+        <div className="w-11 h-14 rounded-lg flex items-center justify-center transition-all group-enabled:group-hover:brightness-125"
+          style={{ background: ps.activeShip ? "linear-gradient(160deg,#0e2730,#081820)" : "rgba(6,10,16,.4)", boxShadow: ps.activeShip ? "inset 0 0 0 1px rgba(91,198,224,.6)" : "inset 0 0 0 1.5px rgba(255,255,255,.16)" }}>
+          <Crest which="anchor" size={17} color={ps.activeShip ? "#7FD0E8" : "rgba(255,255,255,.3)"} />
+        </div>
+        <span className="font-oswald text-[7px] uppercase tracking-[.15em] text-white/45">Navire</span>
+      </button>
     );
 
-    const captainTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
-    const shipChip = ps.activeShip ? (
-      <button
-        onClick={() => setUiMode({ type: "shipMenu", instanceId: ps.activeShip!, isYou })}
-        className="font-oswald text-[10px] px-2 py-0.5 rounded-full text-cyan-100 transition-all hover:brightness-125"
-        style={{ background: "rgba(20,90,120,.7)", boxShadow: "inset 0 0 0 1px rgba(91,198,224,.45)" }}
-      >
-        ⚓ {getCardDef(state.cards[ps.activeShip].defId).name}
-      </button>
-    ) : null;
-    const captainBlock = (
-      <div className="flex flex-col items-center gap-1">
-        {!isYou && shipChip}
-        <div
-          data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
-          onClick={() => onCaptainClick(playerId)}
-          className={`rounded-xl transition-all cursor-pointer ${captainTarget ? "ring-target" : ""} ${selecting && !captainTarget ? "slot-dim" : ""}`}
-        >
-          <CaptainCard captain={ps.captain} def={capDef} isOpponent={!isYou} />
+    const fruitSlot = (
+      <button onClick={() => onCaptainClick(playerId)} className="flex flex-col items-center gap-0.5 group">
+        <div className="w-11 h-14 rounded-lg flex items-center justify-center transition-all group-hover:brightness-125"
+          style={{ background: ps.captain.flipped ? "linear-gradient(160deg,#2a0f0f,#170a0a)" : "rgba(6,10,16,.4)", boxShadow: ps.captain.flipped ? "inset 0 0 0 1px rgba(224,70,63,.6)" : "inset 0 0 0 1.5px rgba(255,255,255,.16)" }}>
+          <span className="text-[17px] leading-none" style={{ color: ps.captain.flipped ? "#FF7062" : "rgba(232,184,75,.5)" }}>✦</span>
         </div>
-        {isYou && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full" style={{ background: "rgba(6,12,20,.66)" }}>
-              <Bolt size={13} />
-              <span className="font-cinzel font-bold text-[13px]" style={{ color: "#E8B84B" }}>{ps.volonte}</span>
-              <span className="font-oswald text-[9px] uppercase tracking-wider text-white/45">Volonté</span>
-            </div>
-            {shipChip}
-          </div>
-        )}
+        <span className="font-oswald text-[7px] uppercase tracking-[.15em] text-white/45">Fruit</span>
+      </button>
+    );
+
+    const sideSlots = <div className="flex flex-col gap-1.5 justify-center">{navireSlot}{fruitSlot}</div>;
+    const captainCard = (
+      <div
+        data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
+        onClick={() => onCaptainClick(playerId)}
+        className={`rounded-xl transition-all cursor-pointer ${captainTarget ? "ring-target" : ""} ${selecting && !captainTarget ? "slot-dim" : ""}`}
+      >
+        <CaptainCard captain={ps.captain} def={capDef} isOpponent={!isYou} />
       </div>
     );
 
     return (
-      <div className={`relative h-full ${isYou ? "animate-ship-bob" : "animate-ship-bob2"}`} style={{ aspectRatio: "941 / 1672", maxWidth: "340px", width: "100%" }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={fac.shipImg} alt="" draggable={false}
-          className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
-          style={{ transform: isYou ? undefined : "scaleY(-1)", filter: "drop-shadow(0 8px 20px rgba(0,0,0,.55))" }} />
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-2">
-          {isYou ? <>{captainBlock}{columns}</> : <>{columns}{captainBlock}</>}
+      <div className="flex flex-col items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          {isYou ? <>{sideSlots}{captainCard}</> : <>{captainCard}{sideSlots}</>}
+        </div>
+        <div className="flex gap-2.5">
+          <Pile label="Pioche" count={ps.deck.length} />
+          <Pile label="Défausse" count={ps.graveyard.length} />
         </div>
       </div>
     );
@@ -534,16 +537,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       <header className="relative z-10 shrink-0 flex items-center gap-3 px-4 py-2" style={{ borderBottom: "1px solid rgba(232,184,75,.18)", background: "linear-gradient(180deg,rgba(8,12,18,.9),rgba(6,9,14,.6))" }}>
         <span className="font-cinzel font-extrabold text-[16px] tracking-wider" style={{ color: "#E8B84B" }}>TCGOP</span>
         <span className="font-oswald text-[9px] uppercase tracking-[.18em] text-white/40 hidden sm:inline">Grand Line</span>
+        <span className="font-oswald text-[9px] uppercase tracking-[.22em] text-white/30 hidden sm:inline">Plateau · Abordage</span>
         <div className={`ml-auto font-oswald text-sm font-semibold ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>{statusText.text}</div>
-        <div className="flex items-center gap-2 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
-          <Crest which={foeFac.crest} size={13} color={foeFac.accent} />
-          <span className="font-oswald text-[11px] text-white/55">Main {opponent.hand.length} · Deck {opponent.deck.length}</span>
-          {opponent.activeShip && (
-            <button onClick={() => setUiMode({ type: "cardDetail", defId: state.cards[opponent.activeShip!].defId, instanceId: opponent.activeShip! })}
-              className="font-oswald text-[10px] text-cyan-200/80 bg-cyan-900/20 rounded px-1.5 py-0.5 hover:bg-cyan-800/30 transition-all truncate max-w-[120px]">
-              ⚓ {getCardDef(state.cards[opponent.activeShip].defId).name}
-            </button>
-          )}
+        <div className="flex items-center gap-1.5 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
+          <Crest which={foeFac.crest} size={12} color={foeFac.accent} />
+          <span className="font-oswald text-[10px] text-white/45">Main adverse {opponent.hand.length}</span>
         </div>
       </header>
 
@@ -553,20 +551,50 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       <CutInLayer />
       <PlayRevealLayer announcements={announcements} dismiss={dismissAnnouncement} />
 
-      {/* BOARD — two ships broadside */}
-      <main ref={boardRef} className="relative z-10 flex-1 min-h-0 flex items-stretch justify-center gap-1 px-2 py-2">
-        <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(humanPlayer, true)}</section>
+      {/* BOARD — single "Abordage" deck (crews top/bottom, captains diagonal) */}
+      <main ref={boardRef} className="relative z-10 flex-1 min-h-0 overflow-hidden flex items-center justify-center px-3 py-2">
+        <DeckBackdrop />
 
-        <div className="shrink-0 flex flex-col items-center justify-center gap-2 px-0.5">
-          <div className="vs-line flex-1 w-px" />
-          <div className="flex flex-col items-center gap-1 py-3 px-1.5 rounded-full" style={{ background: "rgba(6,18,30,.8)", border: "1px solid rgba(232,184,75,.45)" }}>
-            <SkullCross size={15} color="#E8B84B" />
-            <span className="font-cinzel font-bold text-[10px] tracking-widest" style={{ color: "#E8B84B", writingMode: "vertical-rl" }}>TOUR {state.turnNumber}</span>
-          </div>
-          <div className="vs-line flex-1 w-px" />
+        {/* discreet turn badge, far left */}
+        <div className="absolute left-2 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1 px-1.5 py-2 rounded-full"
+          style={{ background: "rgba(6,12,20,.6)", border: "1px solid rgba(232,184,75,.28)" }}>
+          <SkullCross size={12} color="#E8B84B" />
+          <span className="font-cinzel font-bold text-[9px] tracking-widest" style={{ color: "#E8B84B", writingMode: "vertical-rl" }}>TOUR {state.turnNumber}</span>
         </div>
 
-        <section className="flex-1 min-w-0 flex items-center justify-center">{renderShip(aiPlayer, false)}</section>
+        {/* foe Volonté — top-left */}
+        <div className="absolute top-2 left-10 z-10">
+          <VolonteGauge value={opponent.volonte} label="Volonté adverse" align="left" />
+        </div>
+
+        {/* your control cluster — bottom-right: Fin de tour + Volonté */}
+        <div className="absolute bottom-2 right-3 z-10 flex flex-col items-end gap-2">
+          <button
+            onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }}
+            disabled={isAiTurn || inCounterWindow}
+            className="action-btn gold-surface font-oswald font-bold px-5 py-2.5 rounded-xl text-sm shadow-xl disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+          >
+            Fin de tour ➡
+          </button>
+          <VolonteGauge value={player.volonte} label="Volonté" align="right" />
+        </div>
+
+        <div className="relative z-10 w-full h-full flex items-stretch justify-center gap-3">
+          {/* left edge — your captain, pulled toward the bottom (diagonal) */}
+          <div className="shrink-0 flex flex-col justify-end pb-1">{renderCaptain(humanPlayer, true)}</div>
+
+          {/* centre — both crews, foe on top, you on the bottom */}
+          <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1.5">
+            {renderRow(BACK_SLOTS, aiPlayer)}
+            {renderRow(FRONT_SLOTS, aiPlayer)}
+            <div className="h-px w-2/3 my-0.5" style={{ background: "linear-gradient(90deg,transparent,rgba(232,184,75,.5),transparent)" }} />
+            {renderRow(FRONT_SLOTS, humanPlayer)}
+            {renderRow(BACK_SLOTS, humanPlayer)}
+          </div>
+
+          {/* right edge — foe captain, pulled toward the top (diagonal) */}
+          <div className="shrink-0 flex flex-col justify-start pt-1">{renderCaptain(aiPlayer, false)}</div>
+        </div>
       </main>
 
       {/* FOOTER — hand + actions */}
@@ -577,6 +605,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex items-center gap-2 mb-1">
               <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Main</span>
               <span className="font-oswald text-[11px] font-bold text-white/60">{player.hand.length}</span>
+              <span className="font-oswald text-[8px] uppercase tracking-[.18em] text-white/25 hidden sm:inline">· Survole pour agrandir</span>
               <div className="hidden md:block"><StatusLegend types={["freeze", "burn", "poison", "immobilize", "desiccation"]} /></div>
               <div className="flex-1 h-px bg-white/10" />
             </div>
@@ -624,11 +653,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             </div>
           </div>
 
-          {/* Actions */}
-          <div className="shrink-0 w-40 flex flex-col gap-1.5">
-            <div className="flex items-center justify-between font-oswald text-[10px] text-white/50 px-1">
-              <span>Deck</span><span className="font-bold text-white/70">{player.deck.length}</span>
-            </div>
+          {/* Actions / hints (Fin de tour + piles live on the board) */}
+          <div className="shrink-0 w-40 flex flex-col gap-1.5 justify-end">
             {(canFlip || canActivateShip || canKingHaki) && (
               <div className="font-oswald text-[9px] text-amber-300/85 leading-snug px-2 py-1.5 rounded-lg flex flex-col gap-0.5" style={{ background: "rgba(232,184,75,.1)", boxShadow: "inset 0 0 0 1px rgba(232,184,75,.25)" }}>
                 {canFlip && <span>⚔ Clique ton Capitaine pour l&apos;engager</span>}
@@ -636,10 +662,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
                 {canActivateShip && <span>⚓ Clique ton Navire pour l&apos;activer</span>}
               </div>
             )}
-            <button onClick={() => { dispatch({ type: "endTurn" }); resetUI(); }} disabled={isAiTurn || inCounterWindow}
-              className="action-btn gold-surface font-oswald px-3 py-3 rounded-xl text-sm font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all">Fin de tour ➡</button>
             {uiMode.type !== "idle" && (
-              <button onClick={resetUI} className="font-oswald px-3 py-1.5 bg-white/8 hover:bg-white/15 rounded-lg text-xs text-white/55 transition-all">✕ Annuler</button>
+              <button onClick={resetUI} className="font-oswald px-3 py-2 bg-white/8 hover:bg-white/15 rounded-lg text-xs text-white/55 transition-all">✕ Annuler</button>
             )}
           </div>
         </div>
