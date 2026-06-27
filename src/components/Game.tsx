@@ -8,7 +8,6 @@ import { getCardDef, getCaptainDef } from "@/engine/cardRegistry";
 import { initializeRegistry } from "@/engine/init";
 import BoardSlot from "./BoardSlot";
 import Card from "./Card";
-import CaptainCard from "./CaptainCard";
 import CardDetail from "./CardDetail";
 import ActionMenu from "./ActionMenu";
 import CaptainMenu from "./CaptainMenu";
@@ -21,6 +20,7 @@ import VfxStage from "./vfx/VfxStage";
 import CutInLayer from "./vfx/CutInLayer";
 import AmbientStage from "./vfx/AmbientStage";
 import DeckBackdrop from "./board/DeckBackdrop";
+import CaptainTile from "./board/CaptainTile";
 import VolonteGauge from "./board/VolonteGauge";
 import Pile from "./board/Pile";
 import { StatusLegend } from "./StatusBadges";
@@ -397,9 +397,9 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       <div
         data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
         onClick={() => onCaptainClick(playerId)}
-        className={`rounded-xl transition-all cursor-pointer ${captainTarget ? "ring-target" : ""} ${selecting && !captainTarget ? "slot-dim" : ""}`}
+        className={`rounded-2xl transition-all cursor-pointer ${captainTarget ? "ring-target" : "hover:brightness-110"} ${selecting && !captainTarget ? "slot-dim" : ""}`}
       >
-        <CaptainCard captain={ps.captain} def={capDef} isOpponent={!isYou} />
+        <CaptainTile captain={ps.captain} def={capDef} highlight={isYou} />
       </div>
     );
 
@@ -553,7 +553,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
       {/* BOARD — single "Abordage" deck (crews top/bottom, captains diagonal) */}
       <main ref={boardRef} className="relative z-10 flex-1 min-h-0 overflow-hidden flex items-center justify-center px-3 py-2">
-        <DeckBackdrop />
+        <DeckBackdrop deckImg={getCaptainDef(player.captain.defId).faction === "marine" ? "/decks/marine-deck.png" : "/decks/mugiwara-deck.png"} />
 
         {/* discreet turn badge, far left */}
         <div className="absolute left-2 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1 px-1.5 py-2 rounded-full"
@@ -564,7 +564,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
         {/* foe Volonté — top-left */}
         <div className="absolute top-2 left-10 z-10">
-          <VolonteGauge value={opponent.volonte} label="Volonté adverse" align="left" />
+          <VolonteGauge value={opponent.volonte} label="Volonté adverse" align="left" tone="blue" />
         </div>
 
         {/* your control cluster — bottom-right: Fin de tour + Volonté */}
@@ -576,7 +576,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           >
             Fin de tour ➡
           </button>
-          <VolonteGauge value={player.volonte} label="Volonté" align="right" />
+          <VolonteGauge value={player.volonte} label="Volonté" align="right" tone="gold" />
         </div>
 
         <div className="relative z-10 w-full h-full flex items-stretch justify-center gap-3">
