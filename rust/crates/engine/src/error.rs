@@ -47,9 +47,13 @@ pub enum EngineError {
     #[error("{to:?} is not adjacent to {from:?}")]
     NotAdjacent { from: Slot, to: Slot },
 
-    /// TS `Cannot afford ${name} (cost ${cost})` / `Not enough Volonte: has X, needs Y`.
-    #[error("Cannot afford {what} (cost {cost}, has {has})")]
+    /// TS `Cannot afford ${name} (cost ${cost})` (board.ts deploy / equip / ship).
+    #[error("Not enough {what}: has {has}, needs {cost}")]
     CannotAfford { what: String, cost: i32, has: i32 },
+
+    /// TS volonte.ts `spendVolonte`: `Not enough Volonte: has ${player.volonte}, needs ${amount}`.
+    #[error("Not enough Volonte: has {has}, needs {needs}")]
+    NotEnoughVolonte { has: i32, needs: i32 },
 
     /// The action is not allowed in the current phase.
     #[error("Wrong phase: expected {expected:?}, current {actual:?}")]
@@ -79,7 +83,9 @@ pub enum EngineError {
     #[error("Game is over")]
     GameOver,
 
-    /// TS decks.ts `verifyDeck`: `Deck "${name}" has ${total} cards (expected 50)`.
+    /// Rust-only strict deck validation (`decks::verify_deck_against`), with the
+    /// text of the TS decks.ts `verifyDeck` warning:
+    /// `Deck "${name}" has ${total} cards (expected 50)`.
     #[error("Deck \"{name}\" has {total} cards (expected {expected})")]
     InvalidDeckSize {
         name: String,

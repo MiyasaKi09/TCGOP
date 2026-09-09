@@ -144,8 +144,10 @@ fn fake_captain(id: &str, name: &str) -> CaptainDef {
 fn four_decks_have_fifty_cards() {
     for deck in all_decks() {
         assert_eq!(deck_size(&deck), 50, "deck {}", deck.name);
-        verify_deck(&deck).unwrap();
+        assert_eq!(verify_deck(&deck), None);
     }
+    // The eager decks.ts module-load checks print nothing.
+    assert!(verify_decks().is_empty());
     // Exact ids / captains from decks.ts
     assert_eq!(mugiwara_deck().captain_id, "CAP-LUFFY");
     assert_eq!(marines_deck().captain_id, "CAP-AKAINU");
@@ -164,8 +166,19 @@ fn four_decks_have_fifty_cards() {
             count: 49,
         }],
     };
+    // TS verifyDeck only console.warns — the exact text, never an error.
     assert_eq!(
         verify_deck(&bad),
+        Some("Deck \"bad\" has 49 cards (expected 50)".to_string())
+    );
+    // …and an off-size deck is still playable (createInitialState never verifies).
+    let reg = fake_registry();
+    let mut ctx = EngineContext::seeded(1);
+    let state = create_initial_state(&bad, &mugiwara_deck(), &reg, &mut ctx).unwrap();
+    assert_eq!(state.players.player1.deck.len(), 49 - STARTING_HAND_SIZE);
+    // The Rust-only strict check is the one that fails.
+    assert_eq!(
+        verify_deck_against(&bad, &reg),
         Err(EngineError::InvalidDeckSize {
             name: "bad".into(),
             total: 49,
@@ -193,7 +206,8 @@ fn decks_verify_against_registry() {
 #[test]
 fn initial_state_matches_ts_initial_values() {
     let reg = fake_registry();
-    let state = GameState::new_game(&mugiwara_deck(), &marines_deck(), &reg, 42).unwrap();
+    let mut ctx = EngineContext::new(42, 1_700_000_000_000);
+    let state = create_initial_state(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
 
     assert_eq!(state.turn_number, 1);
     assert_eq!(state.current_player, PlayerId::Player1);
@@ -203,7 +217,17 @@ fn initial_state_matches_ts_initial_values() {
     assert!(state.winner.is_none());
     assert!(state.log.is_empty());
     assert_eq!(state.cards.len(), 100);
-    assert_eq!(state.instance_counter, 100);
+    assert_eq!(ctx.instance_counter, 100);
+
+    // utils.ts generateInstanceId: `${defId}_${++instanceCounter}_${Date.now().toString(36)}`,
+    // instances built in deck-list order before the shuffle.
+    assert!(state.cards.contains_key("MG-001_1_loyw3v28"));
+    assert!(state.cards.contains_key("MG-001_3_loyw3v28"));
+    assert!(state.cards.contains_key("MG-002_4_loyw3v28"));
+    assert!(state.cards.contains_key("MR-001_51_loyw3v28"));
+    assert!(state.cards.contains_key("MR-026_100_loyw3v28"));
+    assert_eq!(state.cards["MG-001_1_loyw3v28"].def_id, "MG-001");
+    assert_eq!(state.cards["MR-001_51_loyw3v28"].owner, PlayerId::Player2);
 
     for p in state.players.iter() {
         assert_eq!(p.hand.len(), STARTING_HAND_SIZE);
@@ -227,17 +251,550 @@ fn initial_state_matches_ts_initial_values() {
         }
     }
 
-    // Determinism: same seed → identical state.
-    let again = GameState::new_game(&mugiwara_deck(), &marines_deck(), &reg, 42).unwrap();
+    // Determinism: same context → identical state.
+    let again = create_initial_state(
+        &mugiwara_deck(),
+        &marines_deck(),
+        &reg,
+        &mut EngineContext::new(42, 1_700_000_000_000),
+    )
+    .unwrap();
     assert_eq!(state, again);
-    let other = GameState::new_game(&mugiwara_deck(), &marines_deck(), &reg, 43).unwrap();
+    let other = create_initial_state(
+        &mugiwara_deck(),
+        &marines_deck(),
+        &reg,
+        &mut EngineContext::new(43, 1_700_000_000_000),
+    )
+    .unwrap();
     assert_ne!(state.players.player1.deck, other.players.player1.deck);
+
+    // The counter is a process-lifetime global in TS: a second game from the
+    // same context keeps numbering at 101 (createInitialState never resets it).
+    let second = create_initial_state(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+    assert_eq!(ctx.instance_counter, 200);
+    assert!(second.cards.contains_key("MG-001_101_loyw3v28"));
+    assert!(second.cards.contains_key("MR-026_200_loyw3v28"));
+    // utils.ts resetInstanceCounter()
+    ctx.reset_instance_counter();
+    assert_eq!(ctx.generate_instance_id("X"), "X_1_loyw3v28");
+    ctx.set_now_ms(0);
+    assert_eq!(ctx.generate_instance_id("X"), "X_2_0");
+}
+
+#[test]
+fn base36_matches_js_number_to_string() {
+    // Reference values from node: (n).toString(36)
+    assert_eq!(to_base36(0), "0");
+    assert_eq!(to_base36(35), "z");
+    assert_eq!(to_base36(36), "10");
+    assert_eq!(to_base36(1_700_000_000_000), "loyw3v28");
+    assert_eq!(to_base36(1_757_376_000_123), "mfbsao3f");
+    assert_eq!(EngineContext::new(0, 1_757_376_000_123).now_base36(), "mfbsao3f");
+    let json = serde_json::to_string(&EngineContext::new(9, 5)).unwrap();
+    let back: EngineContext = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, EngineContext::new(9, 5));
+}
+
+#[test]
+fn create_game_runs_start_turn_like_init_ts() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::seeded(42);
+    let state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+
+    // createInitialState + startTurn: P1 has gained 1 Vol., did NOT draw on T1,
+    // per-turn flags reset, phase main, nothing to log with an empty board.
+    assert_eq!(state.turn_number, 1);
+    assert_eq!(state.current_player, PlayerId::Player1);
+    assert_eq!(state.phase, Phase::Main);
+    assert!(state.log.is_empty());
+    assert!(state.winner.is_none());
+    let p1 = state.player(PlayerId::Player1);
+    assert_eq!(p1.volonte, 1);
+    assert_eq!(p1.hand.len(), STARTING_HAND_SIZE);
+    assert_eq!(p1.deck.len(), 50 - STARTING_HAND_SIZE);
+    assert!(!p1.has_drawn);
+    assert!(!p1.captain.tapped);
+    assert_eq!(p1.ally_ko_ed_this_turn, Some(false));
+    assert_eq!(p1.haki_this_turn, Some(false));
+    // P2 is untouched by P1's startTurn.
+    let p2 = state.player(PlayerId::Player2);
+    assert_eq!(p2.volonte, 0);
+    assert_eq!(p2.hand.len(), STARTING_HAND_SIZE);
+    assert_eq!(p2.ally_ko_ed_this_turn, None);
+
+    // GameState::new_game is the same entry point from a bare seed.
+    let via_seed = GameState::new_game(&mugiwara_deck(), &marines_deck(), &reg, 42).unwrap();
+    assert_eq!(via_seed, state);
+
+    // endTurn then startTurn for P2: P2 draws (7 cards), gains min(turn, 10) = 1 Vol.
+    let mut state = state;
+    state.end_turn(&reg).unwrap();
+    assert_eq!(state.current_player, PlayerId::Player2);
+    assert_eq!(state.turn_number, 1);
+    assert_eq!(state.phase, Phase::End);
+    state.start_turn(&reg, &ctx).unwrap();
+    assert_eq!(state.phase, Phase::Main);
+    let p2 = state.player(PlayerId::Player2);
+    assert_eq!(p2.hand.len(), STARTING_HAND_SIZE + 1);
+    assert!(p2.has_drawn);
+    assert_eq!(p2.volonte, 1);
+    // …and back to P1 on turn 2: draws, 2 Vol.
+    state.end_turn(&reg).unwrap();
+    assert_eq!(state.turn_number, 2);
+    state.start_turn(&reg, &ctx).unwrap();
+    let p1 = state.player(PlayerId::Player1);
+    assert_eq!(p1.hand.len(), STARTING_HAND_SIZE + 1);
+    assert_eq!(p1.volonte, 2);
+}
+
+/// Put `hand[idx]` of `player` onto the board in `slot` (bypassing deploy,
+/// which is not ported yet) and return its instance id.
+fn place_from_hand(state: &mut GameState, player: PlayerId, idx: usize, slot: Slot) -> String {
+    let id = state.player_mut(player).hand.remove(idx);
+    state.player_mut(player).board.set(slot, Some(id.clone()));
+    let c = state.card_mut(&id).unwrap();
+    c.zone = Zone::Board;
+    c.slot = Some(slot);
+    c.deployed_turn = Some(0);
+    id
+}
+
+#[test]
+fn start_turn_ko_check_and_self_ko_timers_mirror_game_state_ts() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::new(5, 1234);
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+    state.end_turn(&reg).unwrap();
+    state.start_turn(&reg, &ctx).unwrap();
+    state.end_turn(&reg).unwrap();
+    // Now P1's turn 2 is about to start.
+    assert_eq!(state.current_player, PlayerId::Player1);
+    assert_eq!(state.turn_number, 2);
+
+    // V1: burning to death (1 PV, burn 1). V2: Sandai Kitetsu bearer (3 PV → 2).
+    // A1: selfKO timer at 1 → KO without KO bonus. A2: selfKO timer at 3 → 2.
+    let burning = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V1);
+    let bearer = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V2);
+    let falling = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::A1);
+    let ticking = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::A2);
+    // Sandai Kitetsu: any P1 instance re-labelled as MG-010 and attached to the bearer.
+    let sandai = state.player(PlayerId::Player1).deck[0].clone();
+    state.card_mut(&sandai).unwrap().def_id = "MG-010".into();
+    state.card_mut(&sandai).unwrap().zone = Zone::Board;
+    state
+        .card_mut(&bearer)
+        .unwrap()
+        .attached_objects
+        .push(sandai.clone());
+    {
+        let c = state.card_mut(&burning).unwrap();
+        c.current_pv = 1;
+        c.status_effects.push(StatusEffect {
+            effect_type: StatusEffectType::Burn,
+            turns_remaining: 2,
+            damage_per_turn: 1,
+            source: "b".into(),
+        });
+    }
+    for (id, turns) in [(&falling, 1), (&ticking, 3)] {
+        state.card_mut(id).unwrap().status_effects.push(StatusEffect {
+            effect_type: StatusEffectType::SelfKo,
+            turns_remaining: turns,
+            damage_per_turn: 0,
+            source: "monster".into(),
+        });
+    }
+    let vol_before_turn = state.player(PlayerId::Player1).volonte; // 1 (from T1)
+    assert_eq!(vol_before_turn, 1);
+    let log_start = state.log.len();
+
+    state.start_turn(&reg, &ctx).unwrap();
+
+    let p1 = state.player(PlayerId::Player1);
+    // gainVolonte → 2, +2 KO bonus for the burn KO (the fake captain has no onAllyKO passive).
+    assert_eq!(p1.volonte, 2 + ALLY_KO_BONUS_VOL);
+    assert_eq!(p1.ally_ko_ed_this_turn, Some(true));
+    assert_eq!(p1.char_ko_ed_this_game, Some(true));
+    // Burn KO: removed from board, character in graveyard.
+    assert_eq!(p1.board.get(Slot::V1), None);
+    assert_eq!(state.cards[&burning].zone, Zone::Graveyard);
+    assert_eq!(state.cards[&burning].slot, None);
+    // Sandai curse: 3 → 2, still on board.
+    assert_eq!(state.cards[&bearer].current_pv, 2);
+    assert_eq!(p1.board.get(Slot::V2), Some(&bearer));
+    // selfKO at 1 → KO (no KO bonus: the +2s above are fully accounted for).
+    assert_eq!(p1.board.get(Slot::A1), None);
+    assert_eq!(state.cards[&falling].zone, Zone::Graveyard);
+    // selfKO at 3 → 2, untouched by processStartOfTurnEffects.
+    assert_eq!(
+        state.cards[&ticking].status(StatusEffectType::SelfKo).unwrap().turns_remaining,
+        2
+    );
+    assert_eq!(p1.graveyard, vec![falling.clone(), burning.clone()]);
+
+    // Log order = startTurn step order: 5b curse, 6a selfKO, 6b burn KO
+    // (the fake registry names every card "Card <defId>").
+    let msgs: Vec<&str> = state.log[log_start..]
+        .iter()
+        .map(|l| l.message.as_str())
+        .collect();
+    assert_eq!(
+        msgs,
+        vec![
+            "Malédiction du Sandai Kitetsu : 1 dégât.".to_string(),
+            format!(
+                "Card {} retombe (fin de transformation) — KO.",
+                state.cards[&falling].def_id
+            ),
+            format!(
+                "Card {} est KO (brulure/effet) !",
+                state.cards[&burning].def_id
+            ),
+        ]
+    );
+    assert!(state.log[log_start..].iter().all(|l| l.turn == 2 && l.player == PlayerId::Player1));
+}
+
+#[test]
+fn end_turn_applies_crocodile_desiccation() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::seeded(8);
+    let mut state = create_game(&baroque_deck(), &redhair_deck(), &reg, &mut ctx).unwrap();
+
+    // Two enemy characters: V1 healthy (3/3), A1 injured (2/3) — first injured in slot order.
+    let healthy = place_from_hand(&mut state, PlayerId::Player2, 0, Slot::V1);
+    let injured = place_from_hand(&mut state, PlayerId::Player2, 0, Slot::A1);
+    state.card_mut(&injured).unwrap().current_pv = 2;
+
+    // Recto captain: the passive carries endTurnDesiccation but only the flipped side applies.
+    state.end_turn(&reg).unwrap();
+    assert_eq!(state.cards[&injured].current_pv, 2);
+    assert!(state.log.is_empty());
+    assert_eq!(state.current_player, PlayerId::Player2);
+    // Back to P1 and flip.
+    state.end_turn_switch();
+    state.players.player1.captain.flipped = true;
+
+    state.end_turn(&reg).unwrap();
+    assert_eq!(state.cards[&injured].current_pv, 1);
+    assert_eq!(state.cards[&healthy].current_pv, 3);
+    assert_eq!(
+        state.log.last().unwrap().message,
+        format!(
+            "Déshydratation : Card {} perd 1 PV permanent.",
+            state.cards[&injured].def_id
+        )
+    );
+    assert_eq!(state.log.last().unwrap().player, PlayerId::Player1);
+    assert_eq!(state.phase, Phase::End);
+    assert_eq!(state.current_player, PlayerId::Player2);
+
+    // Second application drops it to 0 → removeFromBoard.
+    state.end_turn_switch();
+    state.end_turn(&reg).unwrap();
+    assert_eq!(state.cards[&injured].current_pv, 0);
+    assert_eq!(state.cards[&injured].zone, Zone::Graveyard);
+    assert_eq!(state.player(PlayerId::Player2).board.get(Slot::A1), None);
+    assert_eq!(state.player(PlayerId::Player2).graveyard, vec![injured.clone()]);
+    assert_eq!(state.player(PlayerId::Player2).board.get(Slot::V1), Some(&healthy));
+}
+
+/// A registry exercising every passives.ts branch: A buffs tag-`x` allies and
+/// heals adjacents; B (tag x, mugiwara) synergises with A; D buffs the best
+/// ally at start of turn and explodes on KO; a ship with a parsed passive;
+/// a captain whose verso side debuffs, banishes and self-buffs on ally KO.
+fn passives_registry() -> CardRegistry {
+    let mut reg = CardRegistry::new();
+    let mk = |id: &str, atk: i32, pv: i32| {
+        let mut d = CardDef::new(
+            id,
+            format!("N-{id}"),
+            CardType::Character,
+            2,
+            Faction::Pirate,
+            Rarity::C,
+            "T",
+        );
+        d.atk = Some(atk);
+        d.def = Some(1);
+        d.pv = Some(pv);
+        d
+    };
+    let passive = |effects: Vec<PassiveEffect>| {
+        Some(PassiveDef {
+            name: "p".into(),
+            description: "d".into(),
+            effects,
+        })
+    };
+    let mut a = mk("A", 2, 3);
+    a.passive = passive(vec![
+        PassiveEffect::BuffAlly {
+            stat: BuffStat::Atk,
+            amount: 1,
+            filter: Some(AllyFilter {
+                faction: None,
+                tag: Some("x".into()),
+                trait_: None,
+            }),
+        },
+        PassiveEffect::HealAdjacent { amount: 2 },
+    ]);
+    let mut b = mk("B", 4, 5);
+    b.tags = Some(vec!["x".into(), "mugiwara".into()]);
+    b.synergies = Some(vec![SynergyDef {
+        partner_id: "A".into(),
+        atk_bonus: 2,
+        on_partner_ko: Some(3),
+    }]);
+    let mut d = mk("D", 1, 3);
+    d.passive = passive(vec![
+        PassiveEffect::StartTurnBuffAlly {
+            stat: AtkDefStat::Atk,
+            amount: 1,
+        },
+        PassiveEffect::ExplodeOnKo { amount: 9 },
+    ]);
+    let mut ship = CardDef::new("SHIP", "Ship", CardType::Ship, 1, Faction::Pirate, Rarity::C, "T");
+    ship.ship_passive = Some("Vos Mugiwara gagnent +1 ATK et +2  DEF".into());
+    reg.register_set(vec![a, b, d, ship]);
+
+    let mut cap = fake_captain("CAP", "Cap");
+    cap.recto.passive.effects = vec![PassiveEffect::BuffAlly {
+        stat: BuffStat::Def,
+        amount: 1,
+        filter: None,
+    }];
+    cap.verso.passive.effects = vec![
+        PassiveEffect::DebuffAdjacentEnemies { amount: 2 },
+        PassiveEffect::DebuffOneEnemy { amount: 1 },
+        PassiveEffect::BanishOnKo,
+        PassiveEffect::SelfBuffOnAllyKo {
+            stat: AtkStat::Atk,
+            amount: 1,
+            max: 2,
+            filter: Some(AllyFilter {
+                faction: None,
+                tag: Some("x".into()),
+                trait_: None,
+            }),
+        },
+    ];
+    reg.register_captain(cap);
+    reg
+}
+
+/// Move the first hand card with `def_id` onto the board in `slot`.
+fn place_def(state: &mut GameState, player: PlayerId, def_id: &str, slot: Slot) -> String {
+    let idx = state
+        .player(player)
+        .hand
+        .iter()
+        .position(|id| state.cards[id].def_id == def_id)
+        .unwrap();
+    place_from_hand(state, player, idx, slot)
+}
+
+fn mods<'a>(state: &'a GameState, id: &str) -> Vec<(&'a str, ModifierStat, i32, &'a str)> {
+    state.cards[id]
+        .modifiers
+        .iter()
+        .map(|m| (m.id.as_str(), m.stat, m.amount, m.source.as_str()))
+        .collect()
+}
+
+#[test]
+fn passives_mirror_passives_ts() {
+    let reg = passives_registry();
+    let deck = |cards: &[&str]| DeckDef {
+        name: "t".into(),
+        captain_id: "CAP".into(),
+        cards: cards
+            .iter()
+            .map(|c| DeckEntry {
+                card_id: (*c).into(),
+                count: 1,
+            })
+            .collect(),
+    };
+    let mut ctx = EngineContext::new(1, 777);
+    let mut state = create_initial_state(
+        &deck(&["A", "B", "D", "SHIP"]),
+        &deck(&["A", "B"]),
+        &reg,
+        &mut ctx,
+    )
+    .unwrap();
+    let a = place_def(&mut state, PlayerId::Player1, "A", Slot::V1);
+    let b = place_def(&mut state, PlayerId::Player1, "B", Slot::V2);
+    let d = place_def(&mut state, PlayerId::Player1, "D", Slot::A1);
+    let ship = {
+        let idx = state.players.player1.hand.iter().position(|id| state.cards[id].def_id == "SHIP").unwrap();
+        let id = state.players.player1.hand.remove(idx);
+        state.cards.get_mut(&id).unwrap().zone = Zone::Board;
+        state.players.player1.active_ship = Some(id.clone());
+        id
+    };
+    let a2 = place_def(&mut state, PlayerId::Player2, "A", Slot::V1);
+    let b2 = place_def(&mut state, PlayerId::Player2, "B", Slot::A2);
+    assert_eq!(state.cards[&ship].def_id, "SHIP");
+
+    // --- recalculatePassiveBuffs: captain buffAlly, character buffAlly, ship, synergy ---
+    recalculate_passive_buffs(&mut state, &reg, PlayerId::Player1).unwrap();
+    // Idempotent: the passive_/captain_/synergy_ modifiers are stripped and rebuilt.
+    let once = state.clone();
+    recalculate_passive_buffs(&mut state, &reg, PlayerId::Player1).unwrap();
+    assert_eq!(state, once);
+    assert_eq!(
+        mods(&state, &a),
+        vec![(format!("captain_def_{a}").as_str(), ModifierStat::Def, 1, "captain_CAP")]
+    );
+    assert_eq!(
+        mods(&state, &b),
+        vec![
+            (format!("captain_def_{b}").as_str(), ModifierStat::Def, 1, "captain_CAP"),
+            (format!("passive_{a}_atk_{b}").as_str(), ModifierStat::Atk, 1, format!("passive_{a}").as_str()),
+            (format!("ship_passive_atk_{b}").as_str(), ModifierStat::Atk, 1, "passive_ship_SHIP"),
+            (format!("ship_passive_def_{b}").as_str(), ModifierStat::Def, 2, "passive_ship_SHIP"),
+            (format!("synergy_{b}_A").as_str(), ModifierStat::Atk, 2, "synergy_A"),
+        ]
+    );
+    assert_eq!(mods(&state, &d).len(), 1); // captain def only (no tag x / mugiwara)
+    assert_eq!(get_effective_atk(&state, &reg, &b).unwrap(), 4 + 1 + 1 + 2);
+    assert_eq!(get_effective_def(&state, &reg, &b).unwrap(), 1 + 1 + 2);
+    assert_eq!(get_effective_atk(&state, &reg, "nope").unwrap(), 0);
+
+    // --- applyEnemyDebuffAuras: P1 verso captain → enemy front row -2, strongest enemy -1 ---
+    state.players.player1.captain.flipped = true;
+    apply_enemy_debuff_auras(&mut state, &reg).unwrap();
+    let once = state.clone();
+    apply_enemy_debuff_auras(&mut state, &reg).unwrap();
+    assert_eq!(state, once);
+    assert_eq!(
+        mods(&state, &a2),
+        vec![(format!("debuffAura_adj_{a2}").as_str(), ModifierStat::Atk, -2, "debuffAura")]
+    );
+    assert_eq!(
+        mods(&state, &b2),
+        vec![(format!("debuffAura_one_{b2}").as_str(), ModifierStat::Atk, -1, "debuffAura")]
+    );
+    assert_eq!(get_effective_atk(&state, &reg, &a2).unwrap(), 0); // 2 - 2
+    assert!(mods(&state, &a).iter().all(|m| m.3 != "debuffAura"));
+
+    // --- applyStartOfTurnPassives: healAdjacent (A → V2, A1) then startTurnBuffAlly (D → B) ---
+    state.cards.get_mut(&b).unwrap().current_pv = 2;
+    state.cards.get_mut(&d).unwrap().current_pv = 1;
+    state.cards.get_mut(&a).unwrap().current_pv = 1; // not adjacent to itself: unchanged
+    apply_start_of_turn_passives(&mut state, &reg, &ctx, PlayerId::Player1).unwrap();
+    assert_eq!(state.cards[&b].current_pv, 4);
+    assert_eq!(state.cards[&d].current_pv, 3); // capped at def.pv
+    assert_eq!(state.cards[&a].current_pv, 1);
+    let vant = state.cards[&b].modifiers.last().unwrap();
+    assert_eq!(vant.id, format!("vantardise_{b}_777"));
+    assert_eq!(vant.source, format!("passive_{d}"));
+    assert_eq!(vant.duration, ModifierDuration::Turn);
+    assert_eq!(vant.amount, 1);
+    let msgs: Vec<&str> = state.log.iter().map(|l| l.message.as_str()).collect();
+    assert_eq!(
+        msgs,
+        vec![
+            "N-A soigne 2 PV aux adjacents",
+            "N-D : Vantardise — un allié gagne +1 ATK ce tour.",
+        ]
+    );
+    state.log.clear();
+
+    // --- applyOnKOEffects: A KO'd by P2 (flipped, banishOnKO) → rage on B, banish, recalc ---
+    state.players.player2.captain.flipped = true;
+    remove_from_board(&mut state, &reg, &a).unwrap();
+    assert_eq!(state.players.player1.graveyard, vec![a.clone()]);
+    apply_on_ko_effects(&mut state, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "A").unwrap();
+    assert_eq!(state.players.player1.char_ko_ed_this_game, Some(true));
+    assert_eq!(state.cards[&a].zone, Zone::Banished);
+    assert!(state.players.player1.graveyard.is_empty());
+    // TS quirk kept on purpose: the rage modifier (source `synergy_rage_A`) is
+    // pushed and logged, then immediately stripped by the trailing
+    // recalculatePassiveBuffs (`source.startsWith("synergy_")`).
+    assert!(!state.cards[&b].modifiers.iter().any(|m| m.source == "synergy_rage_A"));
+    // recalculated: A's buff and the A synergy are gone, the rest stays
+    assert!(!state.cards[&b].modifiers.iter().any(|m| m.source == format!("passive_{a}")));
+    assert!(!state.cards[&b].modifiers.iter().any(|m| m.source == "synergy_A"));
+    assert!(state.cards[&b].modifiers.iter().any(|m| m.source == "passive_ship_SHIP"));
+    // A has no tag x → the captain self-buff did not trigger
+    assert!(state.players.player1.captain.modifiers.is_empty());
+    let msgs: Vec<&str> = state.log.iter().map(|l| l.message.as_str()).collect();
+    assert_eq!(
+        msgs,
+        vec![
+            "N-A est banni (Justice Implacable) !",
+            "N-B : rage ! +3 ATK (N-A KO)",
+        ]
+    );
+    assert_eq!(state.log[0].player, PlayerId::Player2);
+    assert_eq!(state.log[1].player, PlayerId::Player1);
+    state.log.clear();
+
+    // selfBuffOnAllyKO (tag x, max 2): three KOs of "B" → two +1 modifiers, then capped.
+    for _ in 0..3 {
+        apply_on_ko_effects(&mut state, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "B").unwrap();
+    }
+    let cap_mods = &state.players.player1.captain.modifiers;
+    assert_eq!(cap_mods.len(), 2);
+    assert!(cap_mods.iter().all(|m| m.id == "captainSelfKO_777"
+        && m.source == "captainSelfKO"
+        && m.amount == 1
+        && m.stat == ModifierStat::Atk
+        && m.duration == ModifierDuration::Permanent));
+    let self_buff_logs = state
+        .log
+        .iter()
+        .filter(|l| l.message == "Cap : +1 ATK permanent (Mugiwara KO).")
+        .count();
+    assert_eq!(self_buff_logs, 2);
+    state.log.clear();
+
+    // explodeOnKO: D KO'd → 9 damage to the lowest-PV enemy (A2, 3 PV) → KO'd and removed.
+    remove_from_board(&mut state, &reg, &d).unwrap();
+    apply_on_ko_effects(&mut state, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "D").unwrap();
+    assert_eq!(state.cards[&a2].current_pv, 3 - 9);
+    assert_eq!(state.cards[&a2].zone, Zone::Graveyard);
+    assert_eq!(state.players.player2.board.get(Slot::V1), None);
+    assert_eq!(state.players.player2.graveyard, vec![a2.clone()]);
+    assert_eq!(state.cards[&b2].current_pv, 5);
+    // Order: banish (P2's flipped captain) → explosion → the victim's KO.
+    assert_eq!(state.cards[&d].zone, Zone::Banished);
+    let msgs: Vec<&str> = state.log.iter().map(|l| l.message.as_str()).collect();
+    assert_eq!(
+        msgs,
+        vec![
+            "N-D est banni (Justice Implacable) !",
+            "Corps Explosif : 9 dégâts à N-A !",
+            "N-A est KO !",
+        ]
+    );
+    assert_eq!(state.log[0].player, PlayerId::Player2);
+    assert_eq!(state.log[1].player, PlayerId::Player1);
+    assert_eq!(state.log[2].player, PlayerId::Player2);
+}
+
+#[test]
+fn spend_volonte_error_text_matches_volonte_ts() {
+    let err = EngineError::NotEnoughVolonte { has: 1, needs: 3 };
+    assert_eq!(err.to_string(), "Not enough Volonte: has 1, needs 3");
+    let err = EngineError::CannotAfford {
+        what: "Zoro".into(),
+        cost: 3,
+        has: 1,
+    };
+    assert_eq!(err.to_string(), "Cannot afford Zoro (cost 3)");
 }
 
 #[test]
 fn game_state_round_trips_through_serde_json() {
     let reg = fake_registry();
-    let mut state = GameState::new_game(&baroque_deck(), &redhair_deck(), &reg, 7).unwrap();
+    let mut ctx = EngineContext::seeded(7);
+    let mut state = create_initial_state(&baroque_deck(), &redhair_deck(), &reg, &mut ctx).unwrap();
     state.pending_attack = Some(PendingAttack {
         attacker_id: "a".into(),
         target_id: "b".into(),
@@ -336,12 +893,24 @@ fn game_state_round_trips_through_serde_json() {
     assert_eq!(v["cards"][first_hand]["zone"], json!("hand"));
     assert_eq!(v["cards"][first_hand]["usedOnceAbilities"], json!([]));
 
-    // A TS-shaped state (no rng / instanceCounter keys) still deserialises.
-    let mut ts_shaped = v.clone();
-    ts_shaped.as_object_mut().unwrap().remove("rng");
-    ts_shaped.as_object_mut().unwrap().remove("instanceCounter");
-    let from_ts: GameState = serde_json::from_value(ts_shaped).unwrap();
-    assert_eq!(from_ts.cards, state.cards);
+    // Exactly the nine keys of the TS `GameState` interface, nothing extra.
+    let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    let mut expected = vec![
+        "cards",
+        "players",
+        "turnNumber",
+        "currentPlayer",
+        "phase",
+        "pendingAttack",
+        "log",
+        "winner",
+        "firstPlayer",
+    ];
+    let mut got = keys.clone();
+    expected.sort_unstable();
+    got.sort_unstable();
+    assert_eq!(got, expected);
+    assert!(v.get("rng").is_none() && v.get("instanceCounter").is_none());
 }
 
 #[test]
@@ -621,7 +1190,8 @@ fn rng_shuffle_and_draw_semantics() {
 #[test]
 fn turn_helpers_mirror_game_state_ts() {
     let reg = fake_registry();
-    let mut state = GameState::new_game(&mugiwara_deck(), &marines_deck(), &reg, 3).unwrap();
+    let mut ctx = EngineContext::seeded(3);
+    let mut state = create_initial_state(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
 
     // gainVolonte: min(turnNumber, 10), replaces previous value.
     state.turn_number = 12;
@@ -633,14 +1203,10 @@ fn turn_helpers_mirror_game_state_ts() {
     // spend / canAfford
     assert!(state.spend_volonte(PlayerId::Player1, 4).is_ok());
     assert_eq!(state.player(PlayerId::Player1).volonte, 6);
-    assert!(matches!(
+    assert_eq!(
         state.spend_volonte(PlayerId::Player1, 7),
-        Err(EngineError::CannotAfford {
-            cost: 7,
-            has: 6,
-            ..
-        })
-    ));
+        Err(EngineError::NotEnoughVolonte { has: 6, needs: 7 })
+    );
     assert!(state.spend_volonte(PlayerId::Player1, 0).is_ok());
     assert!(state.can_afford(PlayerId::Player1, 6));
     assert!(!state.can_afford(PlayerId::Player1, 7));

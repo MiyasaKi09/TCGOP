@@ -198,9 +198,34 @@ pub fn deck_size(deck: &DeckDef) -> u32 {
     deck.cards.iter().map(|e| e.count).sum()
 }
 
-/// TS `verifyDeck(deck)` — the TS version only `console.warn`s; here a wrong
-/// size is an `Err(InvalidDeckSize)`.
-pub fn verify_deck(deck: &DeckDef) -> Result<(), EngineError> {
+/// TS `verifyDeck(deck)` — warn-only, exactly like the TS version: a wrong
+/// size yields the `console.warn` text
+/// `Deck "${deck.name}" has ${total} cards (expected 50)` and `None`
+/// otherwise. It never fails; an off-size deck is still playable
+/// (`create_initial_state` does not call it, just like TS).
+pub fn verify_deck(deck: &DeckDef) -> Option<String> {
+    let total = deck_size(deck);
+    if total != DECK_SIZE {
+        return Some(format!(
+            "Deck \"{}\" has {} cards (expected {})",
+            deck.name, total, DECK_SIZE
+        ));
+    }
+    None
+}
+
+/// The eager module-load checks at the bottom of decks.ts
+/// (`verifyDeck(mugiwaraDeck); verifyDeck(marinesDeck); verifyDeck(baroqueDeck);
+/// verifyDeck(redhairDeck);`) — the warnings they would print, in that order.
+pub fn verify_decks() -> Vec<String> {
+    all_decks().iter().filter_map(verify_deck).collect()
+}
+
+/// Rust-only strict validation (no TS equivalent): the size check as a hard
+/// `Err(InvalidDeckSize)`, plus a check that every card id and the captain id
+/// exist in the registry (the TS engine would only fail later, inside
+/// `createPlayerState`, with `Card not found`).
+pub fn verify_deck_against(deck: &DeckDef, registry: &CardRegistry) -> Result<(), EngineError> {
     let total = deck_size(deck);
     if total != DECK_SIZE {
         return Err(EngineError::InvalidDeckSize {
@@ -209,14 +234,6 @@ pub fn verify_deck(deck: &DeckDef) -> Result<(), EngineError> {
             expected: DECK_SIZE,
         });
     }
-    Ok(())
-}
-
-/// `verify_deck` plus a check that every card id and the captain id exist in
-/// the registry (the TS engine would only fail later, inside
-/// `createPlayerState`, with `Card not found`).
-pub fn verify_deck_against(deck: &DeckDef, registry: &CardRegistry) -> Result<(), EngineError> {
-    verify_deck(deck)?;
     registry.get_captain_def(&deck.captain_id)?;
     for e in &deck.cards {
         if !registry.has_card(&e.card_id) {

@@ -1,26 +1,29 @@
 //! Runtime game state — port of the runtime section of `src/types/index.ts`
 //! (`CardInstance`, `CaptainInstance`, `PlayerState`, `PendingAttack`,
 //! `LogEntry`, `GameState`), of `src/engine/gameState.ts` (construction and
-//! turn-lifecycle helpers) and of the small helpers in `src/engine/utils.ts`
-//! and `src/engine/volonte.ts`.
+//! the full turn lifecycle: `startTurn` / `endTurn`), of `init.ts::createGame`
+//! and of the small helpers in `src/engine/utils.ts` and `src/engine/volonte.ts`.
 //!
-//! JSON compatibility: every struct serialises with the TS field names.
-//! Two fields exist ONLY in the Rust state and are additive (`#[serde(default)]`
-//! so TS-produced JSON still deserialises):
-//! - `GameState.rng` — the injected seeded RNG (TS uses `Math.random()`);
-//! - `GameState.instance_counter` — TS keeps this in a module global
-//!   (`utils.ts::instanceCounter`).
+//! JSON compatibility: every struct serialises with the TS field names and
+//! nothing else — `GameState` has exactly the nine keys of the TS interface.
+//! The TS module globals (`Math.random()`, `utils.ts::instanceCounter`,
+//! `Date.now()`) live in [`EngineContext`], passed explicitly.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::board::remove_from_board;
+use crate::context::EngineContext;
 use crate::error::EngineError;
+use crate::passives::{
+    apply_enemy_debuff_auras, apply_on_ko_effects, apply_start_of_turn_passives,
+    recalculate_passive_buffs,
+};
 use crate::registry::CardRegistry;
-use crate::rng::EngineRng;
 use crate::types::{
-    AttackTrait, DeckDef, Element, Modifier, ModifierDuration, Phase, PlayerId, Slot, StatusEffect,
-    StatusEffectType, Zone,
+    AttackTrait, DeckDef, Element, Modifier, ModifierDuration, PassiveEffect, Phase, PlayerId,
+    Slot, StatusEffect, StatusEffectType, Zone,
 };
 
 // ============================================================
@@ -40,15 +43,10 @@ pub const ALLY_KO_BONUS_VOL: i32 = 2;
 // Instance ids (utils.ts `generateInstanceId`)
 // ============================================================
 
-/// TS `generateInstanceId(defId)` = `${defId}_${++instanceCounter}_${Date.now().toString(36)}`.
-///
-/// The Rust engine must be deterministic, so the wall-clock suffix is dropped:
-/// the id is `${defId}_${++counter}`. Ids are still unique per game because the
-/// counter lives in `GameState.instance_counter`.
-pub fn generate_instance_id(def_id: &str, counter: &mut u64) -> String {
-    *counter += 1;
-    format!("{def_id}_{counter}")
-}
+/// TS `generateInstanceId(defId)` = `${defId}_${++instanceCounter}_${Date.now().toString(36)}`
+/// — see [`crate::context::generate_instance_id`]; the counter and the clock
+/// are the [`EngineContext`] globals.
+pub use crate::context::generate_instance_id;
 
 // ============================================================
 // Runtime instances
@@ -454,30 +452,24 @@ pub struct GameState {
     pub winner: Option<PlayerId>,
     /// Turn of first player (alternates)
     pub first_player: PlayerId,
-
-    /// NOT in TS — injected seeded RNG (replaces `Math.random()`).
-    #[serde(default)]
-    pub rng: EngineRng,
-    /// NOT in TS — `utils.ts::instanceCounter` moved into the state.
-    #[serde(default)]
-    pub instance_counter: u64,
 }
 
 // ------------------------------------------------------------
-// Construction (gameState.ts `createPlayerState` / `createInitialState`)
+// Construction (gameState.ts `createPlayerState` / `createInitialState`,
+// init.ts `createGame`)
 // ------------------------------------------------------------
 
 /// TS `createPlayerState(playerId, deckDef, allCards)`.
 ///
 /// Builds one `CardInstance` per deck entry copy (deck-list order), shuffles,
 /// draws `STARTING_HAND_SIZE` from the top, and creates the captain instance.
+/// Ids come from `ctx.generate_instance_id` (the TS module-global counter).
 pub fn create_player_state(
     player_id: PlayerId,
     deck_def: &DeckDef,
     registry: &CardRegistry,
     all_cards: &mut BTreeMap<String, CardInstance>,
-    rng: &mut EngineRng,
-    instance_counter: &mut u64,
+    ctx: &mut EngineContext,
 ) -> Result<PlayerState, EngineError> {
     let captain_def = registry.get_captain_def(&deck_def.captain_id)?;
 
@@ -485,7 +477,7 @@ pub fn create_player_state(
     let mut deck_instance_ids: Vec<String> = Vec::new();
     for entry in &deck_def.cards {
         for _ in 0..entry.count {
-            let instance_id = generate_instance_id(&entry.card_id, instance_counter);
+            let instance_id = ctx.generate_instance_id(&entry.card_id);
             let card_def = registry.get_card_def(&entry.card_id)?;
             let instance = CardInstance::new(
                 instance_id.clone(),
@@ -500,7 +492,7 @@ pub fn create_player_state(
 
     // Shuffle deck
     let mut shuffled_deck = deck_instance_ids;
-    rng.shuffle(&mut shuffled_deck);
+    ctx.rng.shuffle(&mut shuffled_deck);
 
     // Draw starting hand (`shuffledDeck.splice(0, STARTING_HAND_SIZE)`)
     let hand: Vec<String> = crate::rng::draw_top_n(&mut shuffled_deck, STARTING_HAND_SIZE);
@@ -534,39 +526,23 @@ pub fn create_player_state(
     })
 }
 
-/// TS `createInitialState(p1Deck, p2Deck)` with the RNG injected.
+/// TS `createInitialState(p1Deck, p2Deck)` with the module globals injected.
 ///
 /// T1 starts in `main`, `pendingAttack = null`, empty log, no winner,
 /// `firstPlayer = player1`. Like the TS function this does NOT run
-/// `startTurn` — that is `init.ts::createGame`.
-///
-/// // PORT: `createGame` = `create_initial_state` + `startTurn` (gameState.ts,
-/// // depends on board.ts / passives.ts — ported by a later module).
+/// `startTurn` (see [`create_game`]) and does NOT reset the instance counter:
+/// a second game built from the same `ctx` keeps numbering where the first
+/// one stopped, exactly like the TS module global.
 pub fn create_initial_state(
     p1_deck: &DeckDef,
     p2_deck: &DeckDef,
     registry: &CardRegistry,
-    mut rng: EngineRng,
+    ctx: &mut EngineContext,
 ) -> Result<GameState, EngineError> {
     let mut all_cards: BTreeMap<String, CardInstance> = BTreeMap::new();
-    let mut instance_counter: u64 = 0;
 
-    let player1 = create_player_state(
-        PlayerId::Player1,
-        p1_deck,
-        registry,
-        &mut all_cards,
-        &mut rng,
-        &mut instance_counter,
-    )?;
-    let player2 = create_player_state(
-        PlayerId::Player2,
-        p2_deck,
-        registry,
-        &mut all_cards,
-        &mut rng,
-        &mut instance_counter,
-    )?;
+    let player1 = create_player_state(PlayerId::Player1, p1_deck, registry, &mut all_cards, ctx)?;
+    let player2 = create_player_state(PlayerId::Player2, p2_deck, registry, &mut all_cards, ctx)?;
 
     Ok(GameState {
         cards: all_cards,
@@ -578,9 +554,23 @@ pub fn create_initial_state(
         log: Vec::new(),
         winner: None,
         first_player: PlayerId::Player1,
-        rng,
-        instance_counter,
     })
+}
+
+/// TS init.ts `createGame(p1Deck, p2Deck)` — the actual game entry point:
+/// `createInitialState` then `startTurn` (untap, draw skipped for P1 T1,
+/// gain 1 Vol., start-of-turn passives). `initializeRegistry()` is the
+/// `registry` argument.
+pub fn create_game(
+    p1_deck: &DeckDef,
+    p2_deck: &DeckDef,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+) -> Result<GameState, EngineError> {
+    let mut state = create_initial_state(p1_deck, p2_deck, registry, ctx)?;
+    // Start the first turn (untap, draw skipped for P1 T1, gain 1 Vol.)
+    state.start_turn(registry, ctx)?;
+    Ok(state)
 }
 
 // ------------------------------------------------------------
@@ -588,14 +578,15 @@ pub fn create_initial_state(
 // ------------------------------------------------------------
 
 impl GameState {
-    /// TS `createInitialState` from a 64-bit seed.
+    /// TS `createGame(p1Deck, p2Deck)` from a fresh deterministic context
+    /// (`EngineContext::seeded(seed)`).
     pub fn new_game(
         p1_deck: &DeckDef,
         p2_deck: &DeckDef,
         registry: &CardRegistry,
         seed: u64,
     ) -> Result<GameState, EngineError> {
-        create_initial_state(p1_deck, p2_deck, registry, EngineRng::from_seed_u64(seed))
+        create_game(p1_deck, p2_deck, registry, &mut EngineContext::seeded(seed))
     }
 
     /// TS `state.players[id]`.
@@ -645,11 +636,6 @@ impl GameState {
         self.cards
             .get_mut(instance_id)
             .ok_or_else(|| EngineError::UnknownInstance(instance_id.to_string()))
-    }
-
-    /// TS `generateInstanceId(defId)` using the state-owned counter.
-    pub fn generate_instance_id(&mut self, def_id: &str) -> String {
-        generate_instance_id(def_id, &mut self.instance_counter)
     }
 
     /// Register a freshly built instance (`allCards[instanceId] = instance`),
@@ -872,19 +858,185 @@ impl GameState {
         self.turn_number == 1 && self.current_player == self.first_player
     }
 
-    // PORT: `startTurn(state)` (gameState.ts) = untap_all → reset_turn_flags →
-    // (draw_card unless is_first_player_first_turn) → gain_volonte → phase=Main
-    // → Sandai Kitetsu curse (MG-010) → process_start_of_turn_effects →
-    // selfKO timers → KO check (board.ts removeFromBoard, volonte grantKOBonus,
-    // passives.ts applyOnKOEffects) → passives.ts applyStartOfTurnPassives /
-    // recalculatePassiveBuffs / applyEnemyDebuffAuras. Belongs to the
-    // turn-lifecycle module that also ports board.ts and passives.ts.
+    /// TS `startTurn(state)` — start a new turn for the current player:
+    /// untap → reset flags → draw (J1 skips on T1) → gain Volonte → phase
+    /// `main` → Sandai Kitetsu curse → status ticks → selfKO timers → KO
+    /// check → start-of-turn passives → passive buffs / enemy debuff auras.
+    pub fn start_turn(
+        &mut self,
+        registry: &CardRegistry,
+        ctx: &EngineContext,
+    ) -> Result<(), EngineError> {
+        // 1. Untap all characters
+        self.untap_all();
+
+        // 2. Reset per-turn flags
+        self.reset_turn_flags();
+
+        // 3. Draw 1 card (J1 does NOT draw on T1)
+        if !self.is_first_player_first_turn() {
+            self.draw_card(self.current_player);
+        }
+
+        // 4. Gain Volonte
+        self.gain_volonte();
+
+        // 5. Set phase to main
+        self.phase = Phase::Main;
+
+        // 5b. Cursed weapon (Sandai Kitetsu): the bearer takes 1 damage at the start of the turn.
+        {
+            let cp = self.current_player;
+            let ids: Vec<String> = self.board_ids(cp);
+            for id in ids {
+                let Some(card) = self.cards.get(&id) else {
+                    continue;
+                };
+                let has_sandai = card
+                    .attached_objects
+                    .iter()
+                    .any(|oid| self.cards.get(oid).is_some_and(|o| o.def_id == "MG-010"));
+                if has_sandai {
+                    if let Some(card) = self.cards.get_mut(&id) {
+                        card.current_pv -= 1;
+                    }
+                    self.add_log(cp, "Malédiction du Sandai Kitetsu : 1 dégât.");
+                }
+            }
+        }
+
+        // 6. Process start-of-turn effects (burn, poison, etc.)
+        self.process_start_of_turn_effects();
+
+        // 6a. Self-KO timers (Chopper Monster Point) — KO without granting the opponent +2 Vol.
+        {
+            let cp = self.current_player;
+            let ids: Vec<String> = self.board_ids(cp);
+            for id in ids {
+                let Some(card) = self.cards.get(&id) else {
+                    continue;
+                };
+                let Some(sk) = card.status(StatusEffectType::SelfKo) else {
+                    continue;
+                };
+                if sk.turns_remaining <= 1 {
+                    let name = registry.get_card_def(&card.def_id)?.name.clone();
+                    self.add_log(cp, format!("{name} retombe (fin de transformation) — KO."));
+                    remove_from_board(self, registry, &id)?;
+                } else if let Some(c) = self.cards.get_mut(&id) {
+                    if let Some(e) = c
+                        .status_effects
+                        .iter_mut()
+                        .find(|x| x.effect_type == StatusEffectType::SelfKo)
+                    {
+                        e.turns_remaining -= 1;
+                    }
+                }
+            }
+        }
+
+        // 6b. Check for KO from burn/desiccation damage
+        let current_player_id = self.current_player;
+        let ids: Vec<String> = self.board_ids(current_player_id);
+        for id in ids {
+            let Some(card) = self.cards.get(&id) else {
+                continue;
+            };
+            if card.zone == Zone::Board && card.current_pv <= 0 {
+                let card_def = registry.get_card_def(&card.def_id)?;
+                let ko_owner = card.owner;
+                let ko_def_id = card.def_id.clone();
+                let name = card_def.name.clone();
+                self.add_log(current_player_id, format!("{name} est KO (brulure/effet) !"));
+                // Burn/poison were inflicted by the opponent: the owner who lost the ally gets +2 Vol (Rulebook v3.1 §4).
+                self.grant_ko_bonus(ko_owner);
+                remove_from_board(self, registry, &id)?;
+                apply_on_ko_effects(self, registry, ctx, ko_owner, ko_owner.opponent(), &ko_def_id)?;
+            }
+        }
+
+        // 7. Apply start-of-turn passives (healAdjacent, etc.)
+        let cp = self.current_player;
+        apply_start_of_turn_passives(self, registry, ctx, cp)?;
+
+        // 8. Recalculate passive buffs (captain, synergies)
+        recalculate_passive_buffs(self, registry, cp)?;
+        recalculate_passive_buffs(self, registry, cp.opponent())?;
+        apply_enemy_debuff_auras(self, registry)?;
+
+        Ok(())
+    }
+
+    /// TS `endTurn(state)` — end the current player's turn and switch to the
+    /// opponent. First the Crocodile end-of-turn desiccation (the flipped
+    /// captain's `endTurnDesiccation`: the first injured enemy loses N
+    /// permanent PV, KO if it drops to 0), then phase `end`, hand-limit
+    /// discard and the player switch ([`GameState::end_turn_switch`]).
+    pub fn end_turn(&mut self, registry: &CardRegistry) -> Result<(), EngineError> {
+        // End-of-turn desiccation (Crocodile): an injured enemy loses 1 permanent PV.
+        {
+            let me = self.current_player;
+            let opp = me.opponent();
+            let captain = &self.players.get(me).captain;
+            let cap_def = registry.get_captain_def(&captain.def_id)?;
+            let cap_passive = if captain.flipped {
+                &cap_def.verso.passive
+            } else {
+                &cap_def.recto.passive
+            };
+            let desicc: i32 = cap_passive
+                .effects
+                .iter()
+                .map(|e| match e {
+                    PassiveEffect::EndTurnDesiccation { amount } => *amount,
+                    _ => 0,
+                })
+                .sum();
+            if captain.flipped && desicc > 0 {
+                let mut injured: Vec<String> = Vec::new();
+                for id in self.players.get(opp).board.instance_ids() {
+                    let Some(c) = self.cards.get(id) else {
+                        continue;
+                    };
+                    let def = registry.get_card_def(&c.def_id)?;
+                    if def.pv.is_some() && c.current_pv < def.pv.unwrap_or(0) {
+                        injured.push(id.clone());
+                    }
+                }
+                if let Some(tid) = injured.first().cloned() {
+                    let card = self.get_card_mut(&tid)?;
+                    card.current_pv -= desicc;
+                    let name = registry.get_card_def(&card.def_id)?.name.clone();
+                    self.add_log(
+                        me,
+                        format!("Déshydratation : {name} perd {desicc} PV permanent."),
+                    );
+                    if self.get_card(&tid)?.current_pv <= 0 {
+                        remove_from_board(self, registry, &tid)?;
+                    }
+                }
+            }
+        }
+
+        self.end_turn_switch();
+        Ok(())
+    }
+
+    /// The occupant ids of `player_id`'s board in slot order
+    /// (TS `Object.values(player.board)` with the `null`s skipped), cloned so
+    /// the caller can mutate the state while iterating.
+    fn board_ids(&self, player_id: PlayerId) -> Vec<String> {
+        self.players
+            .get(player_id)
+            .board
+            .instance_ids()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
 
     /// TS `endTurn` second half (inside `produce`): phase = end, hand-limit
     /// discard, switch player, bump `turnNumber` when player2 ends.
-    ///
-    /// // PORT: the first half of `endTurn` (Crocodile `endTurnDesiccation`,
-    /// // needs board.ts `removeFromBoard`) is ported with the turn module.
     pub fn end_turn_switch(&mut self) {
         self.phase = Phase::End;
         self.discard_hand_overflow();
@@ -933,17 +1085,17 @@ impl GameState {
     }
 
     /// TS `spendVolonte(state, playerId, amount)` — no-op for `amount <= 0`,
-    /// `Err(CannotAfford)` if insufficient.
+    /// `Err(NotEnoughVolonte)` (`Not enough Volonte: has X, needs Y`) if
+    /// insufficient.
     pub fn spend_volonte(&mut self, player_id: PlayerId, amount: i32) -> Result<(), EngineError> {
         if amount <= 0 {
             return Ok(());
         }
         let player = self.players.get_mut(player_id);
         if player.volonte < amount {
-            return Err(EngineError::CannotAfford {
-                what: "Volonte".to_string(),
-                cost: amount,
+            return Err(EngineError::NotEnoughVolonte {
                 has: player.volonte,
+                needs: amount,
             });
         }
         player.volonte -= amount;
