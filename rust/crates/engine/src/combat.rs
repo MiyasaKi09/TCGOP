@@ -1774,3 +1774,575 @@ pub fn apply_element_to_captain(
 
     Ok(())
 }
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::state::{Board, CaptainInstance, CardInstance, PlayerState, Players};
+    use crate::types::{
+        BaseAction, CaptainDef, CaptainRecto, CaptainVerso, CardDef, CounterEffect, EntryEffect,
+        Faction, FlipCondition, PassiveDef, Phase, Rarity, SpecialAttack,
+    };
+
+    fn passive(name: &str, effects: Vec<PassiveEffect>) -> PassiveDef {
+        PassiveDef {
+            name: name.to_string(),
+            description: String::new(),
+            effects,
+        }
+    }
+
+    fn captain_def(id: &str, name: &str, def: i32, logia_verso: bool) -> CaptainDef {
+        CaptainDef {
+            id: id.to_string(),
+            name: name.to_string(),
+            faction: Faction::Pirate,
+            tags: None,
+            traits: None,
+            recto: CaptainRecto {
+                pv: 20,
+                atk: 3,
+                def,
+                passive: passive("R", vec![]),
+                attacks: vec![],
+                surcharge: None,
+            },
+            flip_condition: FlipCondition::default(),
+            verso: CaptainVerso {
+                pv: 20,
+                atk: 5,
+                def,
+                passive: passive("V", vec![]),
+                entry_effect: EntryEffect::Draw { amount: 1 },
+                base_action: BaseAction {
+                    name: "Coup".to_string(),
+                    atk: 5,
+                    ..Default::default()
+                },
+                special_attack: SpecialAttack {
+                    name: "Spe".to_string(),
+                    cost: 3,
+                    atk_bonus: 2,
+                    ..Default::default()
+                },
+                surcharge: None,
+                traits: if logia_verso {
+                    Some(vec![Trait::Logia])
+                } else {
+                    None
+                },
+                natural_haki: None,
+            },
+        }
+    }
+
+    fn character(id: &str, name: &str, atk: i32, def: i32, pv: i32) -> CardDef {
+        let mut c = CardDef::new(
+            id,
+            name,
+            CardType::Character,
+            2,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        c.atk = Some(atk);
+        c.def = Some(def);
+        c.pv = Some(pv);
+        c.base_action = Some(BaseAction {
+            name: "Frappe".to_string(),
+            atk,
+            ..Default::default()
+        });
+        c
+    }
+
+    fn counter(id: &str, name: &str, cost: i32, effect: CounterEffect) -> CardDef {
+        let mut c = CardDef::new(
+            id,
+            name,
+            CardType::Counter,
+            cost,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        c.counter_effect = Some(effect);
+        c
+    }
+
+    fn player(id: PlayerId, captain_id: &str) -> PlayerState {
+        PlayerState {
+            id,
+            captain: CaptainInstance::new(captain_id.to_string(), id, 20),
+            deck: Vec::new(),
+            hand: Vec::new(),
+            graveyard: Vec::new(),
+            board: Board::empty(),
+            active_ship: None,
+            volonte: 10,
+            used_free_move: false,
+            has_drawn: false,
+            observation_used: false,
+            armament_used: false,
+            king_used: false,
+            ally_ko_ed_this_turn: None,
+            char_ko_ed_this_game: None,
+            haki_this_turn: None,
+        }
+    }
+
+    /// Registry + empty board state (turn 3 so no free T7 Haki).
+    fn setup() -> (GameState, CardRegistry) {
+        let mut reg = CardRegistry::new();
+        reg.register_captain(captain_def("CAP-1", "Barbe", 1, false));
+        reg.register_captain(captain_def("CAP-L", "Logia", 1, true));
+        reg.register_set(vec![
+            character("C-ATK", "Attaquant", 6, 0, 8),
+            character("C-DEF", "Defenseur", 2, 5, 6),
+            character("C-ADJ", "Voisin", 2, 0, 3),
+            counter(
+                "X-RED",
+                "Esquive",
+                1,
+                CounterEffect::ReduceDamage {
+                    amount: 2,
+                    captain_bonus: Some(4),
+                },
+            ),
+            counter(
+                "X-SURV",
+                "Survie",
+                1,
+                CounterEffect::Survive {
+                    description: String::new(),
+                },
+            ),
+            counter(
+                "X-CANCEL",
+                "Faible",
+                1,
+                CounterEffect::Cancel {
+                    description: String::new(),
+                    max_attacker_atk: Some(4),
+                    self_captain_damage: None,
+                    once: None,
+                },
+            ),
+        ]);
+
+        let state = GameState {
+            cards: BTreeMap::new(),
+            players: Players {
+                player1: player(PlayerId::Player1, "CAP-1"),
+                player2: player(PlayerId::Player2, "CAP-1"),
+            },
+            turn_number: 3,
+            current_player: PlayerId::Player1,
+            phase: Phase::Main,
+            pending_attack: None,
+            log: Vec::new(),
+            winner: None,
+            first_player: PlayerId::Player1,
+        };
+        (state, reg)
+    }
+
+    /// Put a fresh instance of `def_id` on `owner`'s `slot`, deployed long ago.
+    fn place(
+        state: &mut GameState,
+        reg: &CardRegistry,
+        def_id: &str,
+        owner: PlayerId,
+        slot: Slot,
+    ) -> String {
+        let pv = reg.get_card_def(def_id).unwrap().pv.unwrap_or(0);
+        let instance_id = format!("{def_id}@{}:{}", owner.as_str(), slot.as_str());
+        let mut inst = CardInstance::new(instance_id.clone(), def_id.to_string(), owner, pv);
+        inst.zone = Zone::Board;
+        inst.slot = Some(slot);
+        inst.deployed_turn = Some(0);
+        state.cards.insert(instance_id.clone(), inst);
+        state
+            .players
+            .get_mut(owner)
+            .board
+            .set(slot, Some(instance_id.clone()));
+        instance_id
+    }
+
+    /// Put a fresh instance of `def_id` in `owner`'s hand.
+    fn give(state: &mut GameState, def_id: &str, owner: PlayerId) -> String {
+        let instance_id = format!("{def_id}@hand:{}", owner.as_str());
+        let mut inst = CardInstance::new(instance_id.clone(), def_id.to_string(), owner, 0);
+        inst.zone = Zone::Hand;
+        state.cards.insert(instance_id.clone(), inst);
+        state.players.get_mut(owner).hand.push(instance_id.clone());
+        instance_id
+    }
+
+    fn last_log(state: &GameState) -> &str {
+        &state.log.last().unwrap().message
+    }
+
+    // --------------------------------------------------------
+
+    #[test]
+    fn base_attack_uses_both_actions_and_logs_the_ts_line() {
+        let (mut state, reg) = setup();
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+
+        // ATK 6 vs DEF 5 = 1
+        assert_eq!(
+            last_log(&state),
+            "Attaquant attaque Defenseur (ATK 6 vs DEF 5 = 1 degats)"
+        );
+        let pending = state.pending_attack.clone().unwrap();
+        assert_eq!(pending.raw_damage, 1);
+        assert_eq!(pending.attack_power, Some(6));
+        assert!(!pending.is_special);
+        let a = state.card(&atk).unwrap();
+        // One action per turn: BOTH flags are set by a base attack.
+        assert!(a.tapped && a.used_base_action && a.used_special_attack);
+    }
+
+    #[test]
+    fn piercing_halves_the_target_def_with_floor() {
+        let (mut state, reg) = setup();
+        let mut piercer = character("C-PIERCE", "Perceur", 6, 0, 8);
+        piercer.traits = Some(vec![Trait::Piercing]);
+        let mut reg = reg;
+        reg.register_card(piercer);
+        let atk = place(&mut state, &reg, "C-PIERCE", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+
+        // DEF 5 -> floor(5/2) = 2, so 6 - 2 = 4
+        assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 4);
+        assert!(last_log(&state).contains("(ATK 6 vs DEF 2 = 4 degats)"));
+    }
+
+    #[test]
+    fn trap_kills_the_attacker_before_any_pending_attack() {
+        let (mut state, reg) = setup();
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        {
+            let a = state.card_mut(&atk).unwrap();
+            a.current_pv = 2;
+            a.status_effects.push(StatusEffect {
+                effect_type: StatusEffectType::Trap,
+                turns_remaining: 1,
+                damage_per_turn: 3,
+                source: "t".into(),
+            });
+        }
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+
+        assert!(state.pending_attack.is_none());
+        assert_eq!(
+            state.log[0].message,
+            "Piege ! Attaquant subit 3 degats en attaquant !"
+        );
+        assert_eq!(state.log[1].message, "Attaquant est KO par le piege !");
+        assert_eq!(state.card(&atk).unwrap().zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn counter_reduce_uses_the_captain_bonus_against_a_captain() {
+        let (mut state, reg) = setup();
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let c = give(&mut state, "X-RED", PlayerId::Player2);
+        declare_base_attack(&mut state, &reg, &atk, "captain", true).unwrap();
+        // ATK 6 vs captain DEF 1 = 5
+        assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 5);
+
+        apply_counter_reduce(&mut state, &reg, &c).unwrap();
+
+        // captainBonus 4 replaces amount 2
+        assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 1);
+        assert_eq!(last_log(&state), "Joue Esquive : reduit les degats de 4");
+        assert!(state.players.player2.hand.is_empty());
+        assert_eq!(state.card(&c).unwrap().zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn shield_block_retargets_and_recomputes_the_damage() {
+        let (mut state, reg) = setup();
+        let mut blocker = character("C-SHIELD", "Bouclier", 1, 2, 9);
+        blocker.traits = Some(vec![Trait::Shield]);
+        blocker.passive = Some(passive(
+            "Garde",
+            vec![PassiveEffect::BlockDamageReduction { amount: 1 }],
+        ));
+        let mut reg = reg;
+        reg.register_card(blocker);
+
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        let blk = place(&mut state, &reg, "C-SHIELD", PlayerId::Player2, Slot::V2);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        apply_shield_block(&mut state, &reg, &blk).unwrap();
+
+        let pending = state.pending_attack.clone().unwrap();
+        assert_eq!(pending.target_id, blk);
+        assert!(!pending.target_is_captain);
+        // attackPower 6 - DEF 2 - blockDamageReduction 1 = 3
+        assert_eq!(pending.raw_damage, 3);
+        assert!(state.card(&blk).unwrap().tapped);
+        assert_eq!(last_log(&state), "🛡 Bouclier bloque l'attaque ! (Bouclier)");
+    }
+
+    #[test]
+    fn survive_counter_keeps_the_target_at_one_pv_only_for_that_attack() {
+        let (mut state, reg) = setup();
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        let c = give(&mut state, "X-SURV", PlayerId::Player2);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 6);
+        apply_counter_survive(&mut state, &reg, &c).unwrap();
+        assert!(survive_played(&state));
+        assert_eq!(last_log(&state), "Joue Survie : survie a 1 PV !");
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 1);
+        assert_eq!(state.card(&tgt).unwrap().zone, Zone::Board);
+        assert!(state.pending_attack.is_none());
+
+        // A second attack (no counter) must NOT be saved again: the flag lived
+        // on the pending attack, not on the character.
+        state.card_mut(&atk).unwrap().tapped = false;
+        state.card_mut(&atk).unwrap().used_base_action = false;
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        assert!(!survive_played(&state));
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+        assert_eq!(state.card(&tgt).unwrap().zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn strawhat_saves_the_bearer_once() {
+        let (mut state, reg) = setup();
+        let mut reg = reg;
+        reg.register_card(CardDef::new(
+            "RH-014",
+            "Chapeau de Paille",
+            CardType::Object,
+            1,
+            Faction::Pirate,
+            Rarity::R,
+            "TEST",
+        ));
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        let hat = give(&mut state, "RH-014", PlayerId::Player2);
+        state.card_mut(&tgt).unwrap().attached_objects.push(hat);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 1);
+        assert_eq!(
+            last_log(&state),
+            "Voisin survit grâce au Chapeau de Paille (1 PV) !"
+        );
+    }
+
+    #[test]
+    fn thunder_propagates_to_the_first_occupied_adjacent_slot_only() {
+        let (mut state, reg) = setup();
+        let mut thunder = character("C-THUNDER", "Foudre", 6, 0, 8);
+        thunder.base_action = Some(BaseAction {
+            name: "Eclair".to_string(),
+            atk: 6,
+            element: Some(Element::Thunder),
+            ..Default::default()
+        });
+        let mut reg = reg;
+        reg.register_card(thunder);
+
+        let atk = place(&mut state, &reg, "C-THUNDER", PlayerId::Player1, Slot::V1);
+        // Target V2 — adjacency is [V1, V3, A2]; V1 and V3 are both occupied,
+        // only the first one may take the propagation.
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V2);
+        let first = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        let second = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V3);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        // 6 - 5 = 1 raw, propagation = max(1, floor(1/2)) = 1
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        assert_eq!(state.card(&first).unwrap().current_pv, 2);
+        assert_eq!(state.card(&second).unwrap().current_pv, 3);
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 5);
+    }
+
+    #[test]
+    fn zone_spread_skips_a_logia_secondary_without_haki() {
+        let (mut state, reg) = setup();
+        let mut zoner = character("C-ZONE", "Zone", 6, 0, 8);
+        zoner.base_action = Some(BaseAction {
+            name: "Vague".to_string(),
+            atk: 6,
+            attack_traits: Some(vec![AttackTrait::Zone]),
+            ..Default::default()
+        });
+        let mut logia = character("C-LOGIA", "Logia", 1, 0, 4);
+        logia.traits = Some(vec![Trait::Logia]);
+        let mut reg = reg;
+        reg.register_card(zoner);
+        reg.register_card(logia);
+
+        let atk = place(&mut state, &reg, "C-ZONE", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V2);
+        let normal = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        let ghost = place(&mut state, &reg, "C-LOGIA", PlayerId::Player2, Slot::V3);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        // V1 (3 PV) is hit for 6 and KO'd, V3 (Logia) is untouched.
+        assert_eq!(state.card(&normal).unwrap().zone, Zone::Graveyard);
+        assert_eq!(state.card(&ghost).unwrap().current_pv, 4);
+        assert_eq!(state.card(&ghost).unwrap().zone, Zone::Board);
+        assert!(state
+            .log
+            .iter()
+            .any(|l| l.message == "Voisin subit 6 degats (Zone/Total) (PV: -3)"));
+    }
+
+    #[test]
+    fn logia_target_ignores_the_first_hit_of_the_turn_without_haki() {
+        let (mut state, reg) = setup();
+        let mut logia = character("C-LOGIA", "Logia", 1, 0, 4);
+        logia.traits = Some(vec![Trait::Logia]);
+        let mut reg = reg;
+        reg.register_card(logia);
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-LOGIA", PlayerId::Player2, Slot::V1);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 4);
+        assert_eq!(state.card(&tgt).unwrap().logia_used_this_turn, Some(true));
+        assert!(state.log.iter().any(|l| l.message
+            == "⚠ Logia : INTANGIBILITE LOGIA ! Utilisez le Haki (T7+) ou l'Eau."));
+    }
+
+    #[test]
+    fn melee_recoil_hurts_a_non_range_attacker() {
+        let (mut state, reg) = setup();
+        let mut thorns = character("C-THORNS", "Epines", 1, 0, 9);
+        thorns.passive = Some(passive(
+            "Epines",
+            vec![PassiveEffect::MeleeRecoil { amount: 2 }],
+        ));
+        let mut reg = reg;
+        reg.register_card(thorns);
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-THORNS", PlayerId::Player2, Slot::V1);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        assert_eq!(state.card(&atk).unwrap().current_pv, 6);
+        assert!(state
+            .log
+            .iter()
+            .any(|l| l.message == "Attaquant subit 2 dégâts (Épines) !"));
+    }
+
+    #[test]
+    fn eligible_counters_filter_on_max_attacker_atk() {
+        let (mut state, reg) = setup();
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        let red = give(&mut state, "X-RED", PlayerId::Player2);
+        let cancel = give(&mut state, "X-CANCEL", PlayerId::Player2);
+
+        // No pending attack yet.
+        assert!(get_eligible_counters(&state, &reg, PlayerId::Player2)
+            .unwrap()
+            .is_empty());
+
+        declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
+        // attackPower 6 > maxAttackerAtk 4 → the cancel counter drops out.
+        assert_eq!(
+            get_eligible_counters(&state, &reg, PlayerId::Player2).unwrap(),
+            vec![red.clone()]
+        );
+        assert_eq!(
+            apply_counter_cancel(&mut state, &reg, &cancel).unwrap_err(),
+            EngineError::illegal("Attacker is too strong for this counter")
+        );
+
+        // Weaken the attack: both counters become eligible.
+        state.pending_attack.as_mut().unwrap().attack_power = Some(3);
+        assert_eq!(
+            get_eligible_counters(&state, &reg, PlayerId::Player2).unwrap(),
+            vec![red, cancel.clone()]
+        );
+        apply_counter_cancel(&mut state, &reg, &cancel).unwrap();
+        assert!(state.pending_attack.is_none());
+        assert_eq!(last_log(&state), "Faible : attaque annulée !");
+    }
+
+    #[test]
+    fn flipped_logia_captain_ignores_a_hakiless_hit() {
+        let (mut state, reg) = setup();
+        state.players.player2.captain = CaptainInstance::new("CAP-L".into(), PlayerId::Player2, 20);
+        state.players.player2.captain.flipped = true;
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &atk, "captain", true).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        assert_eq!(state.players.player2.captain.current_pv, 20);
+        assert!(state.log.iter().any(|l| l.message
+            == "⚠ Logia : INTANGIBILITE LOGIA ! L'attaque passe a travers. Utilisez le Haki (T7+) ou l'Eau pour le toucher."));
+
+        // Turn 7+ grants Armament Haki: the same attack now lands.
+        state.turn_number = 7;
+        state.card_mut(&atk).unwrap().tapped = false;
+        state.card_mut(&atk).unwrap().used_base_action = false;
+        declare_base_attack(&mut state, &reg, &atk, "captain", true).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+        assert_eq!(state.players.player2.captain.current_pv, 15);
+        assert_eq!(last_log(&state), "Capitaine Logia subit 5 degats (PV: 15)");
+    }
+
+    #[test]
+    fn captain_attacker_ids_round_trip() {
+        let (state, _reg) = setup();
+        assert_eq!(captain_attacker_id(PlayerId::Player2), "captain_player2");
+        assert_eq!(
+            get_attacker_owner(&state, "captain_player2").unwrap(),
+            PlayerId::Player2
+        );
+        assert_eq!(
+            get_attacker_owner(&state, "nope").unwrap_err(),
+            EngineError::illegal("Attacker not found: nope")
+        );
+    }
+}

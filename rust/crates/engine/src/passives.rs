@@ -720,3 +720,879 @@ pub fn apply_on_ko_effects(
 
     Ok(())
 }
+
+// ============================================================
+// Tests — the trickiest branches of passives.ts
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{Board, CaptainInstance, CardInstance, PlayerState, Players};
+    use crate::types::{
+        BaseAction, CaptainDef, CaptainRecto, CaptainVerso, CardDef, CardType, EntryEffect,
+        Faction, FlipCondition, PassiveDef, Phase, Rarity, SpecialAttack, SynergyDef, Trait,
+    };
+    use std::collections::BTreeMap;
+
+    // --- builders -------------------------------------------------------
+
+    fn chr(id: &str, name: &str, atk: i32, def: i32, pv: i32) -> CardDef {
+        let mut d = CardDef::new(
+            id,
+            name,
+            CardType::Character,
+            1,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        d.atk = Some(atk);
+        d.def = Some(def);
+        d.pv = Some(pv);
+        d
+    }
+
+    fn ship(id: &str, name: &str, passive: &str) -> CardDef {
+        let mut d = CardDef::new(id, name, CardType::Ship, 2, Faction::Pirate, Rarity::C, "TEST");
+        d.ship_passive = Some(passive.to_string());
+        d
+    }
+
+    fn passive(effects: Vec<PassiveEffect>) -> PassiveDef {
+        PassiveDef {
+            name: "P".to_string(),
+            description: "D".to_string(),
+            effects,
+        }
+    }
+
+    fn cap(id: &str, name: &str, recto: Vec<PassiveEffect>, verso: Vec<PassiveEffect>) -> CaptainDef {
+        CaptainDef {
+            id: id.to_string(),
+            name: name.to_string(),
+            faction: Faction::Pirate,
+            tags: None,
+            traits: None,
+            recto: CaptainRecto {
+                pv: 20,
+                atk: 3,
+                def: 2,
+                passive: passive(recto),
+                attacks: Vec::new(),
+                surcharge: None,
+            },
+            flip_condition: FlipCondition::default(),
+            verso: CaptainVerso {
+                pv: 20,
+                atk: 4,
+                def: 3,
+                passive: passive(verso),
+                entry_effect: EntryEffect::GrantSelfRush,
+                base_action: BaseAction::default(),
+                special_attack: SpecialAttack::default(),
+                surcharge: None,
+                traits: None,
+                natural_haki: None,
+            },
+        }
+    }
+
+    fn player(id: PlayerId, cap_def_id: &str) -> PlayerState {
+        PlayerState {
+            id,
+            captain: CaptainInstance::new(cap_def_id.to_string(), id, 20),
+            deck: Vec::new(),
+            hand: Vec::new(),
+            graveyard: Vec::new(),
+            board: Board::empty(),
+            active_ship: None,
+            volonte: 0,
+            used_free_move: false,
+            has_drawn: false,
+            observation_used: false,
+            armament_used: false,
+            king_used: false,
+            ally_ko_ed_this_turn: None,
+            char_ko_ed_this_game: None,
+            haki_this_turn: None,
+        }
+    }
+
+    fn blank_state(cap1: &str, cap2: &str) -> GameState {
+        GameState {
+            cards: BTreeMap::new(),
+            players: Players {
+                player1: player(PlayerId::Player1, cap1),
+                player2: player(PlayerId::Player2, cap2),
+            },
+            turn_number: 3,
+            current_player: PlayerId::Player1,
+            phase: Phase::Main,
+            pending_attack: None,
+            log: Vec::new(),
+            winner: None,
+            first_player: PlayerId::Player1,
+        }
+    }
+
+    /// Put `def_id` on `owner`'s `slot` with `pv` current PV; returns the instance id.
+    fn place(
+        state: &mut GameState,
+        registry: &CardRegistry,
+        owner: PlayerId,
+        slot: Slot,
+        def_id: &str,
+        pv: i32,
+    ) -> String {
+        let _ = registry;
+        let iid = format!("{def_id}@{}{}", owner.as_str(), slot.as_str());
+        let mut inst = CardInstance::new(iid.clone(), def_id.to_string(), owner, pv);
+        inst.zone = Zone::Board;
+        inst.slot = Some(slot);
+        state.cards.insert(iid.clone(), inst);
+        state.players.get_mut(owner).board.set(slot, Some(iid.clone()));
+        iid
+    }
+
+    fn atk_bonus(state: &GameState, iid: &str) -> i32 {
+        state
+            .cards
+            .get(iid)
+            .unwrap()
+            .modifiers
+            .iter()
+            .filter(|m| m.stat == ModifierStat::Atk)
+            .map(|m| m.amount)
+            .sum()
+    }
+
+    fn last_msg(state: &GameState) -> &str {
+        &state.log.last().unwrap().message
+    }
+
+    // --- ship_bonus (the TS `desc.match(/\+(\d+)\s*atk/i)` port) ---------
+
+    #[test]
+    fn ship_bonus_matches_the_real_card_texts() {
+        // The four distinct shipPassive strings in src/data/cards, lower-cased.
+        let baroque = "vos baroque works gagnent +1 atk.";
+        let marine_pv = "vos marine gagnent +1 pv.";
+        let mugi_pv = "vos mugiwara ont +1 pv au déploiement.";
+        let redhair = "vos personnages gagnent +1 atk.";
+        assert_eq!(ship_bonus(baroque, "atk"), 1);
+        assert_eq!(ship_bonus(baroque, "def"), 0);
+        assert_eq!(ship_bonus(marine_pv, "atk"), 0);
+        assert_eq!(ship_bonus(mugi_pv, "atk"), 0);
+        assert_eq!(ship_bonus(redhair, "atk"), 1);
+        // Multi-bonus text: each keyword picks its own `+N`, like the two regexes.
+        assert_eq!(ship_bonus("+2 atk et +3 def", "atk"), 2);
+        assert_eq!(ship_bonus("+2 atk et +3 def", "def"), 3);
+        // No whitespace, multi-digit, and a `+` with no digits behind it.
+        assert_eq!(ship_bonus("++12atk", "atk"), 12);
+        // `\+(\d+)\s*def` does not match "+12 3def" (JS backtracking fails too).
+        assert_eq!(ship_bonus("+12 3def", "def"), 0);
+    }
+
+    // --- matchesFilter ---------------------------------------------------
+
+    #[test]
+    fn matches_filter_checks_faction_tag_and_trait() {
+        let mut d = chr("C1", "C1", 2, 1, 3);
+        d.tags = Some(vec!["mugiwara".to_string()]);
+        d.traits = Some(vec![Trait::Shield]);
+        let reg = CardRegistry::from_sets([vec![d]], []);
+
+        assert!(matches_filter(&reg, "C1", None).unwrap());
+        assert!(
+            matches_filter(
+                &reg,
+                "C1",
+                Some(&AllyFilter {
+                    faction: Some(Faction::Pirate),
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+        );
+        assert!(
+            !matches_filter(
+                &reg,
+                "C1",
+                Some(&AllyFilter {
+                    faction: Some(Faction::Marine),
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+        );
+        assert!(
+            matches_filter(
+                &reg,
+                "C1",
+                Some(&AllyFilter {
+                    tag: Some("mugiwara".to_string()),
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+        );
+        assert!(
+            !matches_filter(
+                &reg,
+                "C1",
+                Some(&AllyFilter {
+                    tag: Some("marine".to_string()),
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+        );
+        assert!(
+            matches_filter(
+                &reg,
+                "C1",
+                Some(&AllyFilter {
+                    trait_: Some(Trait::Shield),
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+        );
+    }
+
+    // --- start-of-turn passives -----------------------------------------
+
+    #[test]
+    fn heal_adjacent_caps_at_def_pv_and_logs_verbatim() {
+        // Healer in V2 → adjacents are V1, V3, A2 (ADJACENCY order).
+        let healer = {
+            let mut d = chr("H", "Docteur", 1, 1, 3);
+            d.passive = Some(passive(vec![PassiveEffect::HealAdjacent { amount: 1 }]));
+            d
+        };
+        let reg = CardRegistry::from_sets(
+            [vec![healer, chr("A", "Ally", 2, 1, 4), chr("B", "Far", 2, 1, 4)]],
+            [cap("CAP", "Cap", vec![], vec![])],
+        );
+        let mut st = blank_state("CAP", "CAP");
+        place(&mut st, &reg, PlayerId::Player1, Slot::V2, "H", 3);
+        let a = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "A", 1); // heals to 2
+        let b = place(&mut st, &reg, PlayerId::Player1, Slot::A2, "A", 4); // already at max
+        let far = place(&mut st, &reg, PlayerId::Player1, Slot::A1, "B", 1); // not adjacent
+
+        apply_start_of_turn_passives(&mut st, &reg, &EngineContext::seeded(1), PlayerId::Player1)
+            .unwrap();
+
+        assert_eq!(st.cards[&a].current_pv, 2);
+        assert_eq!(st.cards[&b].current_pv, 4, "capped at def.pv");
+        assert_eq!(st.cards[&far].current_pv, 1, "A1 is not adjacent to V2");
+        assert_eq!(last_msg(&st), "Docteur soigne 1 PV aux adjacents");
+    }
+
+    #[test]
+    fn heal_adjacent_logs_even_with_no_adjacent_ally() {
+        let healer = {
+            let mut d = chr("H", "Docteur", 1, 1, 3);
+            d.passive = Some(passive(vec![PassiveEffect::HealAdjacent { amount: 2 }]));
+            d
+        };
+        let reg = CardRegistry::from_sets([vec![healer]], [cap("CAP", "Cap", vec![], vec![])]);
+        let mut st = blank_state("CAP", "CAP");
+        place(&mut st, &reg, PlayerId::Player1, Slot::V2, "H", 3);
+
+        apply_start_of_turn_passives(&mut st, &reg, &EngineContext::seeded(1), PlayerId::Player1)
+            .unwrap();
+
+        assert_eq!(st.log.len(), 1);
+        assert_eq!(last_msg(&st), "Docteur soigne 2 PV aux adjacents");
+    }
+
+    #[test]
+    fn start_turn_buff_ally_picks_first_highest_atk_non_source() {
+        let usopp = {
+            let mut d = chr("U", "Usopp", 1, 1, 3);
+            d.passive = Some(passive(vec![PassiveEffect::StartTurnBuffAlly {
+                stat: AtkDefStat::Atk,
+                amount: 1,
+            }]));
+            d
+        };
+        // Two allies tie on ATK=4 → strict `>` keeps the first in slot order (V1).
+        let reg = CardRegistry::from_sets(
+            [vec![
+                usopp,
+                chr("S", "Strong", 4, 1, 4),
+                chr("W", "Weak", 2, 1, 4),
+            ]],
+            [cap("CAP", "Cap", vec![], vec![])],
+        );
+        let mut st = blank_state("CAP", "CAP");
+        place(&mut st, &reg, PlayerId::Player1, Slot::V2, "U", 3);
+        let first = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "S", 4);
+        let tie = place(&mut st, &reg, PlayerId::Player1, Slot::V3, "S", 4);
+        let weak = place(&mut st, &reg, PlayerId::Player1, Slot::A1, "W", 4);
+
+        let ctx = EngineContext::new(1, 7);
+        apply_start_of_turn_passives(&mut st, &reg, &ctx, PlayerId::Player1).unwrap();
+
+        assert_eq!(atk_bonus(&st, &first), 1);
+        assert_eq!(atk_bonus(&st, &tie), 0);
+        assert_eq!(atk_bonus(&st, &weak), 0);
+        let m = &st.cards[&first].modifiers[0];
+        assert_eq!(m.id, format!("vantardise_{first}_7"));
+        assert_eq!(m.source, "passive_U@player1V2");
+        assert_eq!(m.duration, ModifierDuration::Turn);
+        assert_eq!(
+            last_msg(&st),
+            "Usopp : Vantardise — un allié gagne +1 ATK ce tour."
+        );
+    }
+
+    #[test]
+    fn start_turn_buff_ally_is_a_no_op_when_alone() {
+        let usopp = {
+            let mut d = chr("U", "Usopp", 1, 1, 3);
+            d.passive = Some(passive(vec![PassiveEffect::StartTurnBuffAlly {
+                stat: AtkDefStat::Def,
+                amount: 2,
+            }]));
+            d
+        };
+        let reg = CardRegistry::from_sets([vec![usopp]], [cap("CAP", "Cap", vec![], vec![])]);
+        let mut st = blank_state("CAP", "CAP");
+        let u = place(&mut st, &reg, PlayerId::Player1, Slot::V2, "U", 3);
+
+        apply_start_of_turn_passives(&mut st, &reg, &EngineContext::seeded(1), PlayerId::Player1)
+            .unwrap();
+
+        assert!(st.log.is_empty(), "no ally → early return, no log");
+        assert!(st.cards[&u].modifiers.is_empty());
+    }
+
+    // --- recalculatePassiveBuffs ----------------------------------------
+
+    fn recalc_registry() -> CardRegistry {
+        let mut leader = chr("L", "Leader", 2, 1, 4);
+        leader.tags = Some(vec!["mugiwara".to_string()]);
+        leader.passive = Some(passive(vec![PassiveEffect::BuffAlly {
+            stat: BuffStat::Def,
+            amount: 1,
+            filter: None,
+        }]));
+        let mut mate = chr("M", "Mate", 3, 1, 4);
+        mate.tags = Some(vec!["mugiwara".to_string()]);
+        mate.synergies = Some(vec![SynergyDef {
+            partner_id: "L".to_string(),
+            atk_bonus: 2,
+            on_partner_ko: Some(3),
+        }]);
+        let mut outsider = chr("O", "Outsider", 1, 1, 4);
+        outsider.faction = Faction::Marine;
+        CardRegistry::from_sets(
+            [vec![
+                leader,
+                mate,
+                outsider,
+                ship("SH", "Ship", "Vos Mugiwara ont +1 ATK."),
+                ship("SH2", "Ship2", "Vos personnages gagnent +1 ATK."),
+            ]],
+            [cap(
+                "CAP",
+                "Cap",
+                vec![PassiveEffect::BuffAlly {
+                    stat: BuffStat::Atk,
+                    amount: 1,
+                    filter: Some(AllyFilter {
+                        faction: Some(Faction::Pirate),
+                        ..Default::default()
+                    }),
+                }],
+                vec![],
+            )],
+        )
+    }
+
+    #[test]
+    fn recalculate_strips_only_passive_captain_synergy_sources() {
+        let reg = recalc_registry();
+        let mut st = blank_state("CAP", "CAP");
+        let l = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "L", 4);
+        let keep = Modifier {
+            id: "keepme".to_string(),
+            stat: ModifierStat::Atk,
+            amount: 5,
+            source: "debuffAura".to_string(),
+            duration: ModifierDuration::Permanent,
+            turns_remaining: None,
+        };
+        let card = st.cards.get_mut(&l).unwrap();
+        card.modifiers.push(keep.clone());
+        for src in ["passive_X", "captain_Y", "synergy_Z", "passive_ship_S"] {
+            card.modifiers.push(Modifier {
+                id: src.to_string(),
+                stat: ModifierStat::Atk,
+                amount: 9,
+                source: src.to_string(),
+                duration: ModifierDuration::Permanent,
+                turns_remaining: None,
+            });
+        }
+        // `captainSelfKO` has no underscore after "captain" → survives.
+        card.modifiers.push(Modifier {
+            id: "self".to_string(),
+            stat: ModifierStat::Atk,
+            amount: 1,
+            source: "captainSelfKO".to_string(),
+            duration: ModifierDuration::Permanent,
+            turns_remaining: None,
+        });
+
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+
+        let sources: Vec<&str> = st.cards[&l]
+            .modifiers
+            .iter()
+            .map(|m| m.source.as_str())
+            .collect();
+        assert_eq!(sources, vec!["debuffAura", "captainSelfKO", "captain_CAP"]);
+    }
+
+    #[test]
+    fn recalculate_applies_captain_character_ship_and_synergy_buffs() {
+        let reg = recalc_registry();
+        let mut st = blank_state("CAP", "CAP");
+        let l = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "L", 4);
+        let m = place(&mut st, &reg, PlayerId::Player1, Slot::V2, "M", 4);
+        let o = place(&mut st, &reg, PlayerId::Player1, Slot::A1, "O", 4);
+        // Active ship: "Vos Mugiwara ont +1 ATK." → only cards tagged mugiwara.
+        let mut sh = CardInstance::new("shipinst".to_string(), "SH".to_string(), PlayerId::Player1, 0);
+        sh.zone = Zone::Board;
+        st.cards.insert("shipinst".to_string(), sh);
+        st.players.get_mut(PlayerId::Player1).active_ship = Some("shipinst".to_string());
+
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+
+        // Leader: captain +1 ATK (pirate), Mate's passive is none, ship +1 ATK (mugiwara tag).
+        let l_srcs: Vec<(&str, i32)> = st.cards[&l]
+            .modifiers
+            .iter()
+            .map(|x| (x.source.as_str(), x.amount))
+            .collect();
+        assert_eq!(l_srcs, vec![("captain_CAP", 1), ("passive_ship_SH", 1)]);
+        // Mate: captain +1 ATK, Leader's buffAlly +1 DEF, ship +1 ATK, synergy(L) +2 ATK.
+        let m_srcs: Vec<(&str, i32)> = st.cards[&m]
+            .modifiers
+            .iter()
+            .map(|x| (x.source.as_str(), x.amount))
+            .collect();
+        assert_eq!(
+            m_srcs,
+            vec![
+                ("captain_CAP", 1),
+                ("passive_L@player1V1", 1),
+                ("passive_ship_SH", 1),
+                ("synergy_L", 2),
+            ]
+        );
+        assert_eq!(
+            st.cards[&m].modifiers[3].id,
+            format!("synergy_{m}_L"),
+            "synergy modifier id"
+        );
+        // Outsider: Marine → captain filter fails, no mugiwara tag → no ship buff.
+        // Only the Leader's unfiltered buffAlly +1 DEF applies.
+        let o_srcs: Vec<(&str, i32)> = st.cards[&o]
+            .modifiers
+            .iter()
+            .map(|x| (x.source.as_str(), x.amount))
+            .collect();
+        assert_eq!(o_srcs, vec![("passive_L@player1V1", 1)]);
+        // Leader never buffs itself.
+        assert!(!st.cards[&l]
+            .modifiers
+            .iter()
+            .any(|x| x.source == "passive_L@player1V1"));
+    }
+
+    #[test]
+    fn ship_without_faction_word_buffs_everyone() {
+        let reg = recalc_registry();
+        let mut st = blank_state("CAP", "CAP");
+        let o = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "O", 4);
+        let mut sh = CardInstance::new("s2".to_string(), "SH2".to_string(), PlayerId::Player1, 0);
+        sh.zone = Zone::Board;
+        st.cards.insert("s2".to_string(), sh);
+        st.players.get_mut(PlayerId::Player1).active_ship = Some("s2".to_string());
+
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+
+        assert_eq!(atk_bonus(&st, &o), 1, "no mugiwara/marine word → all match");
+    }
+
+    // --- applyEnemyDebuffAuras ------------------------------------------
+
+    #[test]
+    fn debuff_auras_hit_front_row_and_strongest_by_base_atk() {
+        let mut goldenweek = chr("G", "Goldenweek", 1, 1, 3);
+        goldenweek.passive = Some(passive(vec![PassiveEffect::DebuffOneEnemy { amount: 2 }]));
+        let mut gab = chr("GB", "Gab", 1, 1, 3);
+        gab.passive = Some(passive(vec![PassiveEffect::DebuffOneEnemy { amount: 1 }]));
+        let reg = CardRegistry::from_sets(
+            [vec![
+                goldenweek,
+                gab,
+                chr("BIG", "Big", 5, 1, 5),
+                chr("SM", "Small", 1, 1, 5),
+            ]],
+            [
+                cap("CAP", "Cap", vec![], vec![]),
+                cap(
+                    "SHANKS",
+                    "Shanks",
+                    vec![PassiveEffect::DebuffAdjacentEnemies { amount: 2 }],
+                    vec![],
+                ),
+            ],
+        );
+        let mut st = blank_state("SHANKS", "CAP");
+        // player1 (Shanks) debuffs player2's whole front row by 2.
+        // player2 fields Goldenweek + Gab → `one = max(2, 1) = 2` on player1's strongest.
+        place(&mut st, &reg, PlayerId::Player2, Slot::V1, "G", 3);
+        place(&mut st, &reg, PlayerId::Player2, Slot::A1, "GB", 3);
+        let e_front = place(&mut st, &reg, PlayerId::Player2, Slot::V2, "SM", 5);
+        let big = place(&mut st, &reg, PlayerId::Player1, Slot::A3, "BIG", 5);
+        let small = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "SM", 5);
+        // BIG sits in the back row: `one` targets it anyway (highest base ATK).
+        st.cards.get_mut(&small).unwrap().modifiers.push(Modifier {
+            id: "stale".to_string(),
+            stat: ModifierStat::Atk,
+            amount: -99,
+            source: "debuffAura".to_string(),
+            duration: ModifierDuration::Permanent,
+            turns_remaining: None,
+        });
+
+        apply_enemy_debuff_auras(&mut st, &reg).unwrap();
+
+        assert_eq!(atk_bonus(&st, &big), -2, "one → strongest, stale aura cleared");
+        assert_eq!(atk_bonus(&st, &small), 0, "stale debuffAura removed");
+        assert_eq!(atk_bonus(&st, &e_front), -2, "adjacent → enemy front row");
+        // The Goldenweek in V1 is also front row for player1's Shanks aura.
+        let g = st.players.get(PlayerId::Player2).board.get(Slot::V1).unwrap().clone();
+        assert_eq!(atk_bonus(&st, &g), -2);
+        // A1 is back row → untouched by the "adjacent" aura.
+        let gb = st.players.get(PlayerId::Player2).board.get(Slot::A1).unwrap().clone();
+        assert_eq!(atk_bonus(&st, &gb), 0);
+    }
+
+    #[test]
+    fn debuff_adjacent_amounts_stack_but_one_takes_the_max() {
+        let mut src = chr("D", "Debuffer", 1, 1, 3);
+        src.passive = Some(passive(vec![
+            PassiveEffect::DebuffAdjacentEnemies { amount: 1 },
+            PassiveEffect::DebuffOneEnemy { amount: 1 },
+        ]));
+        let reg = CardRegistry::from_sets(
+            [vec![src, chr("T", "T", 2, 1, 4)]],
+            [
+                cap(
+                    "CAPD",
+                    "CapD",
+                    vec![
+                        PassiveEffect::DebuffAdjacentEnemies { amount: 2 },
+                        PassiveEffect::DebuffOneEnemy { amount: 3 },
+                    ],
+                    vec![],
+                ),
+                cap("CAP", "Cap", vec![], vec![]),
+            ],
+        );
+        let mut st = blank_state("CAPD", "CAP");
+        place(&mut st, &reg, PlayerId::Player1, Slot::A1, "D", 3);
+        let t = place(&mut st, &reg, PlayerId::Player2, Slot::V1, "T", 4);
+
+        apply_enemy_debuff_auras(&mut st, &reg).unwrap();
+
+        // adj = 1 + 2 (summed), one = max(1, 3) = 3 → both land on the lone enemy.
+        let amounts: Vec<i32> = st.cards[&t].modifiers.iter().map(|m| m.amount).collect();
+        assert_eq!(amounts, vec![-3, -3]);
+        assert_eq!(st.cards[&t].modifiers[0].id, format!("debuffAura_adj_{t}"));
+        assert_eq!(st.cards[&t].modifiers[1].id, format!("debuffAura_one_{t}"));
+    }
+
+    // --- applyOnKOEffects ------------------------------------------------
+
+    #[test]
+    fn on_ko_grants_bonus_will_and_sets_the_game_flag() {
+        let reg = CardRegistry::from_sets(
+            [vec![chr("V", "Victim", 1, 1, 1)]],
+            [cap(
+                "CAP",
+                "Cap",
+                vec![PassiveEffect::OnAllyKo {
+                    effect: OnAllyKoEffectKind::BonusWill,
+                    amount: 2,
+                }],
+                vec![],
+            )],
+        );
+        let mut st = blank_state("CAP", "CAP");
+        st.players.get_mut(PlayerId::Player1).volonte = 1;
+
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &EngineContext::seeded(1),
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "V",
+        )
+        .unwrap();
+
+        assert_eq!(st.players.get(PlayerId::Player1).volonte, 3);
+        assert_eq!(
+            st.players.get(PlayerId::Player1).char_ko_ed_this_game,
+            Some(true)
+        );
+        assert_eq!(st.log[0].message, "Passif Capitaine : +2 Vol. (allie KO)");
+        assert_eq!(st.log[0].player, PlayerId::Player1);
+    }
+
+    #[test]
+    fn self_buff_on_ally_ko_stops_at_max_and_respects_the_filter() {
+        let mut victim = chr("V", "Victim", 1, 1, 1);
+        victim.tags = Some(vec!["mugiwara".to_string()]);
+        let reg = CardRegistry::from_sets(
+            [vec![victim, chr("X", "Stranger", 1, 1, 1)]],
+            [cap(
+                "CAP",
+                "Luffy",
+                vec![PassiveEffect::SelfBuffOnAllyKo {
+                    stat: AtkStat::Atk,
+                    amount: 1,
+                    max: 3,
+                    filter: Some(AllyFilter {
+                        tag: Some("mugiwara".to_string()),
+                        ..Default::default()
+                    }),
+                }],
+                vec![],
+            )],
+        );
+        let ctx = EngineContext::new(1, 42);
+        let mut st = blank_state("CAP", "CAP");
+
+        // Non-Mugiwara KO → filter fails, nothing happens.
+        apply_on_ko_effects(&mut st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "X")
+            .unwrap();
+        assert!(st.players.get(PlayerId::Player1).captain.modifiers.is_empty());
+
+        for _ in 0..5 {
+            apply_on_ko_effects(&mut st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "V")
+                .unwrap();
+        }
+        let mods = &st.players.get(PlayerId::Player1).captain.modifiers;
+        assert_eq!(mods.len(), 3, "current < max is checked before each push");
+        assert_eq!(mods[0].id, "captainSelfKO_42");
+        assert_eq!(mods[0].source, "captainSelfKO");
+        assert_eq!(mods[0].duration, ModifierDuration::Permanent);
+        assert_eq!(
+            st.log.last().unwrap().message,
+            "Luffy : +1 ATK permanent (Mugiwara KO)."
+        );
+    }
+
+    #[test]
+    fn banish_on_ko_removes_the_last_matching_graveyard_copy_and_always_logs() {
+        let reg = CardRegistry::from_sets(
+            [vec![chr("V", "Victime", 1, 1, 1)]],
+            [
+                cap("CAP", "Cap", vec![], vec![]),
+                cap("AKAINU", "Akainu", vec![], vec![PassiveEffect::BanishOnKo]),
+            ],
+        );
+        let mut st = blank_state("CAP", "AKAINU");
+        st.players.get_mut(PlayerId::Player2).captain.flipped = true;
+        for n in 0..2 {
+            let iid = format!("v{n}");
+            let mut inst =
+                CardInstance::new(iid.clone(), "V".to_string(), PlayerId::Player1, 0);
+            inst.zone = Zone::Graveyard;
+            st.cards.insert(iid.clone(), inst);
+            st.players.get_mut(PlayerId::Player1).graveyard.push(iid);
+        }
+
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &EngineContext::seeded(1),
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "V",
+        )
+        .unwrap();
+
+        // Reverse scan → the *last* graveyard entry is banished.
+        assert_eq!(st.cards["v1"].zone, Zone::Banished);
+        assert_eq!(st.cards["v0"].zone, Zone::Graveyard);
+        assert_eq!(st.players.get(PlayerId::Player1).graveyard, vec!["v0"]);
+        let entry = st.log.last().unwrap();
+        assert_eq!(entry.message, "Victime est banni (Justice Implacable) !");
+        assert_eq!(entry.player, PlayerId::Player2, "logged for the killer");
+    }
+
+    #[test]
+    fn banish_on_ko_needs_a_flipped_killer_captain() {
+        let reg = CardRegistry::from_sets(
+            [vec![chr("V", "Victime", 1, 1, 1)]],
+            [
+                cap("CAP", "Cap", vec![], vec![]),
+                cap("AKAINU", "Akainu", vec![], vec![PassiveEffect::BanishOnKo]),
+            ],
+        );
+        let mut st = blank_state("CAP", "AKAINU"); // not flipped → recto passive is empty
+        let mut inst = CardInstance::new("v0".to_string(), "V".to_string(), PlayerId::Player1, 0);
+        inst.zone = Zone::Graveyard;
+        st.cards.insert("v0".to_string(), inst);
+        st.players.get_mut(PlayerId::Player1).graveyard.push("v0".to_string());
+
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &EngineContext::seeded(1),
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "V",
+        )
+        .unwrap();
+
+        assert_eq!(st.cards["v0"].zone, Zone::Graveyard);
+        assert!(st.log.is_empty());
+    }
+
+    #[test]
+    fn explode_on_ko_hits_the_first_lowest_pv_enemy_and_can_ko_it() {
+        let mut bomb = chr("B", "Mr. 5", 1, 1, 1);
+        bomb.passive = Some(passive(vec![PassiveEffect::ExplodeOnKo { amount: 2 }]));
+        let reg = CardRegistry::from_sets(
+            [vec![bomb, chr("E", "Ennemi", 2, 1, 4)]],
+            [cap("CAP", "Cap", vec![], vec![])],
+        );
+        let mut st = blank_state("CAP", "CAP");
+        // Two enemies tied at 2 PV → `reduce` with strict `<` keeps the first (V1).
+        let first = place(&mut st, &reg, PlayerId::Player2, Slot::V1, "E", 2);
+        let tie = place(&mut st, &reg, PlayerId::Player2, Slot::V2, "E", 2);
+        let fat = place(&mut st, &reg, PlayerId::Player2, Slot::V3, "E", 4);
+
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &EngineContext::seeded(1),
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "B",
+        )
+        .unwrap();
+
+        assert_eq!(st.cards[&first].current_pv, 0);
+        assert_eq!(st.cards[&tie].current_pv, 2);
+        assert_eq!(st.cards[&fat].current_pv, 4);
+        assert_eq!(st.cards[&first].zone, Zone::Graveyard, "0 PV → removed");
+        assert!(st.players.get(PlayerId::Player2).board.get(Slot::V1).is_none());
+        let msgs: Vec<&str> = st.log.iter().map(|l| l.message.as_str()).collect();
+        assert_eq!(
+            msgs,
+            vec![
+                "Corps Explosif : 2 dégâts à Ennemi !",
+                "Ennemi est KO !",
+            ]
+        );
+        assert_eq!(st.log[0].player, PlayerId::Player1, "logged for the KO'd side");
+        assert_eq!(st.log[1].player, PlayerId::Player2, "logged for the owner");
+    }
+
+    #[test]
+    fn explode_on_ko_leaves_a_survivor_on_the_board() {
+        let mut bomb = chr("B", "Mr. 5", 1, 1, 1);
+        bomb.passive = Some(passive(vec![PassiveEffect::ExplodeOnKo { amount: 2 }]));
+        let reg = CardRegistry::from_sets(
+            [vec![bomb, chr("E", "Ennemi", 2, 1, 4)]],
+            [cap("CAP", "Cap", vec![], vec![])],
+        );
+        let mut st = blank_state("CAP", "CAP");
+        let e = place(&mut st, &reg, PlayerId::Player2, Slot::V1, "E", 4);
+
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &EngineContext::seeded(1),
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "B",
+        )
+        .unwrap();
+
+        assert_eq!(st.cards[&e].current_pv, 2);
+        assert_eq!(st.cards[&e].zone, Zone::Board);
+        assert_eq!(st.log.len(), 1);
+    }
+
+    #[test]
+    fn synergy_rage_buffs_the_surviving_partner_this_turn() {
+        let reg = recalc_registry();
+        let mut st = blank_state("CAP", "CAP");
+        let m = place(&mut st, &reg, PlayerId::Player1, Slot::V2, "M", 4);
+        let ctx = EngineContext::new(1, 99);
+
+        apply_on_ko_effects(&mut st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "L")
+            .unwrap();
+
+        assert_eq!(
+            st.log.last().unwrap().message,
+            "Mate : rage ! +3 ATK (Leader KO)"
+        );
+        // TS QUIRK (do not "fix"): `applyOnKOEffects` pushes the rage modifier
+        // with `source: "synergy_rage_${koDefId}"`, then finishes by calling
+        // `recalculatePassiveBuffs`, whose filter drops every source starting
+        // with "synergy_" — so the +3 ATK is wiped on the same call and only
+        // the log line survives.
+        assert!(
+            !st.cards[&m]
+                .modifiers
+                .iter()
+                .any(|x| x.source == "synergy_rage_L"),
+            "recalculatePassiveBuffs strips every synergy_* modifier afterwards"
+        );
+        // The partner is gone from the board, so no `synergy_L` buff either.
+        assert_eq!(atk_bonus(&st, &m), 1, "only the captain buffAlly remains");
+    }
+
+    #[test]
+    fn on_ko_ends_with_a_passive_recalculation() {
+        let reg = recalc_registry();
+        let mut st = blank_state("CAP", "CAP");
+        let l = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "L", 4);
+        // A stale captain buff that recalculation must rebuild exactly once.
+        st.cards.get_mut(&l).unwrap().modifiers.push(Modifier {
+            id: "stale".to_string(),
+            stat: ModifierStat::Atk,
+            amount: 7,
+            source: "captain_CAP".to_string(),
+            duration: ModifierDuration::Permanent,
+            turns_remaining: None,
+        });
+
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &EngineContext::seeded(1),
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "M",
+        )
+        .unwrap();
+
+        assert_eq!(atk_bonus(&st, &l), 1, "stale +7 replaced by the real +1");
+    }
+}
