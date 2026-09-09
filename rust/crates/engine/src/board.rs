@@ -5,10 +5,12 @@
 //! the global `getCardDef`; a missing definition is `Err(UnknownCard)` where
 //! TS would `throw`.
 //!
-//! // PORT: the remaining board.ts mutations (`deployCharacter`, `equipObject`
-//! // — needs fruits.ts —, `deployShip`, `moveCharacter`) and `getValidTargets`
-//! // are ported with the action module (turnManager.ts).
+//! The mutations (`deployCharacter`, `equipObject`, `deployShip`,
+//! `moveCharacter`) and `getValidTargets` live at the bottom of this file.
 
+use serde::{Deserialize, Serialize};
+
+use crate::context::EngineContext;
 use crate::error::EngineError;
 use crate::registry::CardRegistry;
 use crate::state::{CardInstance, GameState};
@@ -330,4 +332,139 @@ pub fn remove_from_board(
         .graveyard
         .push(instance_id.to_string());
     Ok(())
+}
+
+// ============================================================
+// Mutations — // PORT: bodies owned by the board.ts implementer
+// ============================================================
+
+/// TS `deployCharacter(state, playerId, instanceId, slot)`
+/// — `src/engine/board.ts:228`.
+///
+/// Validates ownership / zone / type / free slot, pays [`deploy_cost`], moves the
+/// card from hand to `slot` (`currentPv = def.pv ?? 0`, `deployedTurn = turnNumber`),
+/// applies the active ship's `+N PV` / `+N DEF` deploy bonus parsed out of
+/// `shipPassive`, logs `"Deploie {name} en {slot}"`, then runs the `copyAtkOnDeploy`
+/// (Mr. 2) and `entryDiscardRandom` (Robin) entry passives and finally
+/// `recalculate_passive_buffs(playerId)` + `apply_enemy_debuff_auras`.
+///
+/// Errors mirror the TS throws: `Card not found: {id}`, `Not your card`,
+/// `Card not in hand`, `Not a character card`, `Slot {slot} is occupied`,
+/// `Cannot afford {name} (cost {cost})`.
+pub fn deploy_character(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    player_id: PlayerId,
+    instance_id: &str,
+    slot: Slot,
+) -> Result<(), EngineError> {
+    todo!("PORT: deployCharacter")
+}
+
+/// TS `equipObject(state, playerId, objectInstanceId, targetInstanceId)`
+/// — `src/engine/board.ts:329`.
+///
+/// Validates the object (hand, owned, `type === "object"`), computes the
+/// Clima-Tact (`MG-012`) 0-cost combo, enforces the weapon/fruit/accessory slot
+/// caps (`threeWeaponSlots` > `twoWeaponSlots`, `twoAccessorySlots`), pays, attaches,
+/// grants the four signature-weapon wielder bonuses (MG-009/MR-013/RH-011/RH-013),
+/// logs `"Equipe {obj} sur {target}"`, then calls
+/// [`crate::fruits::apply_fruit_base_effects`] for fruits and
+/// `recalculate_passive_buffs(playerId)`.
+///
+/// Errors: `Object not found: {id}`, `Not your card`, `Object not in hand`,
+/// `Not an object card`, `Target not found: {id}`, `Not your character`,
+/// `Target not on board`, `Cannot afford {name} (cost {cost})`,
+/// `{targetName} already has max {subtype} equipped`.
+pub fn equip_object(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+    object_instance_id: &str,
+    target_instance_id: &str,
+) -> Result<(), EngineError> {
+    todo!("PORT: equipObject")
+}
+
+/// TS `deployShip(state, playerId, instanceId)` — `src/engine/board.ts:440`.
+///
+/// Pays `def.cost`, resolves the previous ship's `shipDestroyEffect`
+/// (`healAll` / `draw` / `deployToken`, log `"{oldName} : effet de destruction."`)
+/// and sends it to the graveyard, then sets `activeShip` and logs
+/// `"Deploie navire {name}"`.
+///
+/// Errors: `Card not found: {id}`, `Not your card`, `Card not in hand`,
+/// `Not a ship card`, `Cannot afford {name} (cost {cost})`.
+pub fn deploy_ship(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    player_id: PlayerId,
+    instance_id: &str,
+) -> Result<(), EngineError> {
+    todo!("PORT: deployShip")
+}
+
+/// TS `moveCharacter(state, playerId, instanceId, targetSlot)`
+/// — `src/engine/board.ts:519`.
+///
+/// The free 1x/turn reposition to an adjacent empty slot; sets `usedFreeMove`.
+/// No log line in the TS source.
+///
+/// Errors: `Free move already used this turn`, `Card not on board`,
+/// `Not your card`, `Card has no slot`, `{targetSlot} is not adjacent to
+/// {currentSlot}`, `Slot {targetSlot} is occupied`.
+pub fn move_character(
+    state: &mut GameState,
+    player_id: PlayerId,
+    instance_id: &str,
+    target_slot: Slot,
+) -> Result<(), EngineError> {
+    todo!("PORT: moveCharacter")
+}
+
+// ============================================================
+// Valid targets for attacks
+// ============================================================
+
+/// TS return type of `getValidTargets` —
+/// `{ characterTargets: string[]; canTargetCaptain: boolean }`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidTargets {
+    /// Instance ids of the enemy characters this attacker may hit, in board order.
+    pub character_targets: Vec<String>,
+    /// Whether the enemy captain may be targeted by this attack.
+    pub can_target_captain: bool,
+}
+
+/// One entry of [`ValidTargets`] — a single legal target, used by callers that
+/// want the character targets and the captain in one ordered list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ValidTarget {
+    /// An enemy character on the board (`targetIsCaptain` absent / false).
+    Character { instance_id: String },
+    /// The enemy captain (`targetInstanceId = "captain_{playerId}"`,
+    /// `targetIsCaptain: true`).
+    Captain { player_id: PlayerId },
+}
+
+/// TS `getValidTargets(state, attackerInstanceId, forSpecial?)`
+/// — `src/engine/board.ts:623`.
+///
+/// Range is read from the attacker's own `range` trait or from the chosen
+/// attack's `attackTraits`; a back-row attacker without Range gets nothing.
+/// Without Range, a defender that `has_front_row` restricts targets to V1–V3.
+/// Stealth units drop out while any non-Stealth (or `noStealth`-tagged) target
+/// remains. A flipped captain is targetable like a character; a recto captain
+/// only while the defender has zero board characters.
+pub fn get_valid_targets(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+    for_special: bool,
+) -> Result<ValidTargets, EngineError> {
+    todo!("PORT: getValidTargets")
 }
