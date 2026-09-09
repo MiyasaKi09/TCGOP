@@ -48,7 +48,7 @@ pub enum EngineError {
     NotAdjacent { from: Slot, to: Slot },
 
     /// TS `Cannot afford ${name} (cost ${cost})` (board.ts deploy / equip / ship).
-    #[error("Not enough {what}: has {has}, needs {cost}")]
+    #[error("Cannot afford {what} (cost {cost})")]
     CannotAfford { what: String, cost: i32, has: i32 },
 
     /// TS volonte.ts `spendVolonte`: `Not enough Volonte: has ${player.volonte}, needs ${amount}`.
