@@ -5,6 +5,7 @@
 //! modules added by the port.
 
 use bevy::prelude::*;
+use bevy::text::FontSize;
 
 fn main() {
     App::new()
@@ -41,7 +42,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 
     commands.spawn((
         Text2d::new("TCGOP"),
-        TextFont { font_size: 64.0, ..default() },
+        TextFont { font_size: FontSize::Px(64.0), ..default() },
         TextColor(Color::srgb(0.91, 0.72, 0.29)),
         Transform::from_xyz(0.0, 320.0, 1.0),
     ));
