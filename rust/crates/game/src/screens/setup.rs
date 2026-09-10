@@ -24,8 +24,8 @@ use crate::bridge::Session;
 use crate::hand::SYMBOL_FONT_PATH;
 use crate::selection::{SelectedHandCard, UiMode};
 
-use super::model::{DeckKey, LEVELS, PickSide, SetupSelection, fresh_seed};
 use super::StartGameRequested;
+use super::model::{DeckKey, LEVELS, PickSide, SetupSelection, fresh_seed};
 use super::widgets::{bold_label_font, caption, flavour_font, label_font, spawn_crest, title_font};
 
 // ============================================================
@@ -633,7 +633,10 @@ pub(super) fn sync_selection(
     palette: Res<Palette>,
     mut cards: Query<(&DeckCardButton, &mut Outline, &mut BorderColor)>,
     mut checks: Query<(&DeckCardCheck, &mut Node)>,
-    mut levels: Query<(&LevelButton, &mut BackgroundColor, &mut BorderColor), Without<DeckCardButton>>,
+    mut levels: Query<
+        (&LevelButton, &mut BackgroundColor, &mut BorderColor),
+        Without<DeckCardButton>,
+    >,
     mut level_labels: Query<(&LevelButtonLabel, &mut TextColor), Without<StartButtonLabel>>,
     mut start: Query<&mut BackgroundGradient, With<StartButton>>,
     mut start_label: Query<&mut TextColor, With<StartButtonLabel>>,
@@ -649,11 +652,7 @@ pub(super) fn sync_selection(
         let on = selection.picked(card.side) == Some(card.key);
         let accent = card.key.visual().accent;
         outline.color = if on { accent } else { Color::NONE };
-        border.set_all(if on {
-            accent
-        } else {
-            pal.ink.with_alpha(0.16)
-        });
+        border.set_all(if on { accent } else { pal.ink.with_alpha(0.16) });
     }
 
     for (check, mut node) in &mut checks {
@@ -668,7 +667,11 @@ pub(super) fn sync_selection(
         } else {
             Color::WHITE.with_alpha(0.04)
         };
-        border.set_all(if on { pal.gold } else { pal.ink.with_alpha(0.18) });
+        border.set_all(if on {
+            pal.gold
+        } else {
+            pal.ink.with_alpha(0.18)
+        });
     }
 
     for (label, mut color) in &mut level_labels {
@@ -688,6 +691,10 @@ pub(super) fn sync_selection(
         });
     }
     for mut color in &mut start_label {
-        color.0 = if ready { pal.text_on_gold } else { pal.text_faint };
+        color.0 = if ready {
+            pal.text_on_gold
+        } else {
+            pal.text_faint
+        };
     }
 }

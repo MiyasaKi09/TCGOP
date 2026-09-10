@@ -71,11 +71,8 @@ fn snap(value: f32, step: f32) -> f32 {
 
 /// The height one half wants: command bar + two captioned rows + the gaps
 /// between them + the vertical padding.
-pub const HALF_NATURAL_H: f32 = l::CMD_H
-    + 2.0 * l::ROW_LABEL_H
-    + 2.0 * l::SLOT_H
-    + 4.0 * l::ROW_GAP
-    + 2.0 * l::HALF_PAD_Y;
+pub const HALF_NATURAL_H: f32 =
+    l::CMD_H + 2.0 * l::ROW_LABEL_H + 2.0 * l::SLOT_H + 4.0 * l::ROW_GAP + 2.0 * l::HALF_PAD_Y;
 
 /// The resolved size of every box inside a half.
 ///
@@ -303,7 +300,10 @@ mod tests {
         // …and grows into a taller window, up to the ceiling.
         let roomy = half_metrics(HALF_NATURAL_H * 1.3, l::WINDOW_W);
         assert!(roomy.scale > 1.0 && roomy.scale <= MAX_HALF_SCALE);
-        assert_eq!(half_metrics(HALF_NATURAL_H * 4.0, l::WINDOW_W).scale, MAX_HALF_SCALE);
+        assert_eq!(
+            half_metrics(HALF_NATURAL_H * 4.0, l::WINDOW_W).scale,
+            MAX_HALF_SCALE
+        );
         assert_eq!(m.slot_h, l::SLOT_H);
 
         let tight = half_metrics(HALF_NATURAL_H * 0.8, l::WINDOW_W);
@@ -321,7 +321,10 @@ mod tests {
         let m = half_metrics(1.0, l::WINDOW_W);
         assert_eq!(m.scale, MIN_HALF_SCALE);
         let none = half_metrics(0.0, l::WINDOW_W);
-        assert_eq!(none.scale, 1.0, "a degenerate size keeps the natural layout");
+        assert_eq!(
+            none.scale, 1.0,
+            "a degenerate size keeps the natural layout"
+        );
     }
 
     /// A tile is never narrower than the mock-up aspect (that would letterbox
@@ -406,7 +409,10 @@ mod tests {
             m.total_h(),
             half_available_h(h)
         );
-        assert!(h <= l::WINDOW_H, "the design window must not be below the floor");
+        assert!(
+            h <= l::WINDOW_H,
+            "the design window must not be below the floor"
+        );
 
         // One pixel less and the halves would be clipped.
         let tight = half_metrics(half_available_h(h - 8.0), l::WINDOW_W);

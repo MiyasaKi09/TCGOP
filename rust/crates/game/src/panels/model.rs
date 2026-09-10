@@ -232,9 +232,9 @@ pub fn action_menu_view(
     let can_special_attack = valid.iter().any(|a| {
         matches!(a, GameAction::SpecialAttack { attacker_instance_id, .. } if attacker_instance_id == instance_id)
     });
-    let can_support = valid.iter().any(|a| {
-        matches!(a, GameAction::BaseSupportAction { instance_id: id, .. } if id == instance_id)
-    });
+    let can_support = valid.iter().any(
+        |a| matches!(a, GameAction::BaseSupportAction { instance_id: id, .. } if id == instance_id),
+    );
 
     let tapped = instance.tapped;
     let sickness = has_summoning_sickness(state, registry, instance_id).unwrap_or(false);
@@ -273,9 +273,9 @@ pub fn action_menu_view(
         Some("Mal de terre".into())
     } else if instance.used_special_attack {
         Some("Déjà utilisé ce tour".into())
-    } else if special_def.is_some_and(|s| {
-        s.once_per_game.unwrap_or(false) && instance.used_once(&s.name)
-    }) {
+    } else if special_def
+        .is_some_and(|s| s.once_per_game.unwrap_or(false) && instance.used_once(&s.name))
+    {
         Some("Déjà utilisé (1x/partie)".into())
     } else if special_def.is_some_and(|s| volonte < s.cost) {
         let cost = special_def.map(|s| s.cost).unwrap_or(0);
@@ -503,7 +503,10 @@ pub fn captain_menu_view(
         && valid.iter().any(|a| {
             matches!(
                 a,
-                GameAction::CaptainAttack { is_special: Some(true), .. }
+                GameAction::CaptainAttack {
+                    is_special: Some(true),
+                    ..
+                }
             )
         });
     let can_king_haki = is_you
@@ -819,8 +822,10 @@ pub fn card_detail_view(
         .map(|i| equipment_lines(state, registry, &i.attached_objects))
         .unwrap_or_default();
 
-    let has_side =
-        !synergies.is_empty() || !statuses.is_empty() || !equipment.is_empty() || !traits.is_empty();
+    let has_side = !synergies.is_empty()
+        || !statuses.is_empty()
+        || !equipment.is_empty()
+        || !traits.is_empty();
 
     Some(CardDetailView {
         def_id: def_id.to_string(),
@@ -1206,7 +1211,9 @@ mod tests {
     #[test]
     fn an_unknown_instance_has_no_action_menu() {
         let session = make_session(1);
-        assert!(action_menu_view(&session.state, &session.registry, &session.valid, "nope").is_none());
+        assert!(
+            action_menu_view(&session.state, &session.registry, &session.valid, "nope").is_none()
+        );
     }
 
     #[test]
@@ -1312,7 +1319,10 @@ mod tests {
         );
         assert_eq!(view.pv, view.max_pv);
         assert!((view.ratio - 1.0).abs() < 1e-6);
-        assert_eq!(view.flip_command, UiCommand::SetMode(UiMode::SelectingCaptainSlot));
+        assert_eq!(
+            view.flip_command,
+            UiCommand::SetMode(UiMode::SelectingCaptainSlot)
+        );
         assert_eq!(
             view.attack_command,
             UiCommand::SetMode(UiMode::SelectingTarget {
@@ -1376,9 +1386,7 @@ mod tests {
         assert!(view.verso_preview.is_none());
         assert!(view.show_attack);
         assert!(
-            view.abilities
-                .iter()
-                .any(|a| a.kind == AbilityKind::Base),
+            view.abilities.iter().any(|a| a.kind == AbilityKind::Base),
             "the verso always exposes its base action"
         );
     }
@@ -1416,7 +1424,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(view.show_special_attack, "an engaged captain has a ★ attack");
+        assert!(
+            view.show_special_attack,
+            "an engaged captain has a ★ attack"
+        );
         assert_eq!(view.special_attack_name, def.verso.special_attack.name);
         assert_eq!(view.special_attack_cost, def.verso.special_attack.cost);
         assert_eq!(
@@ -1429,7 +1440,13 @@ mod tests {
         );
 
         let offered = session.valid.iter().any(|a| {
-            matches!(a, GameAction::CaptainAttack { is_special: Some(true), .. })
+            matches!(
+                a,
+                GameAction::CaptainAttack {
+                    is_special: Some(true),
+                    ..
+                }
+            )
         });
         assert_eq!(
             view.can_special_attack, offered,
@@ -1628,7 +1645,9 @@ mod tests {
         let mut session = make_session(21);
         let human = session.human;
         if !advance(&mut session, 900, |s| {
-            s.state.pending_attack.is_some() && s.state.current_player != human && !s.valid.is_empty()
+            s.state.pending_attack.is_some()
+                && s.state.current_player != human
+                && !s.valid.is_empty()
         }) {
             return;
         }
@@ -1660,12 +1679,20 @@ mod tests {
     fn an_enemy_ship_menu_can_never_be_activated() {
         let mut session = make_session(17);
         let ai = session.ai_player();
-        if !advance(&mut session, 900, |s| s.state.player(ai).active_ship.is_some()) {
+        if !advance(&mut session, 900, |s| {
+            s.state.player(ai).active_ship.is_some()
+        }) {
             return;
         }
         let ship = session.foe().active_ship.clone().unwrap();
-        let view = ship_menu_view(&session.state, &session.registry, &session.valid, &ship, false)
-            .unwrap();
+        let view = ship_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            &ship,
+            false,
+        )
+        .unwrap();
         assert!(!view.is_you);
         assert!(!view.can_activate);
         assert_eq!(

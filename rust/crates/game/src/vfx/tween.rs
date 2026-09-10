@@ -150,7 +150,10 @@ impl Tween {
     /// A tween running for `duration`, linear-out cubic by default.
     pub fn new(duration: core::time::Duration, from: TweenState, to: TweenState) -> Self {
         Tween {
-            timer: Timer::new(duration.max(core::time::Duration::from_millis(1)), TimerMode::Once),
+            timer: Timer::new(
+                duration.max(core::time::Duration::from_millis(1)),
+                TimerMode::Once,
+            ),
             delay: delay_timer(core::time::Duration::ZERO),
             ease: EaseFunction::CubicOut,
             from,
@@ -246,7 +249,12 @@ type ColorQuery<'w, 's> = Query<
 pub fn tick_tweens(
     time: Res<Time>,
     mut commands: Commands,
-    mut tweens: Query<(Entity, &mut Tween, Option<&mut UiTransform>, Option<&TweenBases>)>,
+    mut tweens: Query<(
+        Entity,
+        &mut Tween,
+        Option<&mut UiTransform>,
+        Option<&TweenBases>,
+    )>,
     children: Query<&Children>,
     mut colors: ColorQuery,
 ) {
@@ -419,7 +427,10 @@ mod tests {
         let transform = world.entity(root).get::<UiTransform>().unwrap();
         assert_eq!(transform.translation, Val2::px(0.0, -10.0));
         let background = world.entity(root).get::<BackgroundColor>().unwrap();
-        assert!((background.0.alpha() - 0.25).abs() < 0.01, "half of the base alpha");
+        assert!(
+            (background.0.alpha() - 0.25).abs() < 0.01,
+            "half of the base alpha"
+        );
         let text = world.entity(child).get::<TextColor>().unwrap();
         assert!((text.0.alpha() - 0.5).abs() < 0.01, "children fade too");
 

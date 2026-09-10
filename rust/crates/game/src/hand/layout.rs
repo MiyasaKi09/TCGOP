@@ -104,11 +104,7 @@ pub fn fan_transform(
         rotation_deg,
         offset_x: pivot_x,
         offset_y: pivot_y + lift - selected_lift,
-        scale: if state.selected {
-            SELECTED_SCALE
-        } else {
-            1.0
-        },
+        scale: if state.selected { SELECTED_SCALE } else { 1.0 },
     }
 }
 
@@ -339,7 +335,10 @@ mod tests {
             // The lift is a deliberate extra translation: remove it first.
             let lift = t.offset_y - (1.0 - theta.cos()) * half;
             assert!((rx + t.offset_x).abs() < 1e-4, "x drifted for {i}/{n}");
-            assert!((ry + t.offset_y - lift - half).abs() < 1e-4, "y drifted for {i}/{n}");
+            assert!(
+                (ry + t.offset_y - lift - half).abs() < 1e-4,
+                "y drifted for {i}/{n}"
+            );
         }
     }
 
@@ -367,7 +366,10 @@ mod tests {
         let gap = fan_gap(10, available);
         assert!(gap < 0.0, "the fan must tighten, got {gap}");
         let total = 10.0 * L::HAND_CARD_W + 9.0 * gap;
-        assert!((total - available).abs() < 1e-3, "the fan must fill exactly");
+        assert!(
+            (total - available).abs() < 1e-3,
+            "the fan must fill exactly"
+        );
     }
 
     #[test]

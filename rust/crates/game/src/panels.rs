@@ -41,8 +41,8 @@
 pub mod model;
 pub mod widgets;
 
-use bevy::prelude::*;
 use bevy::input::mouse::MouseScrollUnit;
+use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use tcgop_engine::state::CardInstance;
 use tcgop_engine::types::{CardDef, PlayerId};
@@ -61,9 +61,8 @@ use model::{
 };
 use widgets::{
     ANCHOR, BOLT, ButtonSpec, ButtonTone, CROWN, ClickCommand, EYE, HEART, PanelButton, PanelCtx,
-    button_gradient,
-    SHIELD, SPARKLE, STAR, SWORD, body, catcher, column, line, panel, popover, row, scrim,
-    section, spawn_button, spawn_caption, spawn_close_cross, spawn_gauge, spawn_pill,
+    SHIELD, SPARKLE, STAR, SWORD, body, button_gradient, catcher, column, line, panel, popover,
+    row, scrim, section, spawn_button, spawn_caption, spawn_close_cross, spawn_gauge, spawn_pill,
 };
 
 // ============================================================
@@ -138,9 +137,9 @@ pub fn active_panels(mode: &UiMode, in_counter_window: bool) -> Vec<PanelKind> {
         UiMode::ActionMenu { instance_id } => panels.push(PanelKind::ActionMenu {
             instance_id: instance_id.clone(),
         }),
-        UiMode::CaptainMenu { player_id } => panels.push(PanelKind::CaptainMenu {
-            player: *player_id,
-        }),
+        UiMode::CaptainMenu { player_id } => {
+            panels.push(PanelKind::CaptainMenu { player: *player_id })
+        }
         UiMode::ShipMenu {
             instance_id,
             is_you,
@@ -231,10 +230,7 @@ fn panel_signature(session: &Session, kind: &PanelKind) -> String {
             "{:?}",
             model::confirm_view(state, registry, instance_id, *is_ship)
         ),
-        PanelKind::Counter => format!(
-            "{:?}",
-            model::counter_view(state, registry, &session.valid)
-        ),
+        PanelKind::Counter => format!("{:?}", model::counter_view(state, registry, &session.valid)),
     }
 }
 
@@ -309,9 +305,15 @@ fn rebuild_panels(
     let mut drawn = true;
     for kind in &wanted {
         drawn &= match kind {
-            PanelKind::ActionMenu { instance_id } => {
-                spawn_action_menu(&mut commands, &ctx, &session, &anchors, window, z, instance_id)
-            }
+            PanelKind::ActionMenu { instance_id } => spawn_action_menu(
+                &mut commands,
+                &ctx,
+                &session,
+                &anchors,
+                window,
+                z,
+                instance_id,
+            ),
             PanelKind::CaptainMenu { player } => {
                 spawn_captain_menu(&mut commands, &ctx, &session, z, *player)
             }
@@ -625,19 +627,17 @@ fn spawn_list_section(
     if lines.is_empty() {
         return;
     }
-    parent
-        .spawn(section(tint, None))
-        .with_children(|entries| {
-            spawn_caption(entries, ctx, caption.to_string(), caption_color);
-            for value in lines {
-                entries.spawn(body(
-                    value.clone(),
-                    &ctx.fonts.spectral,
-                    L::FS_STAT,
-                    text_color,
-                ));
-            }
-        });
+    parent.spawn(section(tint, None)).with_children(|entries| {
+        spawn_caption(entries, ctx, caption.to_string(), caption_color);
+        for value in lines {
+            entries.spawn(body(
+                value.clone(),
+                &ctx.fonts.spectral,
+                L::FS_STAT,
+                text_color,
+            ));
+        }
+    });
 }
 
 /// `⚔ 12   ⛨ 8` — the stat pair used by the action and captain menus.
@@ -748,7 +748,7 @@ fn spawn_action_menu(
     window: Vec2,
     z: i32,
     instance_id: &str,
-)-> bool {
+) -> bool {
     let Some(view) = model::action_menu_view(
         &session.state,
         &session.registry,
@@ -808,67 +808,69 @@ fn spawn_action_menu(
                     Pickable::IGNORE,
                 ));
                 // `.ph` — cost disc + name, and the escape hatch.
-                pop.spawn((row(6.), Pickable::IGNORE)).with_children(|head| {
-                    head.spawn((
-                        Node {
-                            width: px(18.),
-                            height: px(18.),
-                            flex_shrink: 0.,
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::Center,
-                            border_radius: BorderRadius::MAX,
-                            ..default()
-                        },
-                        BackgroundGradient::from(LinearGradient::to_bottom(vec![
-                            ColorStop::new(palette.gold, percent(0.)),
-                            ColorStop::new(palette.gold_deep, percent(100.)),
-                        ])),
-                        Pickable::IGNORE,
-                        children![line(
-                            cost.to_string(),
-                            &ctx.fonts.poppins_bold,
-                            L::FS_LABEL,
-                            palette.text_on_gold,
-                        )],
-                    ));
-                    // The name opens the full card — TS "Détails".
-                    head.spawn((
-                        Node {
-                            flex_grow: 1.,
-                            min_width: px(0.),
-                            ..default()
-                        },
-                        ClickCommand(view.detail_command.clone()),
-                        children![line(
-                            view.name.clone(),
-                            &ctx.fonts.cinzel_bold,
-                            L::FS_NAME,
-                            palette.text,
-                        )],
-                    ));
-                    spawn_close_cross(head, ctx);
-                });
+                pop.spawn((row(6.), Pickable::IGNORE))
+                    .with_children(|head| {
+                        head.spawn((
+                            Node {
+                                width: px(18.),
+                                height: px(18.),
+                                flex_shrink: 0.,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundGradient::from(LinearGradient::to_bottom(vec![
+                                ColorStop::new(palette.gold, percent(0.)),
+                                ColorStop::new(palette.gold_deep, percent(100.)),
+                            ])),
+                            Pickable::IGNORE,
+                            children![line(
+                                cost.to_string(),
+                                &ctx.fonts.poppins_bold,
+                                L::FS_LABEL,
+                                palette.text_on_gold,
+                            )],
+                        ));
+                        // The name opens the full card — TS "Détails".
+                        head.spawn((
+                            Node {
+                                flex_grow: 1.,
+                                min_width: px(0.),
+                                ..default()
+                            },
+                            ClickCommand(view.detail_command.clone()),
+                            children![line(
+                                view.name.clone(),
+                                &ctx.fonts.cinzel_bold,
+                                L::FS_NAME,
+                                palette.text,
+                            )],
+                        ));
+                        spawn_close_cross(head, ctx);
+                    });
 
                 // `.stats` — ⚔ / 🛡 / ❤, the only numbers the mock-up shows.
-                pop.spawn((row(8.), Pickable::IGNORE)).with_children(|stats| {
-                    for (glyph, value, color) in [
-                        (SWORD, view.atk, palette.atk),
-                        (SHIELD, view.def, palette.def),
-                        (HEART, pv, palette.hp),
-                    ] {
-                        stats
-                            .spawn((row(3.), Pickable::IGNORE))
-                            .with_children(|stat| {
-                                stat.spawn(line(glyph, ctx.symbols, L::FS_BODY, color));
-                                stat.spawn(line(
-                                    value.to_string(),
-                                    &ctx.fonts.poppins_bold,
-                                    L::FS_BODY,
-                                    color,
-                                ));
-                            });
-                    }
-                });
+                pop.spawn((row(8.), Pickable::IGNORE))
+                    .with_children(|stats| {
+                        for (glyph, value, color) in [
+                            (SWORD, view.atk, palette.atk),
+                            (SHIELD, view.def, palette.def),
+                            (HEART, pv, palette.hp),
+                        ] {
+                            stats
+                                .spawn((row(3.), Pickable::IGNORE))
+                                .with_children(|stat| {
+                                    stat.spawn(line(glyph, ctx.symbols, L::FS_BODY, color));
+                                    stat.spawn(line(
+                                        value.to_string(),
+                                        &ctx.fonts.poppins_bold,
+                                        L::FS_BODY,
+                                        color,
+                                    ));
+                                });
+                        }
+                    });
 
                 if !view.flags.is_empty() {
                     pop.spawn((row(4.), Pickable::IGNORE)).with_children(|f| {
@@ -886,29 +888,29 @@ fn spawn_action_menu(
                 }
 
                 // `.acts` — "Attaquer" (gold) and "Spéciale ★" (red).
-                pop.spawn((row(6.), Pickable::IGNORE)).with_children(|acts| {
-                    let mut any = false;
-                    if let Some(base) = &view.base {
-                        any = true;
-                        spawn_popover_action(acts, ctx, base, "Attaquer");
-                    }
-                    if let Some(special) = &view.special {
-                        any = true;
-                        spawn_popover_action(acts, ctx, special, "Spéciale");
-                    }
-                    if !any {
-                        acts.spawn(line(
-                            "Aucune action",
-                            &ctx.fonts.poppins,
-                            L::FS_LABEL,
-                            palette.text_faint,
-                        ));
-                    }
-                });
+                pop.spawn((row(6.), Pickable::IGNORE))
+                    .with_children(|acts| {
+                        let mut any = false;
+                        if let Some(base) = &view.base {
+                            any = true;
+                            spawn_popover_action(acts, ctx, base, "Attaquer");
+                        }
+                        if let Some(special) = &view.special {
+                            any = true;
+                            spawn_popover_action(acts, ctx, special, "Spéciale");
+                        }
+                        if !any {
+                            acts.spawn(line(
+                                "Aucune action",
+                                &ctx.fonts.poppins,
+                                L::FS_LABEL,
+                                palette.text_faint,
+                            ));
+                        }
+                    });
 
                 if !view.equipment.is_empty() {
-                    let equipment: Vec<String> =
-                        view.equipment.iter().map(|e| e.label()).collect();
+                    let equipment: Vec<String> = view.equipment.iter().map(|e| e.label()).collect();
                     pop.spawn(line(
                         equipment.join(" · "),
                         &ctx.fonts.poppins,
@@ -1002,7 +1004,7 @@ fn spawn_captain_menu(
     session: &Session,
     z: i32,
     player: PlayerId,
-)-> bool {
+) -> bool {
     let Some(view) = model::captain_menu_view(
         &session.state,
         &session.registry,
@@ -1222,14 +1224,11 @@ fn spawn_captain_menu(
                         // `AbilityRow` above already shows the cost; this is
                         // the only way to actually spend it.
                         if view.show_special_attack {
-                            let label = match (
-                                view.can_special_attack,
-                                view.special_attack_reason,
-                            ) {
-                                (false, Some(reason)) => format!(
-                                    "{} \u{2014} {reason}",
-                                    view.special_attack_name
-                                ),
+                            let label = match (view.can_special_attack, view.special_attack_reason)
+                            {
+                                (false, Some(reason)) => {
+                                    format!("{} \u{2014} {reason}", view.special_attack_name)
+                                }
                                 _ => format!(
                                     "{} \u{2014} {} Volont\u{00E9}",
                                     view.special_attack_name, view.special_attack_cost
@@ -1361,7 +1360,7 @@ fn spawn_ship_menu(
     z: i32,
     instance_id: &str,
     is_you: bool,
-)-> bool {
+) -> bool {
     let Some(view) = model::ship_menu_view(
         &session.state,
         &session.registry,
@@ -1503,8 +1502,9 @@ fn spawn_card_detail(
     z: i32,
     def_id: &str,
     instance_id: Option<&str>,
-)-> bool {
-    let Some(view) = model::card_detail_view(&session.state, &session.registry, def_id, instance_id)
+) -> bool {
+    let Some(view) =
+        model::card_detail_view(&session.state, &session.registry, def_id, instance_id)
     else {
         return false;
     };
@@ -1695,9 +1695,8 @@ fn spawn_confirm(
     z: i32,
     instance_id: &str,
     is_ship: bool,
-)-> bool {
-    let Some(view) =
-        model::confirm_view(&session.state, &session.registry, instance_id, is_ship)
+) -> bool {
+    let Some(view) = model::confirm_view(&session.state, &session.registry, instance_id, is_ship)
     else {
         return false;
     };
@@ -1866,7 +1865,12 @@ fn spawn_text_section(
 
 const COUNTER_W: f32 = 470.0;
 
-fn spawn_counter_window(commands: &mut Commands, ctx: &PanelCtx, session: &Session, z: i32)-> bool {
+fn spawn_counter_window(
+    commands: &mut Commands,
+    ctx: &PanelCtx,
+    session: &Session,
+    z: i32,
+) -> bool {
     let Some(view) = model::counter_view(&session.state, &session.registry, &session.valid) else {
         return false;
     };
@@ -2165,7 +2169,9 @@ mod tests {
         let mut session = make_session(13);
         let human = session.human;
         if !advance(&mut session, 900, |s| {
-            s.state.pending_attack.is_some() && s.state.current_player != human && !s.valid.is_empty()
+            s.state.pending_attack.is_some()
+                && s.state.current_player != human
+                && !s.valid.is_empty()
         }) {
             return;
         }
@@ -2229,14 +2235,13 @@ mod tests {
     fn the_action_menu_only_offers_actions_the_engine_allows() {
         let (session, id) =
             model::deploy_one(7).expect("seed 7 must let the human deploy a character");
-        let view: ActionMenuView = model::action_menu_view(
-            &session.state,
-            &session.registry,
-            &session.valid,
-            &id,
-        )
-        .unwrap();
-        for option in [view.base.as_ref(), view.special.as_ref()].into_iter().flatten() {
+        let view: ActionMenuView =
+            model::action_menu_view(&session.state, &session.registry, &session.valid, &id)
+                .unwrap();
+        for option in [view.base.as_ref(), view.special.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             if let UiCommand::Dispatch(action) = &option.command {
                 assert!(
                     session.valid.contains(action) || option.disabled,

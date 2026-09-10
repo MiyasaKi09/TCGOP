@@ -70,7 +70,10 @@ pub enum UiMode {
     ///
     /// `attacker_id` is either a card instance id or the synthetic
     /// `"captain_<player>"` id (see [`captain_key`]).
-    SelectingTarget { attacker_id: String, is_special: bool },
+    SelectingTarget {
+        attacker_id: String,
+        is_special: bool,
+    },
     /// `{ type: "selectingSupportTarget", instanceId }`.
     SelectingSupportTarget { instance_id: String },
     /// `{ type: "selectingEquipTarget", objectId }`.
@@ -164,9 +167,10 @@ pub fn deploy_slots(mode: &UiMode, valid: &[GameAction]) -> BTreeSet<Slot> {
         UiMode::SelectingSlot { card_id } => {
             for a in valid {
                 if let GameAction::DeployCharacter { instance_id, slot } = a
-                    && instance_id == card_id {
-                        slots.insert(*slot);
-                    }
+                    && instance_id == card_id
+                {
+                    slots.insert(*slot);
+                }
             }
         }
         UiMode::SelectingCaptainSlot => {
@@ -192,9 +196,10 @@ pub fn equip_targets(mode: &UiMode, valid: &[GameAction]) -> BTreeSet<String> {
             object_instance_id,
             target_instance_id,
         } = a
-            && object_instance_id == object_id {
-                targets.insert(target_instance_id.clone());
-            }
+            && object_instance_id == object_id
+        {
+            targets.insert(target_instance_id.clone());
+        }
     }
     targets
 }
@@ -212,9 +217,10 @@ pub fn support_targets(mode: &UiMode, valid: &[GameAction]) -> BTreeSet<String> 
             instance_id: id,
             target_instance_id: Some(target),
         } = a
-            && id == instance_id {
-                targets.insert(target.clone());
-            }
+            && id == instance_id
+        {
+            targets.insert(target.clone());
+        }
     }
     targets
 }
@@ -239,7 +245,11 @@ pub fn support_needs_target(valid: &[GameAction], instance_id: &str) -> bool {
 /// its engine had no captain special attack at all; the Rust engine does
 /// (§8.2 item 34(a)) and only offers it while it is affordable and unused, so
 /// the base and the ★ ability genuinely have different target lists.
-pub fn attack_targets(mode: &UiMode, valid: &[GameAction], ai_player: PlayerId) -> BTreeSet<String> {
+pub fn attack_targets(
+    mode: &UiMode,
+    valid: &[GameAction],
+    ai_player: PlayerId,
+) -> BTreeSet<String> {
     let mut targets = BTreeSet::new();
     let UiMode::SelectingTarget {
         attacker_id,
@@ -354,12 +364,20 @@ pub fn attack_is_zone(mode: &UiMode, state: &GameState, registry: &CardRegistry)
 /// TS `canPlay` in the hand loop — is any legal action tied to this hand card?
 pub fn hand_card_playable(valid: &[GameAction], instance_id: &str) -> bool {
     valid.iter().any(|a| match a {
-        GameAction::DeployCharacter { instance_id: id, .. }
+        GameAction::DeployCharacter {
+            instance_id: id, ..
+        }
         | GameAction::DeployShip { instance_id: id }
-        | GameAction::BaseSupportAction { instance_id: id, .. }
-        | GameAction::PlayEvent { instance_id: id, .. }
+        | GameAction::BaseSupportAction {
+            instance_id: id, ..
+        }
+        | GameAction::PlayEvent {
+            instance_id: id, ..
+        }
         | GameAction::PlayCounter { instance_id: id }
-        | GameAction::MoveCharacter { instance_id: id, .. } => id == instance_id,
+        | GameAction::MoveCharacter {
+            instance_id: id, ..
+        } => id == instance_id,
         GameAction::EquipObject {
             object_instance_id, ..
         } => object_instance_id == instance_id,
@@ -421,7 +439,8 @@ pub fn cell_highlight(
     let equip_target = is_player_side
         && matches!(mode, UiMode::SelectingEquipTarget { .. })
         && occupant.is_some_and(|id| equip.contains(id));
-    let impact = !is_player_side && zone && slot.row() == tcgop_engine::types::Row::Front && valid_target;
+    let impact =
+        !is_player_side && zone && slot.row() == tcgop_engine::types::Row::Front && valid_target;
 
     let highlight = CellHighlight {
         valid_deploy: is_valid_deploy,
@@ -462,10 +481,7 @@ pub enum UiCommand {
     /// Move the state machine to this mode.
     SetMode(UiMode),
     /// Move to this mode and remember the hand card that started it.
-    SelectHandCard {
-        instance_id: String,
-        mode: UiMode,
-    },
+    SelectHandCard { instance_id: String, mode: UiMode },
     /// Back to `Idle`, clearing the selected hand card (TS `resetUI`).
     Reset,
 }
@@ -533,12 +549,7 @@ pub fn on_slot_click(
                     // decodes that prefix itself (`get_attacker_owner`), so the
                     // action is legal; only `handleBoardCharClick` re-routes to
                     // `captainAttack`, and [`on_board_char_click`] mirrors that.
-                    UiCommand::Dispatch(unit_attack_action(
-                        attacker_id,
-                        *is_special,
-                        target,
-                        false,
-                    ))
+                    UiCommand::Dispatch(unit_attack_action(attacker_id, *is_special, target, false))
                 }
                 _ => UiCommand::Ignore,
             }
@@ -559,31 +570,31 @@ pub fn on_board_char_click(
     def_id: &str,
 ) -> UiCommand {
     if let UiMode::SelectingEquipTarget { object_id } = mode
-        && is_player_side && equip_targets(mode, valid).contains(instance_id) {
-            return UiCommand::Dispatch(GameAction::EquipObject {
-                object_instance_id: object_id.clone(),
-                target_instance_id: instance_id.to_string(),
-            });
-        }
+        && is_player_side
+        && equip_targets(mode, valid).contains(instance_id)
+    {
+        return UiCommand::Dispatch(GameAction::EquipObject {
+            object_instance_id: object_id.clone(),
+            target_instance_id: instance_id.to_string(),
+        });
+    }
     if let UiMode::SelectingSupportTarget { instance_id: actor } = mode
-        && support_targets(mode, valid).contains(instance_id) {
-            return UiCommand::Dispatch(GameAction::BaseSupportAction {
-                instance_id: actor.clone(),
-                target_instance_id: Some(instance_id.to_string()),
-            });
-        }
+        && support_targets(mode, valid).contains(instance_id)
+    {
+        return UiCommand::Dispatch(GameAction::BaseSupportAction {
+            instance_id: actor.clone(),
+            target_instance_id: Some(instance_id.to_string()),
+        });
+    }
     if let UiMode::SelectingTarget {
         attacker_id,
         is_special,
     } = mode
-        && !is_player_side && attack_targets(mode, valid, ai_player).contains(instance_id) {
-            return UiCommand::Dispatch(attack_action(
-                attacker_id,
-                *is_special,
-                instance_id,
-                false,
-            ));
-        }
+        && !is_player_side
+        && attack_targets(mode, valid, ai_player).contains(instance_id)
+    {
+        return UiCommand::Dispatch(attack_action(attacker_id, *is_special, instance_id, false));
+    }
     if is_player_side {
         UiCommand::SetMode(UiMode::ActionMenu {
             instance_id: instance_id.to_string(),
@@ -643,14 +654,9 @@ pub fn on_cell_click(
         );
     }
     match occupant {
-        Some((instance_id, def_id)) => on_board_char_click(
-            mode,
-            valid,
-            ai_player,
-            instance_id,
-            is_player_side,
-            def_id,
-        ),
+        Some((instance_id, def_id)) => {
+            on_board_char_click(mode, valid, ai_player, instance_id, is_player_side, def_id)
+        }
         None => UiCommand::Ignore,
     }
 }
@@ -799,9 +805,7 @@ pub fn status_hint(mode: &UiMode, is_ai_turn: bool, in_counter_window: bool) -> 
         UiMode::SelectingSupportTarget { .. } => {
             hint("Cible du pouvoir", StatusTone::Support, true)
         }
-        UiMode::SelectingSlot { .. } => {
-            hint("Choisissez un emplacement", StatusTone::Deploy, true)
-        }
+        UiMode::SelectingSlot { .. } => hint("Choisissez un emplacement", StatusTone::Deploy, true),
         UiMode::SelectingCaptainSlot => hint("Placez le capitaine", StatusTone::Captain, true),
         UiMode::SelectingEquipTarget { .. } => {
             hint("Équipez un personnage", StatusTone::Captain, true)
@@ -861,7 +865,9 @@ mod tests {
             deploy("a", Slot::A2),
             deploy("b", Slot::V3),
         ];
-        let mode = UiMode::SelectingSlot { card_id: "a".into() };
+        let mode = UiMode::SelectingSlot {
+            card_id: "a".into(),
+        };
         assert_eq!(
             deploy_slots(&mode, &valid),
             BTreeSet::from([Slot::V1, Slot::A2])
@@ -883,9 +889,20 @@ mod tests {
 
     #[test]
     fn deploy_slots_is_empty_outside_the_two_placement_modes() {
-        let valid = vec![deploy("a", Slot::V1), GameAction::FlipCaptain { slot: Slot::V2 }];
+        let valid = vec![
+            deploy("a", Slot::V1),
+            GameAction::FlipCaptain { slot: Slot::V2 },
+        ];
         assert!(deploy_slots(&UiMode::Idle, &valid).is_empty());
-        assert!(deploy_slots(&UiMode::ActionMenu { instance_id: "a".into() }, &valid).is_empty());
+        assert!(
+            deploy_slots(
+                &UiMode::ActionMenu {
+                    instance_id: "a".into()
+                },
+                &valid
+            )
+            .is_empty()
+        );
     }
 
     // --- equip / support ------------------------------------
@@ -1062,10 +1079,7 @@ mod tests {
     /// gesture the web cannot even begin (board tiles carry no `draggable`).
     #[test]
     fn a_drop_only_finishes_the_two_modes_a_drag_can_arm() {
-        let valid = vec![
-            deploy("c1", Slot::V1),
-            base_attack("zoro", "smoker", false),
-        ];
+        let valid = vec![deploy("c1", Slot::V1), base_attack("zoro", "smoker", false)];
         let deploying = UiMode::SelectingSlot {
             card_id: "c1".into(),
         };
@@ -1086,7 +1100,14 @@ mod tests {
             UiMode::Idle,
         ] {
             assert_eq!(
-                on_cell_drop(&mode, &valid, AI, Slot::V1, false, Some(("smoker", "MG-002"))),
+                on_cell_drop(
+                    &mode,
+                    &valid,
+                    AI,
+                    Slot::V1,
+                    false,
+                    Some(("smoker", "MG-002"))
+                ),
                 UiCommand::Ignore,
                 "{mode:?} must not be completable by a drop"
             );
@@ -1110,17 +1131,35 @@ mod tests {
     #[test]
     fn cell_highlight_dims_every_non_eligible_cell_while_selecting() {
         let valid = vec![deploy("a", Slot::V1)];
-        let mode = UiMode::SelectingSlot { card_id: "a".into() };
+        let mode = UiMode::SelectingSlot {
+            card_id: "a".into(),
+        };
         let deploy_set = deploy_slots(&mode, &valid);
         let empty_str: BTreeSet<String> = BTreeSet::new();
 
         let lit = cell_highlight(
-            &mode, Slot::V1, true, None, &deploy_set, &empty_str, &empty_str, &empty_str, false,
+            &mode,
+            Slot::V1,
+            true,
+            None,
+            &deploy_set,
+            &empty_str,
+            &empty_str,
+            &empty_str,
+            false,
         );
         assert!(lit.valid_deploy && !lit.dimmed && lit.eligible());
 
         let dark = cell_highlight(
-            &mode, Slot::V2, true, None, &deploy_set, &empty_str, &empty_str, &empty_str, false,
+            &mode,
+            Slot::V2,
+            true,
+            None,
+            &deploy_set,
+            &empty_str,
+            &empty_str,
+            &empty_str,
+            false,
         );
         assert!(!dark.eligible() && dark.dimmed);
     }
@@ -1140,12 +1179,28 @@ mod tests {
         let none_slot: BTreeSet<Slot> = BTreeSet::new();
 
         let front = cell_highlight(
-            &mode, Slot::V1, false, Some("coby"), &none_slot, &attack, &none, &none, true,
+            &mode,
+            Slot::V1,
+            false,
+            Some("coby"),
+            &none_slot,
+            &attack,
+            &none,
+            &none,
+            true,
         );
         assert!(front.impact, "front line of a zone attack splashes");
 
         let back = cell_highlight(
-            &mode, Slot::A1, false, Some("garp"), &none_slot, &attack, &none, &none, true,
+            &mode,
+            Slot::A1,
+            false,
+            Some("garp"),
+            &none_slot,
+            &attack,
+            &none,
+            &none,
+            true,
         );
         assert!(!back.impact, "back line never splashes");
         assert_eq!(Slot::V1.row(), Row::Front);
@@ -1159,7 +1214,9 @@ mod tests {
             on_hand_card_click(CardType::Character, "c1"),
             UiCommand::SelectHandCard {
                 instance_id: "c1".into(),
-                mode: UiMode::SelectingSlot { card_id: "c1".into() }
+                mode: UiMode::SelectingSlot {
+                    card_id: "c1".into()
+                }
             }
         );
         assert!(matches!(
@@ -1183,13 +1240,18 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(on_hand_card_click(CardType::Counter, "x"), UiCommand::Ignore);
+        assert_eq!(
+            on_hand_card_click(CardType::Counter, "x"),
+            UiCommand::Ignore
+        );
     }
 
     #[test]
     fn clicking_a_lit_slot_deploys_and_a_dark_one_does_nothing() {
         let valid = vec![deploy("c1", Slot::V1)];
-        let mode = UiMode::SelectingSlot { card_id: "c1".into() };
+        let mode = UiMode::SelectingSlot {
+            card_id: "c1".into(),
+        };
         assert_eq!(
             on_slot_click(&mode, &valid, AI, Slot::V1, true, None),
             UiCommand::Dispatch(deploy("c1", Slot::V1))
@@ -1226,7 +1288,14 @@ mod tests {
     fn captain_flip_dispatches_from_the_captain_slot_mode() {
         let valid = vec![GameAction::FlipCaptain { slot: Slot::V2 }];
         assert_eq!(
-            on_slot_click(&UiMode::SelectingCaptainSlot, &valid, AI, Slot::V2, true, None),
+            on_slot_click(
+                &UiMode::SelectingCaptainSlot,
+                &valid,
+                AI,
+                Slot::V2,
+                true,
+                None
+            ),
             UiCommand::Dispatch(GameAction::FlipCaptain { slot: Slot::V2 })
         );
     }
@@ -1326,7 +1395,9 @@ mod tests {
     #[test]
     fn cell_clicks_route_deploy_before_occupant() {
         let valid = vec![deploy("c1", Slot::V1)];
-        let mode = UiMode::SelectingSlot { card_id: "c1".into() };
+        let mode = UiMode::SelectingSlot {
+            card_id: "c1".into(),
+        };
         // Lit deploy slot wins even when something stands there.
         assert_eq!(
             on_cell_click(&mode, &valid, AI, Slot::V1, true, None),
@@ -1352,10 +1423,12 @@ mod tests {
     fn selecting_and_modal_partition_the_modes() {
         assert!(UiMode::SelectingCaptainSlot.is_selecting());
         assert!(!UiMode::SelectingCaptainSlot.is_modal());
-        assert!(UiMode::CaptainMenu {
-            player_id: PlayerId::Player1
-        }
-        .is_modal());
+        assert!(
+            UiMode::CaptainMenu {
+                player_id: PlayerId::Player1
+            }
+            .is_modal()
+        );
         assert!(UiMode::default().is_idle());
     }
 
@@ -1368,7 +1441,10 @@ mod tests {
         assert_eq!(status_hint(&target, true, false).tone, StatusTone::Waiting);
         assert_eq!(status_hint(&target, false, true).tone, StatusTone::Danger);
         assert_eq!(status_hint(&target, false, false).tone, StatusTone::Target);
-        assert_eq!(status_hint(&UiMode::Idle, false, false).tone, StatusTone::Ready);
+        assert_eq!(
+            status_hint(&UiMode::Idle, false, false).tone,
+            StatusTone::Ready
+        );
         assert!(!status_hint(&UiMode::Idle, false, false).pulse);
     }
 
@@ -1405,7 +1481,11 @@ mod tests {
         assert!(!hand_card_playable(&session.valid, "not-a-card"));
 
         // Nothing is aimed, so no zone preview.
-        assert!(!attack_is_zone(&UiMode::Idle, &session.state, &session.registry));
+        assert!(!attack_is_zone(
+            &UiMode::Idle,
+            &session.state,
+            &session.registry
+        ));
     }
 
     #[test]
@@ -1484,7 +1564,14 @@ mod tests {
             slot: Slot::V2,
         }];
         assert_eq!(
-            on_cell_drop(&UiMode::Idle, &valid, PlayerId::Player2, Slot::V2, true, None),
+            on_cell_drop(
+                &UiMode::Idle,
+                &valid,
+                PlayerId::Player2,
+                Slot::V2,
+                true,
+                None
+            ),
             UiCommand::Ignore
         );
         let mode = UiMode::SelectingSlot {

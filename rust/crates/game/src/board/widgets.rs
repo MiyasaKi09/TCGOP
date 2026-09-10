@@ -124,13 +124,8 @@ impl Painter<'_, '_, '_> {
         nominal: Vec2,
     ) -> Entity {
         let handle = self.art.image(self.assets, path);
-        let rect = crate::board::geometry::cover(
-            box_size.x,
-            box_size.y,
-            nominal.x,
-            nominal.y,
-            focus,
-        );
+        let rect =
+            crate::board::geometry::cover(box_size.x, box_size.y, nominal.x, nominal.y, focus);
         self.child(
             parent,
             (
@@ -301,12 +296,20 @@ impl Painter<'_, '_, '_> {
                 node.left = px(inset);
                 node.right = px(inset);
                 node.height = px(dash);
-                if near { node.top = px(0.0) } else { node.bottom = px(0.0) }
+                if near {
+                    node.top = px(0.0)
+                } else {
+                    node.bottom = px(0.0)
+                }
             } else {
                 node.top = px(inset);
                 node.bottom = px(inset);
                 node.width = px(dash);
-                if near { node.left = px(0.0) } else { node.right = px(0.0) }
+                if near {
+                    node.left = px(0.0)
+                } else {
+                    node.right = px(0.0)
+                }
             }
             let edge = self.child(parent, (node, Pickable::IGNORE));
             let ticks: usize = if horizontal { 7 } else { 3 };
@@ -366,7 +369,10 @@ impl Painter<'_, '_, '_> {
         );
         let font = self.fonts.poppins_semi.clone();
         let faint = self.palette.text_faint;
-        self.child(box_, caption(slot_code(slot), &font, l::FS_LABEL, faint, 1.0));
+        self.child(
+            box_,
+            caption(slot_code(slot), &font, l::FS_LABEL, faint, 1.0),
+        );
     }
 
     fn unit_tile(&mut self, root: Entity, unit: &UnitView) {
@@ -377,7 +383,10 @@ impl Painter<'_, '_, '_> {
             }
             None => {
                 let accent = self.palette.bg_slot;
-                self.child(root, (fill_node(), BackgroundColor(accent), Pickable::IGNORE));
+                self.child(
+                    root,
+                    (fill_node(), BackgroundColor(accent), Pickable::IGNORE),
+                );
                 let font = self.fonts.cinzel_bold.clone();
                 let color = self.palette.text_dim;
                 let box_ = self.child(
@@ -473,7 +482,10 @@ impl Painter<'_, '_, '_> {
         );
         let cinzel = self.fonts.cinzel_bold.clone();
         let white = self.palette.text;
-        self.child(bottom, text(token.name.clone(), &cinzel, l::FS_LABEL, white));
+        self.child(
+            bottom,
+            text(token.name.clone(), &cinzel, l::FS_LABEL, white),
+        );
         // The verso token is a captain: its bar follows the captain rule.
         let color = self.palette.captain_hp_color(token.is_you, token.hp_ratio);
         let row = self.child(
@@ -578,7 +590,9 @@ impl Painter<'_, '_, '_> {
         // Mock-up: the foe's captain bar is flat `--foe` whatever its fill, and
         // yours follows the green HP ramp — a full-health enemy captain must
         // never read green.
-        let color = self.palette.captain_hp_color(captain.is_you, captain.hp_ratio);
+        let color = self
+            .palette
+            .captain_hp_color(captain.is_you, captain.hp_ratio);
         let gauge_h = self.metrics.chrome(7.0);
         self.gauge(hp_row, gauge_h, captain.hp_ratio, color);
         let poppins_bold = self.fonts.poppins_bold.clone();
@@ -795,10 +809,7 @@ impl Painter<'_, '_, '_> {
         for (i, letter) in letters.iter().enumerate() {
             let t = i as f32 / last;
             let color = mix(gold, amber, t);
-            self.child(
-                brand,
-                text(letter.to_string(), &cinzel, l::FS_TITLE, color),
-            );
+            self.child(brand, text(letter.to_string(), &cinzel, l::FS_TITLE, color));
         }
 
         // `margin: 0 auto` on the turn group = a flexible spacer either side.
@@ -883,7 +894,6 @@ impl Painter<'_, '_, '_> {
             ),
         )
     }
-
 }
 
 // ============================================================

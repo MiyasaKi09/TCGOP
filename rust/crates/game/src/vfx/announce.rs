@@ -277,11 +277,8 @@ pub fn build_announcement(
             blocker_instance_id,
         } => {
             let def = def_of(state, registry, blocker_instance_id)?;
-            let mut ann = PlayAnnouncement::base(
-                side,
-                kind,
-                format!("Bloque avec {} (Bouclier)", def.name),
-            );
+            let mut ann =
+                PlayAnnouncement::base(side, kind, format!("Bloque avec {} (Bouclier)", def.name));
             ann.def_id = Some(def.id.clone());
             ann.instance_id = Some(blocker_instance_id.clone());
             ann.dest_id = Some(blocker_instance_id.clone());
@@ -311,8 +308,7 @@ pub fn build_announcement(
             ..
         } => {
             let def = def_of(state, registry, attacker_instance_id)?;
-            let mut ann =
-                PlayAnnouncement::base(side, kind, format!("{} attaque", def.name));
+            let mut ann = PlayAnnouncement::base(side, kind, format!("{} attaque", def.name));
             ann.big = false;
             ann.def_id = Some(def.id.clone());
             ann.instance_id = Some(attacker_instance_id.clone());
@@ -373,8 +369,7 @@ pub fn build_announcement(
             Some(ann)
         }
         GameAction::CaptainAttack { .. } => {
-            let mut ann =
-                PlayAnnouncement::base(side, kind, "Le Capitaine attaque".to_string());
+            let mut ann = PlayAnnouncement::base(side, kind, "Le Capitaine attaque".to_string());
             ann.big = false;
             ann.toast = true;
             ann.dest_id = Some(captain_key(actor));
@@ -443,8 +438,13 @@ mod tests {
     #[test]
     fn ending_the_turn_is_the_shortest_toast() {
         let session = session(3);
-        let ann = build_announcement(&GameAction::EndTurn, &session.state, &session.registry, session.human)
-            .expect("end of turn is announced");
+        let ann = build_announcement(
+            &GameAction::EndTurn,
+            &session.state,
+            &session.registry,
+            session.human,
+        )
+        .expect("end of turn is announced");
         assert_eq!(ann.side, Side::You, "player1 opens the game");
         assert!(ann.toast && !ann.big);
         assert_eq!(ann.caption, "Fin de tour");
@@ -456,8 +456,13 @@ mod tests {
     fn the_ai_side_is_marked_as_the_foe() {
         let mut session = session(3);
         session.dispatch(GameAction::EndTurn).unwrap();
-        let ann = build_announcement(&GameAction::EndTurn, &session.state, &session.registry, session.human)
-            .unwrap();
+        let ann = build_announcement(
+            &GameAction::EndTurn,
+            &session.state,
+            &session.registry,
+            session.human,
+        )
+        .unwrap();
         assert_eq!(ann.side, Side::Foe);
         assert_eq!(Side::Foe.label(), "\u{25C6} Adversaire");
     }

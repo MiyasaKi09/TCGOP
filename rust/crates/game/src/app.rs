@@ -155,7 +155,13 @@ impl Plugin for TcgopPlugin {
             // Core (headless-testable) layers.
             .add_plugins((BridgePlugin, ArtPlugin, SelectionPlugin))
             // Presentation layers.
-            .add_plugins((ScreensPlugin, BoardPlugin, HandPlugin, PanelsPlugin, VfxPlugin))
+            .add_plugins((
+                ScreensPlugin,
+                BoardPlugin,
+                HandPlugin,
+                PanelsPlugin,
+                VfxPlugin,
+            ))
             // Opponent.
             .add_plugins(AiDriverPlugin);
     }
@@ -333,7 +339,11 @@ impl Palette {
     /// Colour of a **captain**'s HP gauge: the mock-up paints the foe's bar
     /// flat `--foe` whatever its fill, and yours with the green HP ramp.
     pub fn captain_hp_color(&self, is_you: bool, ratio: f32) -> Color {
-        if is_you { self.hp_color(ratio) } else { self.foe }
+        if is_you {
+            self.hp_color(ratio)
+        } else {
+            self.foe
+        }
     }
 }
 
@@ -399,7 +409,10 @@ mod tests {
     #[test]
     fn the_ambient_glows_sit_under_the_terrain() {
         let order = [l::Z_AMBIENT, l::Z_GLOW, l::Z_TERRAIN, l::Z_SHADE, l::Z_ROW];
-        assert!(order.windows(2).all(|w| w[0] < w[1]), "z order drifted: {order:?}");
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "z order drifted: {order:?}"
+        );
     }
 
     /// The footer's reserve is the mock-up's two boxes and nothing else.

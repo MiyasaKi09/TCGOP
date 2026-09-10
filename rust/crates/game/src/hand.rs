@@ -517,7 +517,10 @@ fn apply_ui_command(
             dispatch.write(DispatchAction(action));
         }
         UiCommand::SetMode(next) => *mode = next,
-        UiCommand::SelectHandCard { instance_id, mode: next } => {
+        UiCommand::SelectHandCard {
+            instance_id,
+            mode: next,
+        } => {
             selected.0 = Some(instance_id);
             *mode = next;
         }
@@ -900,11 +903,7 @@ fn spawn_hint_box(
                             symbol_font(symbols, 9.),
                             TextColor(pal.amber),
                         ));
-                        entry.spawn((
-                            Text::new(text),
-                            label_font(fonts, 9.),
-                            TextColor(pal.amber),
-                        ));
+                        entry.spawn((Text::new(text), label_font(fonts, 9.), TextColor(pal.amber)));
                     });
             }
         });
@@ -1763,8 +1762,14 @@ mod tests {
                 },
             }
         );
-        assert_eq!(hand_drag_command(true, CardType::Event, "e1"), UiCommand::Ignore);
-        assert_eq!(hand_drag_command(true, CardType::Ship, "s1"), UiCommand::Ignore);
+        assert_eq!(
+            hand_drag_command(true, CardType::Event, "e1"),
+            UiCommand::Ignore
+        );
+        assert_eq!(
+            hand_drag_command(true, CardType::Ship, "s1"),
+            UiCommand::Ignore
+        );
         assert_eq!(
             hand_drag_command(false, CardType::Character, "c1"),
             UiCommand::Ignore
@@ -2010,11 +2015,10 @@ mod tests {
 
         let mut app = headless_app(session);
         let source = app.world_mut().spawn_empty().id();
-        app.world_mut()
-            .write_message(HandCardDragStarted {
-                instance_id: object_id.clone(),
-                source,
-            });
+        app.world_mut().write_message(HandCardDragStarted {
+            instance_id: object_id.clone(),
+            source,
+        });
         app.update();
 
         assert_eq!(

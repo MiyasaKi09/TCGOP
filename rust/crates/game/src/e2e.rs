@@ -66,7 +66,13 @@ fn headless_app() -> App {
         // Same order as `TcgopPlugin::build`: core, then presentation, then
         // the opponent.
         .add_plugins((BridgePlugin, ArtPlugin, SelectionPlugin))
-        .add_plugins((ScreensPlugin, BoardPlugin, HandPlugin, PanelsPlugin, VfxPlugin))
+        .add_plugins((
+            ScreensPlugin,
+            BoardPlugin,
+            HandPlugin,
+            PanelsPlugin,
+            VfxPlugin,
+        ))
         .add_plugins(AiDriverPlugin);
     app
 }
@@ -146,7 +152,8 @@ fn play_out(app: &mut App, level_name: &str) -> Played {
             });
 
         if let Some(action) = pick {
-            app.world_mut().write_message(DispatchAction(action.clone()));
+            app.world_mut()
+                .write_message(DispatchAction(action.clone()));
             out.human += 1;
             app.update();
             if app
@@ -252,7 +259,13 @@ fn replaying_starts_from_a_clean_slate() {
     );
 
     // Pretend the player was hovering a card when the game ended.
-    let stale = app.world().resource::<Session>().you().hand.first().cloned();
+    let stale = app
+        .world()
+        .resource::<Session>()
+        .you()
+        .hand
+        .first()
+        .cloned();
     app.world_mut().resource_mut::<HoveredHandCard>().0 = stale.clone();
 
     // *Rejouer* → setup → a brand new session on the board.
@@ -330,13 +343,6 @@ fn the_frame_pipeline_runs_input_selection_dispatch_refresh_render_vfx() {
 
     assert_eq!(
         app.world().resource::<Trace>().0,
-        vec![
-            "input",
-            "selection",
-            "dispatch",
-            "refresh",
-            "render",
-            "vfx"
-        ]
+        vec!["input", "selection", "dispatch", "refresh", "render", "vfx"]
     );
 }

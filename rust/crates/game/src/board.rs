@@ -51,12 +51,10 @@ use bevy::prelude::*;
 use bevy::window::{PrimaryWindow, WindowResized};
 use tcgop_engine::types::{PlayerId, Slot};
 
-use crate::app::{
-    AppScreen, AppSet, Fonts, Palette, board_ready, configure_pipeline, layout as l,
-};
-use crate::hand::SymbolFont;
+use crate::app::{AppScreen, AppSet, Fonts, Palette, board_ready, configure_pipeline, layout as l};
 use crate::art::{ArtCache, Focus};
 use crate::bridge::{BridgeSet, DispatchAction, Session};
+use crate::hand::SymbolFont;
 use crate::selection::{
     SelectedHandCard, UiCommand, UiMode, on_captain_click, on_cell_click, on_cell_drop,
 };
@@ -91,9 +89,7 @@ impl Plugin for BoardPlugin {
             // head-less app with a bare `AssetPlugin` would panic on `load`.
             let can_load = app.world().contains_resource::<Assets<Font>>();
             let symbols = match app.world().get_resource::<AssetServer>() {
-                Some(assets) if can_load => {
-                    SymbolFont(assets.load(crate::hand::SYMBOL_FONT_PATH))
-                }
+                Some(assets) if can_load => SymbolFont(assets.load(crate::hand::SYMBOL_FONT_PATH)),
                 _ => SymbolFont::default(),
             };
             app.insert_resource(symbols);
@@ -106,10 +102,7 @@ impl Plugin for BoardPlugin {
             .init_resource::<BoardMetrics>()
             .init_resource::<crate::vfx::ReducedMotion>()
             .init_resource::<crate::hand::HandDrag>()
-            .add_systems(
-                OnEnter(AppScreen::Board),
-                spawn_board.run_if(board_ready),
-            )
+            .add_systems(OnEnter(AppScreen::Board), spawn_board.run_if(board_ready))
             // …and again as soon as it *can* be built. `OnEnter` fires once,
             // in `StateTransition`, so a screen entered before the `Session`
             // exists would otherwise stay terrain-less for the whole game with
@@ -158,8 +151,6 @@ impl Plugin for BoardPlugin {
             );
     }
 }
-
-
 
 // ============================================================
 // Resources
@@ -832,21 +823,17 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
             ChildOf(bar),
         ))
         .id();
-    painter.commands.entity(cap_content).insert((
-        fill_node(),
-        Pickable::IGNORE,
-        ChildOf(captain),
-    ));
+    painter
+        .commands
+        .entity(cap_content)
+        .insert((fill_node(), Pickable::IGNORE, ChildOf(captain)));
     painter.commands.entity(cap_veil).insert((
         fill_node(),
         BackgroundColor(Color::NONE),
         Pickable::IGNORE,
         ChildOf(captain),
     ));
-    painter
-        .commands
-        .entity(captain)
-        .observe(on_captain_clicked);
+    painter.commands.entity(captain).observe(on_captain_clicked);
 
     // --- ship slot ---
     let ship_content = painter.commands.spawn_empty().id();
@@ -874,11 +861,10 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
             ChildOf(bar),
         ))
         .id();
-    painter.commands.entity(ship_content).insert((
-        fill_node(),
-        Pickable::IGNORE,
-        ChildOf(ship),
-    ));
+    painter
+        .commands
+        .entity(ship_content)
+        .insert((fill_node(), Pickable::IGNORE, ChildOf(ship)));
     painter.commands.entity(ship).observe(on_ship_clicked);
 
     // --- volonté / counts ---
@@ -963,8 +949,7 @@ fn sync_cells(
         let Some(next) = view.half(node.is_you).cell(node.slot) else {
             continue;
         };
-        let content_changed =
-            refit || cached.0.as_ref().is_none_or(|c| c.content != next.content);
+        let content_changed = refit || cached.0.as_ref().is_none_or(|c| c.content != next.content);
         let decor_changed = refit || cached.0.as_ref().is_none_or(|c| c.decor != next.decor);
         if content_changed {
             painter
@@ -1046,10 +1031,12 @@ fn sync_command(
             continue;
         }
         let content_changed = refit
-            || cached
-                .0
-                .as_ref()
-                .is_none_or(|c| CaptainCardView { decor: next.decor, ..c.clone() } != *next);
+            || cached.0.as_ref().is_none_or(|c| {
+                CaptainCardView {
+                    decor: next.decor,
+                    ..c.clone()
+                } != *next
+            });
         if content_changed {
             painter
                 .commands
@@ -1318,12 +1305,8 @@ fn apply_cover_fit(
         let box_size = parent.size() * scale;
         let size = texture.size_f32();
         let rect = cover(box_size.x, box_size.y, size.x, size.y, fit.focus);
-        let (width, height, left, top) = (
-            px(rect.width),
-            px(rect.height),
-            px(rect.left),
-            px(rect.top),
-        );
+        let (width, height, left, top) =
+            (px(rect.width), px(rect.height), px(rect.left), px(rect.top));
         if node.width != width || node.height != height || node.left != left || node.top != top {
             node.width = width;
             node.height = height;
@@ -1418,14 +1401,7 @@ fn on_cell_clicked(
             .get(cell.slot)
             .and_then(|id| session.state.card(id))
             .map(|card| (card.instance_id.as_str(), card.def_id.as_str()));
-        on_cell_click(
-            &mode,
-            &session.valid,
-            ai,
-            cell.slot,
-            cell.is_you,
-            occupant,
-        )
+        on_cell_click(&mode, &session.valid, ai, cell.slot, cell.is_you, occupant)
     };
     submit(command, &mut mode, &mut selected, &mut dispatch);
 }
@@ -1522,14 +1498,7 @@ fn on_cell_dropped(
         .get(cell.slot)
         .and_then(|id| session.state.card(id))
         .map(|card| (card.instance_id.as_str(), card.def_id.as_str()));
-    let command = on_cell_drop(
-        &mode,
-        &session.valid,
-        ai,
-        cell.slot,
-        cell.is_you,
-        occupant,
-    );
+    let command = on_cell_drop(&mode, &session.valid, ai, cell.slot, cell.is_you, occupant);
     submit(command, &mut mode, &mut selected, &mut dispatch);
 }
 
@@ -1627,7 +1596,12 @@ mod tests {
         // …and the empty tiles have their slot caption underneath.
         let view = app.world().resource::<BoardViewCache>().0.clone();
         let view = view.expect("the view is computed as soon as the board opens");
-        assert!(view.you.front.iter().all(|c| c.content == CellContent::Empty));
+        assert!(
+            view.you
+                .front
+                .iter()
+                .all(|c| c.content == CellContent::Empty)
+        );
         assert!(view.header.can_end_turn);
     }
 
@@ -1742,17 +1716,28 @@ mod tests {
             + l::FOOTER_ROW_GAP
             + l::BUTTON_H
             + l::FOOTER_PAD_BOTTOM;
-        assert!((l::HAND_H - footer).abs() < 1e-3, "{} vs {footer}", l::HAND_H);
+        assert!(
+            (l::HAND_H - footer).abs() < 1e-3,
+            "{} vs {footer}",
+            l::HAND_H
+        );
 
         // …and it leaves the terrain the lion's share of the window, the way
         // the mock-up's 160 px footer does on an 840 px phone.
         let share = std::hint::black_box(l::HAND_H) / l::WINDOW_H;
-        assert!(share < 0.28, "the footer eats {:.0}% of the window", share * 100.0);
+        assert!(
+            share < 0.28,
+            "the footer eats {:.0}% of the window",
+            share * 100.0
+        );
 
         // …and there is still room for two halves above it.
         assert!(half_available_h(l::WINDOW_H) > 0.0);
         let metrics = BoardMetrics::default().0;
-        assert!(l::HEADER_H + 2.0 * metrics.total_h() + l::WATERLINE_H + l::HAND_H <= l::WINDOW_H + 0.01);
+        assert!(
+            l::HEADER_H + 2.0 * metrics.total_h() + l::WATERLINE_H + l::HAND_H
+                <= l::WINDOW_H + 0.01
+        );
     }
 
     /// Exactly one "Fin de tour" and one "Annuler": the mock-up has a single

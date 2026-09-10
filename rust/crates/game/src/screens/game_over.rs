@@ -21,8 +21,8 @@ use crate::art::{ArtCache, SEA_IMAGE};
 use crate::bridge::Session;
 use crate::selection::{SelectedHandCard, UiMode};
 
-use super::model::{GameOverView, game_over_view};
 use super::ReplayRequested;
+use super::model::{GameOverView, game_over_view};
 use super::widgets::{bold_label_font, label_font, title_font};
 
 /// "Rejouer".
@@ -56,7 +56,10 @@ pub(super) fn spawn_game_over(
     let view = session
         .as_deref()
         .map(game_over_view)
-        .unwrap_or(GameOverView { won: false, turn: 0 });
+        .unwrap_or(GameOverView {
+            won: false,
+            turn: 0,
+        });
     let pal = *palette;
     let accent = if view.won { pal.hp } else { pal.foe };
 

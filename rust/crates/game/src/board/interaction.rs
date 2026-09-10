@@ -30,7 +30,10 @@ pub fn apply_ui_command(
             *mode = next;
             None
         }
-        UiCommand::SelectHandCard { instance_id, mode: next } => {
+        UiCommand::SelectHandCard {
+            instance_id,
+            mode: next,
+        } => {
             selected.0 = Some(instance_id);
             *mode = next;
             None
@@ -64,7 +67,11 @@ mod tests {
             instance_id: "c1".into(),
             slot: Slot::V1,
         };
-        let out = apply_ui_command(UiCommand::Dispatch(action.clone()), &mut mode, &mut selected);
+        let out = apply_ui_command(
+            UiCommand::Dispatch(action.clone()),
+            &mut mode,
+            &mut selected,
+        );
         assert_eq!(out, Some(action));
         assert_eq!(mode, UiMode::Idle);
         assert_eq!(selected.0, None);
@@ -90,7 +97,10 @@ mod tests {
     fn ignoring_changes_nothing() {
         let (mut mode, mut selected) = state();
         let before = (mode.clone(), selected.clone());
-        assert_eq!(apply_ui_command(UiCommand::Ignore, &mut mode, &mut selected), None);
+        assert_eq!(
+            apply_ui_command(UiCommand::Ignore, &mut mode, &mut selected),
+            None
+        );
         assert_eq!((mode, selected), before);
     }
 
@@ -135,7 +145,10 @@ mod tests {
     #[test]
     fn reset_goes_back_to_idle() {
         let (mut mode, mut selected) = state();
-        assert_eq!(apply_ui_command(UiCommand::Reset, &mut mode, &mut selected), None);
+        assert_eq!(
+            apply_ui_command(UiCommand::Reset, &mut mode, &mut selected),
+            None
+        );
         assert!(mode.is_idle());
         assert_eq!(selected.0, None);
     }

@@ -72,10 +72,7 @@ pub fn caption(
     color: Color,
     spacing: f32,
 ) -> impl Bundle {
-    (
-        text(value, font, size, color),
-        LetterSpacing::Px(spacing),
-    )
+    (text(value, font, size, color), LetterSpacing::Px(spacing))
 }
 
 /// An absolutely positioned, non-pickable overlay filling its parent.

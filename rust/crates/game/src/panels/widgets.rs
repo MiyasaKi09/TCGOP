@@ -106,10 +106,7 @@ pub fn body(value: impl Into<String>, font: &Handle<Font>, size: f32, color: Col
 
 /// A single-line text node — names, stats, captions.
 pub fn line(value: impl Into<String>, font: &Handle<Font>, size: f32, color: Color) -> impl Bundle {
-    (
-        body(value, font, size, color),
-        TextLayout::no_wrap(),
-    )
+    (body(value, font, size, color), TextLayout::no_wrap())
 }
 
 // ============================================================
@@ -507,12 +504,7 @@ pub fn spawn_close_cross(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx) {
             base: Color::srgba(1., 1., 1., 0.06),
             hover: Color::srgba(1., 1., 1., 0.18),
         },
-        children![line(
-            CROSS,
-            ctx.symbols,
-            L::FS_BODY,
-            ctx.palette.text_faint
-        )],
+        children![line(CROSS, ctx.symbols, L::FS_BODY, ctx.palette.text_faint)],
     ));
 }
 

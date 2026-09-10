@@ -56,7 +56,9 @@ use tcgop_engine::state::PendingAttack;
 use tcgop_engine::types::GameAction;
 
 use crate::app::{AppScreen, AppSet, configure_pipeline};
-use crate::bridge::{AutoAction, BridgeSet, DispatchAction, EngineErrorEvent, Session, StateChanged};
+use crate::bridge::{
+    AutoAction, BridgeSet, DispatchAction, EngineErrorEvent, Session, StateChanged,
+};
 use crate::selection::is_captain_key;
 use crate::vfx::{AnnouncePlay, VfxSet};
 
@@ -412,7 +414,14 @@ fn choose_auto_action(session: &mut Session, auto: AutoAction) -> Option<GameAct
 fn ai_pick(session: &mut Session, level: tcgop_engine::ai::Difficulty) -> Option<GameAction> {
     let ai = session.ai_player();
     let session = &mut *session;
-    ai_choose_action(&session.state, &session.registry, &mut session.ctx, ai, level).ok()
+    ai_choose_action(
+        &session.state,
+        &session.registry,
+        &mut session.ctx,
+        ai,
+        level,
+    )
+    .ok()
 }
 
 /// TS `updateState`'s inner `catch`: if the engine refuses the action the loop
@@ -433,7 +442,10 @@ fn recover_from_refused_actions(
 ) {
     // Always drain the reader, even when there is nothing to recover — a
     // message left behind would be re-read on a later, unrelated frame.
-    let refused: Vec<GameAction> = failures.read().map(|failure| failure.action.clone()).collect();
+    let refused: Vec<GameAction> = failures
+        .read()
+        .map(|failure| failure.action.clone())
+        .collect();
     if refused.is_empty() || pacing.stalled || session.winner().is_some() {
         return;
     }
@@ -583,7 +595,10 @@ mod tests {
         assert_eq!(
             base_delay(
                 AutoAction::AutoPass,
-                Some(&pending(&crate::selection::captain_key(PlayerId::Player2), false))
+                Some(&pending(
+                    &crate::selection::captain_key(PlayerId::Player2),
+                    false
+                ))
             ),
             SPECIAL_ATTACK_PAUSE
         );
@@ -650,7 +665,14 @@ mod tests {
         let session = &mut *session;
         let human = session.human;
         let level = session.ai_level;
-        ai_choose_action(&session.state, &session.registry, &mut session.ctx, human, level).ok()
+        ai_choose_action(
+            &session.state,
+            &session.registry,
+            &mut session.ctx,
+            human,
+            level,
+        )
+        .ok()
     }
 
     /// What a whole game looked like from the outside.
@@ -766,7 +788,8 @@ mod tests {
     #[test]
     fn a_reveal_message_extends_the_busy_window() {
         let mut app = driver_app(7);
-        app.world_mut().write_message(AnnouncePlay(toast("endTurn")));
+        app.world_mut()
+            .write_message(AnnouncePlay(toast("endTurn")));
         app.update();
         let pacing = app.world().resource::<AiPacing>();
         let now = app.world().resource::<Time>().elapsed();

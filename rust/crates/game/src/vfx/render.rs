@@ -409,12 +409,7 @@ fn spawn_sea_plate(
 
 /// The staggered arrival of the board: a full black-out that lifts, then three
 /// bands (header, terrain, hand) that follow it a beat later.
-fn spawn_entrance(
-    commands: &mut Commands,
-    palette: &Palette,
-    size: Vec2,
-    reduced: &ReducedMotion,
-) {
+fn spawn_entrance(commands: &mut Commands, palette: &Palette, size: Vec2, reduced: &ReducedMotion) {
     let duration = secs(reduced, D_ENTRANCE);
     commands.spawn((
         full_screen(),
@@ -430,7 +425,11 @@ fn spawn_entrance(
 
     let bands = [
         (0.0, l::HEADER_H, 0.0),
-        (l::HEADER_H, (size.y - l::HEADER_H - l::HAND_H).max(0.0), 0.08),
+        (
+            l::HEADER_H,
+            (size.y - l::HEADER_H - l::HAND_H).max(0.0),
+            0.08,
+        ),
         (size.y - l::HAND_H, l::HAND_H, 0.16),
     ];
     for (top, height, delay) in bands {
@@ -528,7 +527,10 @@ fn draw_event(
     match event.kind {
         VfxKind::Attack => {
             let (Some(from), Some(to)) = (
-                event.from_id.as_deref().and_then(|id| center_of(anchors, id)),
+                event
+                    .from_id
+                    .as_deref()
+                    .and_then(|id| center_of(anchors, id)),
                 event.to_id.as_deref().and_then(|id| center_of(anchors, id)),
             ) else {
                 return false;
@@ -597,15 +599,7 @@ fn draw_event(
                 return false;
             };
             spawn_burst(
-                commands,
-                root,
-                symbols,
-                reduced,
-                center,
-                HEAL_COLOR,
-                HEAL_GLYPH,
-                false,
-                D_HEAL,
+                commands, root, symbols, reduced, center, HEAL_COLOR, HEAL_GLYPH, false, D_HEAL,
             );
             if let Some(value) = event.value {
                 spawn_number(
@@ -671,7 +665,11 @@ fn spawn_projectile(
             Tween::secs(
                 duration,
                 TweenState::IDENTITY,
-                TweenState::offset(to - from).with_uniform_scale(if event.zone { 1.8 } else { 0.9 }),
+                TweenState::offset(to - from).with_uniform_scale(if event.zone {
+                    1.8
+                } else {
+                    0.9
+                }),
             )
             .with_ease(EaseFunction::QuadraticIn)
             .despawning(),
@@ -756,7 +754,11 @@ fn spawn_number(
     big: bool,
     duration: f32,
 ) {
-    let size = if big { l::FS_DAMAGE } else { l::FS_DAMAGE * 0.62 };
+    let size = if big {
+        l::FS_DAMAGE
+    } else {
+        l::FS_DAMAGE * 0.62
+    };
     let node = commands
         .spawn((
             box_at(center, Vec2::new(160.0, size * 1.4)),
@@ -1023,7 +1025,11 @@ fn play_cut_ins(
                 secs(&reduced, D_CUT_IN_SLIDE),
                 TweenState::offset(if reduced.allows_screen_motion() {
                     Vec2::new(
-                        if from_left { -size.x * 0.35 } else { size.x * 0.35 },
+                        if from_left {
+                            -size.x * 0.35
+                        } else {
+                            size.x * 0.35
+                        },
                         0.0,
                     )
                 } else {
@@ -1311,9 +1317,7 @@ fn card_size(announcement: Option<&PlayAnnouncement>) -> Vec2 {
         Some(announcement) if announcement.toast || announcement.def_id.is_none() => {
             Vec2::new(320.0, 74.0)
         }
-        Some(announcement) if announcement.big => {
-            Vec2::new(l::FULL_CARD_W, l::FULL_CARD_H + 66.0)
-        }
+        Some(announcement) if announcement.big => Vec2::new(l::FULL_CARD_W, l::FULL_CARD_H + 66.0),
         _ => Vec2::new(170.0, 170.0 * l::CARD_ASPECT + 60.0),
     }
 }
@@ -1386,47 +1390,47 @@ fn spawn_reveal(
             .def_id
             .as_deref()
             .and_then(|def_id| art_for(def_id, false))
-        {
-            let art_w = size.x - 20.0;
-            let frame = commands
-                .spawn((
-                    Node {
-                        width: px(art_w),
-                        height: px(art_w * l::CARD_ASPECT * 0.72),
-                        overflow: Overflow::clip(),
-                        border_radius: BorderRadius::all(px(10.0)),
-                        ..default()
-                    },
-                    BackgroundColor(palette.bg_slot),
-                    Pickable::IGNORE,
-                    ChildOf(card),
-                ))
-                .id();
-            let focus = announcement
-                .def_id
-                .as_deref()
-                .map(card_art_focus)
-                .unwrap_or(Focus::CENTER);
-            let handle = art.image(assets, path);
-            commands.spawn((
-                ImageNode {
-                    image: handle,
-                    image_mode: NodeImageMode::Stretch,
-                    ..default()
-                },
+    {
+        let art_w = size.x - 20.0;
+        let frame = commands
+            .spawn((
                 Node {
-                    position_type: PositionType::Absolute,
-                    left: px(0.0),
-                    top: px(0.0),
-                    width: percent(100.0),
-                    height: percent(100.0),
+                    width: px(art_w),
+                    height: px(art_w * l::CARD_ASPECT * 0.72),
+                    overflow: Overflow::clip(),
+                    border_radius: BorderRadius::all(px(10.0)),
                     ..default()
                 },
-                CoverFit { focus },
+                BackgroundColor(palette.bg_slot),
                 Pickable::IGNORE,
-                ChildOf(frame),
-            ));
-        }
+                ChildOf(card),
+            ))
+            .id();
+        let focus = announcement
+            .def_id
+            .as_deref()
+            .map(card_art_focus)
+            .unwrap_or(Focus::CENTER);
+        let handle = art.image(assets, path);
+        commands.spawn((
+            ImageNode {
+                image: handle,
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0.0),
+                top: px(0.0),
+                width: percent(100.0),
+                height: percent(100.0),
+                ..default()
+            },
+            CoverFit { focus },
+            Pickable::IGNORE,
+            ChildOf(frame),
+        ));
+    }
 
     commands.spawn((
         Text::new(announcement.caption.clone()),
@@ -1551,8 +1555,16 @@ fn hover_state(transform: Option<&UiTransform>) -> TweenState {
     match transform {
         Some(transform) => TweenState {
             offset: Vec2::new(
-                if let Val::Px(value) = transform.translation.x { value } else { 0.0 },
-                if let Val::Px(value) = transform.translation.y { value } else { 0.0 },
+                if let Val::Px(value) = transform.translation.x {
+                    value
+                } else {
+                    0.0
+                },
+                if let Val::Px(value) = transform.translation.y {
+                    value
+                } else {
+                    0.0
+                },
             ),
             scale: transform.scale,
             rotation: 0.0,

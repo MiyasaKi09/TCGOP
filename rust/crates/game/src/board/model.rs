@@ -504,35 +504,32 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
         dimmed: ctx.mode.is_selecting() && !is_target,
     };
 
-    let (name, def_id, atk, def, max_pv, accent) = match session.registry.captain_def(&captain.def_id)
-    {
-        Some(cap) => {
-            
-            
-            
-            let (side_atk, side_def, side_pv) = if captain.flipped {
-                (cap.verso.atk, cap.verso.def, cap.verso.pv)
-            } else {
-                (cap.recto.atk, cap.recto.def, cap.recto.pv)
-            };
-            (
-                cap.name.clone(),
-                cap.id.clone(),
-                side_atk,
-                side_def,
-                side_pv.max(1),
-                art::faction_visual(cap.faction).accent,
-            )
-        }
-        None => (
-            captain.def_id.clone(),
-            captain.def_id.clone(),
-            0,
-            0,
-            1,
-            art::faction_visual(tcgop_engine::types::Faction::Pirate).accent,
-        ),
-    };
+    let (name, def_id, atk, def, max_pv, accent) =
+        match session.registry.captain_def(&captain.def_id) {
+            Some(cap) => {
+                let (side_atk, side_def, side_pv) = if captain.flipped {
+                    (cap.verso.atk, cap.verso.def, cap.verso.pv)
+                } else {
+                    (cap.recto.atk, cap.recto.def, cap.recto.pv)
+                };
+                (
+                    cap.name.clone(),
+                    cap.id.clone(),
+                    side_atk,
+                    side_def,
+                    side_pv.max(1),
+                    art::faction_visual(cap.faction).accent,
+                )
+            }
+            None => (
+                captain.def_id.clone(),
+                captain.def_id.clone(),
+                0,
+                0,
+                1,
+                art::faction_visual(tcgop_engine::types::Faction::Pirate).accent,
+            ),
+        };
 
     let ship = ps
         .active_ship
@@ -599,7 +596,6 @@ mod tests {
     fn session() -> Session {
         make_session(7)
     }
-
 
     /// Play the human side for real — deploy whatever is affordable, end the
     /// turn otherwise, let the AI answer — until a `BaseAttack` is legal.
@@ -937,7 +933,16 @@ mod tests {
             dimmed: false,
         };
         assert_eq!(ring_of(&full, true), Ring::Impact);
-        assert_eq!(ring_of(&CellHighlight { impact: false, ..full }, true), Ring::Target);
+        assert_eq!(
+            ring_of(
+                &CellHighlight {
+                    impact: false,
+                    ..full
+                },
+                true
+            ),
+            Ring::Target
+        );
         assert_eq!(
             ring_of(
                 &CellHighlight {

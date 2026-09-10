@@ -202,10 +202,7 @@ pub fn attack_target_id(pending: &PendingAttack, state: &GameState) -> String {
     if pending.target_is_captain {
         let owner = match crate::selection::captain_key_owner(&pending.attacker_id) {
             Some(player) => Some(player),
-            None => state
-                .cards
-                .get(&pending.attacker_id)
-                .map(|card| card.owner),
+            None => state.cards.get(&pending.attacker_id).map(|card| card.owner),
         };
         // No attacker in the state any more: fall back to the raw target id.
         return match owner {
@@ -282,12 +279,10 @@ fn look_for_target(
     if let Some(pending) = last_pending {
         let target = attack_target_id(pending, state);
         if target == id || !pending.target_is_captain {
-            let element =
-                crate::vfx::element::element_for(pending.element, pending.has_haki);
+            let element = crate::vfx::element::element_for(pending.element, pending.has_haki);
             let impact = pending.attack_traits.contains(&AttackTrait::Impact)
                 || pending.pushback.unwrap_or(false);
-            let big = pending.is_special
-                || crate::selection::is_captain_key(&pending.attacker_id);
+            let big = pending.is_special || crate::selection::is_captain_key(&pending.attacker_id);
             return (element, impact, big);
         }
     }
@@ -316,38 +311,43 @@ pub fn diff(
 
     // --- 1. an attack was just declared → projectile (+ banner) ---
     if let Some(pending) = state.pending_attack.as_ref()
-        && next.pending_sig.is_some() && next.pending_sig != prev.pending_sig {
-            let element = crate::vfx::element::element_for(pending.element, pending.has_haki);
-            let is_captain = crate::selection::is_captain_key(&pending.attacker_id);
-            let big = pending.is_special || is_captain;
-            let (label, sub) = attack_label(state, registry, pending);
-            let (def_id, attacker_name) =
-                attacker_identity(state, registry, &pending.attacker_id);
+        && next.pending_sig.is_some()
+        && next.pending_sig != prev.pending_sig
+    {
+        let element = crate::vfx::element::element_for(pending.element, pending.has_haki);
+        let is_captain = crate::selection::is_captain_key(&pending.attacker_id);
+        let big = pending.is_special || is_captain;
+        let (label, sub) = attack_label(state, registry, pending);
+        let (def_id, attacker_name) = attacker_identity(state, registry, &pending.attacker_id);
 
-            let mut attack = CombatEvent::new(VfxKind::Attack, element);
-            attack.from_id = Some(pending.attacker_id.clone());
-            attack.to_id = Some(attack_target_id(pending, state));
-            attack.is_special = pending.is_special;
-            attack.zone = pending.attack_traits.contains(&AttackTrait::Zone)
-                || pending.attack_traits.contains(&AttackTrait::Total);
-            attack.impact = pending.attack_traits.contains(&AttackTrait::Impact)
-                || pending.pushback.unwrap_or(false);
-            attack.big = big;
-            attack.def_id = def_id;
-            attack.attacker_is_captain = is_captain;
-            attack.attacker_name = attacker_name;
-            attack.attack_name = if pending.is_special { label.clone() } else { None };
-            attack.flash = Some(Flash::Lunge);
-            out.push(attack);
+        let mut attack = CombatEvent::new(VfxKind::Attack, element);
+        attack.from_id = Some(pending.attacker_id.clone());
+        attack.to_id = Some(attack_target_id(pending, state));
+        attack.is_special = pending.is_special;
+        attack.zone = pending.attack_traits.contains(&AttackTrait::Zone)
+            || pending.attack_traits.contains(&AttackTrait::Total);
+        attack.impact = pending.attack_traits.contains(&AttackTrait::Impact)
+            || pending.pushback.unwrap_or(false);
+        attack.big = big;
+        attack.def_id = def_id;
+        attack.attacker_is_captain = is_captain;
+        attack.attacker_name = attacker_name;
+        attack.attack_name = if pending.is_special {
+            label.clone()
+        } else {
+            None
+        };
+        attack.flash = Some(Flash::Lunge);
+        out.push(attack);
 
-            if let Some(label) = label {
-                let mut banner = CombatEvent::new(VfxKind::Banner, element);
-                banner.label = Some(label);
-                banner.sub = sub;
-                banner.big = big;
-                out.push(banner);
-            }
+        if let Some(label) = label {
+            let mut banner = CombatEvent::new(VfxKind::Banner, element);
+            banner.label = Some(label);
+            banner.sub = sub;
+            banner.big = big;
+            out.push(banner);
         }
+    }
 
     // --- 2. PV deltas on the board ---
     let ids: BTreeSet<&String> = prev.pv.keys().chain(next.pv.keys()).collect();
@@ -604,6 +604,9 @@ mod tests {
         assert_eq!(attack.flash, Some(Flash::Lunge));
         assert_eq!(attack.flash_target(), attack.from_id.as_deref());
         // A banner (and a cut-in) only for a named special / captain attack.
-        assert_eq!(attack.wants_cut_in(), attack.big && attack.attacker_name.is_some());
+        assert_eq!(
+            attack.wants_cut_in(),
+            attack.big && attack.attacker_name.is_some()
+        );
     }
 }

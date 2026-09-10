@@ -290,7 +290,11 @@ pub struct GameOverView {
 impl GameOverView {
     /// TS `won ? "VICTOIRE !" : "DÉFAITE…"`.
     pub fn title(&self) -> &'static str {
-        if self.won { "VICTOIRE !" } else { "DÉFAITE…" }
+        if self.won {
+            "VICTOIRE !"
+        } else {
+            "DÉFAITE…"
+        }
     }
 
     /// TS `Tour {state.turnNumber}`.
@@ -385,7 +389,11 @@ mod tests {
         let mut sel = SetupSelection::default();
         sel.pick(PickSide::You, DeckKey::Baroque);
         sel.pick(PickSide::You, DeckKey::Baroque);
-        assert_eq!(sel.you, Some(DeckKey::Baroque), "re-clicking must not clear");
+        assert_eq!(
+            sel.you,
+            Some(DeckKey::Baroque),
+            "re-clicking must not clear"
+        );
         sel.pick(PickSide::Foe, DeckKey::Baroque);
         assert!(sel.is_ready(), "the same crew on both sides is allowed");
     }
@@ -429,10 +437,7 @@ mod tests {
         assert!(!view.won, "nobody has won yet");
         assert_eq!(view.title(), "DÉFAITE…");
         assert_eq!(view.turn_label(), format!("Tour {}", view.turn));
-        assert_eq!(
-            GameOverView { won: true, turn: 9 }.title(),
-            "VICTOIRE !"
-        );
+        assert_eq!(GameOverView { won: true, turn: 9 }.title(), "VICTOIRE !");
         assert_eq!(GameOverView { won: true, turn: 9 }.turn_label(), "Tour 9");
     }
 }

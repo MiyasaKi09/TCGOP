@@ -44,12 +44,12 @@ use crate::bridge::{ActionApplied, BridgeSet, Session, StateChanged};
 
 // The module's public vocabulary, re-exported so the rest of the client names
 // `vfx::CombatEvent` rather than `vfx::detect::CombatEvent`.
-pub use announce::{PlayAnnouncement, Side, build_announcement};
-pub use detect::{CombatEvent, Flash, Shake, Snapshot, VfxKind};
-pub use element::VfxElement;
 /// The only font in `assets/fonts` with symbol coverage — every element glyph
 /// goes through it (see [`element`]).
 pub use crate::hand::SYMBOL_FONT_PATH;
+pub use announce::{PlayAnnouncement, Side, build_announcement};
+pub use detect::{CombatEvent, Flash, Shake, Snapshot, VfxKind};
+pub use element::VfxElement;
 pub use tween::{Tween, TweenState};
 
 // ============================================================
@@ -414,10 +414,7 @@ pub fn reset_vfx_state(
 /// Without this the ~20 reduced-motion call sites would be unreachable in the
 /// shipped binary and the module's accessibility promise would only hold in
 /// tests.
-pub fn toggle_reduced_motion(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut reduced: ResMut<ReducedMotion>,
-) {
+pub fn toggle_reduced_motion(keys: Res<ButtonInput<KeyCode>>, mut reduced: ResMut<ReducedMotion>) {
     if keys.just_pressed(ReducedMotion::TOGGLE_KEY) {
         reduced.enabled = !reduced.enabled;
         info!(
@@ -617,7 +614,12 @@ mod tests {
             "the logic tier works without a window"
         );
         // Nothing was drawn: there is no board on screen to draw onto.
-        assert!(app.world().resource::<render::ActiveReveal>().entity.is_none());
+        assert!(
+            app.world()
+                .resource::<render::ActiveReveal>()
+                .entity
+                .is_none()
+        );
     }
 
     /// Leaving the board stops the diff dead: `Session` outlives the board (the

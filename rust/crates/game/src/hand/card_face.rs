@@ -173,7 +173,11 @@ fn font(handle: &Handle<Font>, px: f32) -> TextFont {
 ///
 /// The frame is a single clipping node; the caller owns its outer transform
 /// (the fan rotation) and any marker components it wants on the root.
-pub fn spawn_card_face(parent: &mut ChildSpawnerCommands, ctx: &FaceCtx, face: &CardFace) -> Entity {
+pub fn spawn_card_face(
+    parent: &mut ChildSpawnerCommands,
+    ctx: &FaceCtx,
+    face: &CardFace,
+) -> Entity {
     let s = face.s();
     let w = face.width;
     let h = face.height();
@@ -612,11 +616,12 @@ fn spawn_action_row(parent: &mut ChildSpawnerCommands, ctx: &FaceCtx, line: &Act
         .element
         .map(|e| (element_label(e).to_string(), element_color(e)))
         .into_iter()
-        .chain(
-            line.attack_traits
-                .iter()
-                .map(|t| (attack_trait_label(*t).to_string(), Color::srgba(1., 1., 1., 0.22))),
-        )
+        .chain(line.attack_traits.iter().map(|t| {
+            (
+                attack_trait_label(*t).to_string(),
+                Color::srgba(1., 1., 1., 0.22),
+            )
+        }))
         .collect();
 
     let oswald = ctx.fonts.oswald.clone();
@@ -651,11 +656,7 @@ fn spawn_action_row(parent: &mut ChildSpawnerCommands, ctx: &FaceCtx, line: &Act
                     ..default()
                 })
                 .with_children(|head| {
-                    head.spawn((
-                        Text::new(icon),
-                        font(&symbols, 11.0 * s),
-                        TextColor(accent),
-                    ));
+                    head.spawn((Text::new(icon), font(&symbols, 11.0 * s), TextColor(accent)));
                     head.spawn((
                         Text::new(name),
                         font(&spectral_bold, 12.5 * s),
@@ -678,11 +679,7 @@ fn spawn_action_row(parent: &mut ChildSpawnerCommands, ctx: &FaceCtx, line: &Act
                     }
                 });
                 if let Some(desc) = description {
-                    left.spawn((
-                        Text::new(desc),
-                        font(&spectral, 9.5 * s),
-                        TextColor(dim),
-                    ));
+                    left.spawn((Text::new(desc), font(&spectral, 9.5 * s), TextColor(dim)));
                 }
             });
 
@@ -769,10 +766,7 @@ pub fn effect_line(def: &CardDef) -> Option<String> {
         CardType::Ship => {
             let mut out = def.ship_passive.clone().unwrap_or_default();
             if let Some(active) = &def.ship_active {
-                out.push_str(&format!(
-                    " — {} ({}V)",
-                    active.name, active.cost
-                ));
+                out.push_str(&format!(" — {} ({}V)", active.name, active.cost));
             }
             let out = out.trim().to_string();
             (!out.is_empty()).then_some(out)
@@ -931,7 +925,15 @@ mod tests {
 
     #[test]
     fn an_objects_effect_line_concatenates_its_bonuses() {
-        let mut def = CardDef::new("X-1", "Sabre", CardType::Object, 1, Faction::Pirate, Rarity::C, "ST01");
+        let mut def = CardDef::new(
+            "X-1",
+            "Sabre",
+            CardType::Object,
+            1,
+            Faction::Pirate,
+            Rarity::C,
+            "ST01",
+        );
         def.bonus_atk = Some(2);
         def.bonus_def = Some(1);
         def.equip_effect = Some("Ignore Bouclier.".into());
@@ -943,7 +945,15 @@ mod tests {
 
     #[test]
     fn a_character_has_no_effect_line() {
-        let def = CardDef::new("X-2", "Zoro", CardType::Character, 3, Faction::Pirate, Rarity::R, "ST01");
+        let def = CardDef::new(
+            "X-2",
+            "Zoro",
+            CardType::Character,
+            3,
+            Faction::Pirate,
+            Rarity::R,
+            "ST01",
+        );
         assert_eq!(effect_line(&def), None);
     }
 

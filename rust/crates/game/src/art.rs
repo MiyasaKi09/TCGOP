@@ -10,8 +10,8 @@
 //! tile with `object-fit: cover` semantics, anchored on [`Focus`] — the same
 //! `background-position` the web client uses, so faces stay in frame.
 
-use std::collections::HashMap;
 use bevy::prelude::*;
+use std::collections::HashMap;
 use tcgop_engine::types::{Faction, Rarity, Trait};
 
 // ============================================================
@@ -279,12 +279,12 @@ pub fn rarity_border(rarity: Rarity) -> Color {
 /// TS `TRAIT_COLOR[trait]` — dot / pill colour on board tokens and details.
 pub fn trait_color(t: Trait) -> Color {
     match t {
-        Trait::Shield => Color::srgb(0.761, 0.573, 0.353),  // #c2925a
-        Trait::Range => Color::srgb(0.878, 0.533, 0.235),   // #e0883c
+        Trait::Shield => Color::srgb(0.761, 0.573, 0.353), // #c2925a
+        Trait::Range => Color::srgb(0.878, 0.533, 0.235),  // #e0883c
         Trait::Stealth => Color::srgb(0.616, 0.647, 0.710), // #9da5b5
-        Trait::Rush => Color::srgb(0.937, 0.376, 0.365),    // #ef605d
-        Trait::Cursed => Color::srgb(0.659, 0.373, 0.816),  // #a85fd0
-        Trait::Logia => Color::srgb(0.498, 0.812, 0.918),   // #7fcfea
+        Trait::Rush => Color::srgb(0.937, 0.376, 0.365),   // #ef605d
+        Trait::Cursed => Color::srgb(0.659, 0.373, 0.816), // #a85fd0
+        Trait::Logia => Color::srgb(0.498, 0.812, 0.918),  // #7fcfea
         Trait::Piercing => Color::srgb(0.910, 0.722, 0.294),
         Trait::Conqueror => Color::srgb(0.910, 0.722, 0.294),
     }
@@ -317,12 +317,21 @@ impl ArtCache {
     }
 
     /// Handle for a card's illustration (`None` when the def has no art).
-    pub fn card(&mut self, assets: &AssetServer, def_id: &str, flipped: bool) -> Option<Handle<Image>> {
+    pub fn card(
+        &mut self,
+        assets: &AssetServer,
+        def_id: &str,
+        flipped: bool,
+    ) -> Option<Handle<Image>> {
         art_for(def_id, flipped).map(|path| self.image(assets, path))
     }
 
     /// Load everything referenced by a list of def ids up front.
-    pub fn prewarm<'a>(&mut self, assets: &AssetServer, def_ids: impl IntoIterator<Item = &'a str>) {
+    pub fn prewarm<'a>(
+        &mut self,
+        assets: &AssetServer,
+        def_ids: impl IntoIterator<Item = &'a str>,
+    ) {
         self.image(assets, SEA_IMAGE);
         self.image(assets, MUGIWARA_DECK_IMAGE);
         self.image(assets, MARINE_DECK_IMAGE);
@@ -349,7 +358,13 @@ mod tests {
     fn every_registered_card_art_path_exists_on_disk() {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/");
         let ids = [
-            "MG-001", "MG-014", "MG-020", "MG-026", "CAP-LUFFY", "MR-010", "CAP-AKAINU",
+            "MG-001",
+            "MG-014",
+            "MG-020",
+            "MG-026",
+            "CAP-LUFFY",
+            "MR-010",
+            "CAP-AKAINU",
         ];
         for id in ids {
             let path = card_art(id).unwrap_or_else(|| panic!("{id} has no art"));
@@ -382,10 +397,7 @@ mod tests {
             faction_visual(Faction::Pirate).ship_deck,
             MUGIWARA_DECK_IMAGE
         );
-        assert_eq!(
-            faction_visual(Faction::Revolutionary).crest,
-            Crest::Hat
-        );
+        assert_eq!(faction_visual(Faction::Revolutionary).crest, Crest::Hat);
         assert_eq!(faction_visual(Faction::Marine).ship_deck, MARINE_DECK_IMAGE);
         assert_eq!(faction_visual(Faction::Independent).crest, Crest::Anchor);
     }

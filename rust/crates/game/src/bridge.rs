@@ -32,7 +32,7 @@ use tcgop_engine::error::EngineError;
 use tcgop_engine::registry::CardRegistry;
 use tcgop_engine::state::{GameState, create_game};
 use tcgop_engine::types::{DeckDef, GameAction, PlayerId};
-use tcgop_engine::{valid_actions_for, apply_with_ctx};
+use tcgop_engine::{apply_with_ctx, valid_actions_for};
 
 // ============================================================
 // Messages ("events")
@@ -390,8 +390,8 @@ pub(crate) mod testkit {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::testkit::session as make_session;
+    use super::*;
 
     fn session() -> Session {
         make_session(42)
@@ -436,7 +436,10 @@ mod tests {
             slot: tcgop_engine::types::Slot::V1,
         };
         assert!(s.dispatch(bogus).is_err());
-        assert_eq!(s.state, before, "a refused action must not mutate the state");
+        assert_eq!(
+            s.state, before,
+            "a refused action must not mutate the state"
+        );
     }
 
     #[test]
