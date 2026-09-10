@@ -227,6 +227,10 @@ export interface CardDef {
         name: string; cost: number; atkBonus: number; description: string; oncePerGame?: boolean;
         attackTraits?: AttackTrait[]; element?: Element; ignoreDef?: number;
         immobilize?: boolean; sleep?: boolean; pushback?: boolean; ignoreShield?: boolean; stripStealth?: boolean;
+        /** §8.38 x §8.48 — "La cible perd N PV permanent" (BW-011 Ground Death). */
+        permanentPvLoss?: number;
+        /** §8.38 x §8.48 — "...et ne peut plus etre soignee" (BW-011 Ground Death). */
+        noHeal?: boolean;
       };
     };
   };
@@ -406,6 +410,11 @@ export interface CaptainInstance {
   usedBaseAction: boolean;
   usedSpecialAttack: boolean;
   usedOnceAbilities: string[];
+  /** Decision §8.28 (follow-up): objects the captain wears — the three
+   *  signature SR Devil Fruits are printed "Équipable sur Luffy / Crocodile /
+   *  Akainu", names that exist in the game only as captains. Absent when the
+   *  captain wears nothing. */
+  attachedObjects?: string[];
 }
 
 export interface PlayerState {
@@ -491,7 +500,7 @@ export interface GameState {
 
 export type GameAction =
   | { type: "deployCharacter"; instanceId: string; slot: Slot }
-  | { type: "equipObject"; objectInstanceId: string; targetInstanceId: string }
+  | { type: "equipObject"; objectInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "deployShip"; instanceId: string }
   | { type: "baseAttack"; attackerInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "specialAttack"; attackerInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }

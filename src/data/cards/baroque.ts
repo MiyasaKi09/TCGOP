@@ -102,7 +102,7 @@ export const baroqueCards: CardDef[] = [
       awakening: {
         porteurLegitime: "Crocodile", minTurns: 5, volCost: 3, atkBonus: 5,
         passiveDescription: "Fin de votre tour : tous les ennemis blessés perdent 1 PV permanent.",
-        specialAttack: { name: "Ground Death", cost: 4, atkBonus: 5, oncePerGame: true, element: "sand", description: "La cible perd 3 PV permanent et ne peut plus être soignée." },
+        specialAttack: { name: "Ground Death", cost: 4, atkBonus: 5, oncePerGame: true, element: "sand", permanentPvLoss: 3, noHeal: true, description: "La cible perd 3 PV permanent et ne peut plus être soignée." },
       },
     },
   },
