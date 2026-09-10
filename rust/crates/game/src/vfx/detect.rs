@@ -215,22 +215,51 @@ pub fn attack_target_id(pending: &PendingAttack, state: &GameState) -> String {
 
 /// TS `attackLabel(state, pa)` — `(attack name, attacker name)`, special
 /// attacks only.
+///
+/// `declared` is the [`GameAction`] that opened this counter window, when the
+/// caller knows it. The engine's `PendingAttack` records *that* an attack is
+/// special but not **which** ability produced it, and since the port three
+/// different ones do: the captain's ★ special (§8.34(a)), its `surcharge`
+/// (§8.34(b)) and an awakened fruit's own special (§8.28 follow-up × §8.48).
+/// Reading `verso.special_attack.name` for all three — which is all the state
+/// allows — shouts the wrong move's name on the banner and the cut-in, so the
+/// action is consulted first and the state stays the fallback.
 pub fn attack_label(
     state: &GameState,
     registry: &CardRegistry,
     pending: &PendingAttack,
+    declared: Option<&tcgop_engine::types::GameAction>,
 ) -> (Option<String>, Option<String>) {
     if !pending.is_special {
         return (None, None);
+    }
+    // An awakened fruit names itself, whoever wears it.
+    if let Some(tcgop_engine::types::GameAction::FruitSpecialAttack {
+        fruit_instance_id, ..
+    }) = declared
+        && let Some(spec) =
+            crate::selection::fruit_awakening_special(state, registry, fruit_instance_id)
+    {
+        return (
+            Some(spec.name.clone()),
+            Some(attacker_display_name(state, registry, &pending.attacker_id)),
+        );
     }
     if let Some(player) = crate::selection::captain_key_owner(&pending.attacker_id) {
         let Some(captain) = registry.captain_def(&state.player(player).captain.def_id) else {
             return (None, None);
         };
-        return (
-            Some(captain.verso.special_attack.name.clone()),
-            Some(captain.name.clone()),
-        );
+        // §8.34(b): the surcharge is the verso's, always.
+        let name = match declared {
+            Some(tcgop_engine::types::GameAction::UseSurcharge { .. }) => captain
+                .verso
+                .surcharge
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| captain.verso.special_attack.name.clone()),
+            _ => captain.verso.special_attack.name.clone(),
+        };
+        return (Some(name), Some(captain.name.clone()));
     }
     let Some(def) = state
         .cards
@@ -245,6 +274,13 @@ pub fn attack_label(
         .map(|special| special.name.clone())
         .unwrap_or_else(|| def.name.clone());
     (Some(name), Some(def.name.clone()))
+}
+
+/// The name to print for an attacker id — a captain's or a card's.
+fn attacker_display_name(state: &GameState, registry: &CardRegistry, attacker_id: &str) -> String {
+    attacker_identity(state, registry, attacker_id)
+        .1
+        .unwrap_or_else(|| attacker_id.to_string())
 }
 
 /// `(def id, display name)` of an attacker, for the cut-in.
@@ -306,6 +342,7 @@ pub fn diff(
     state: &GameState,
     registry: &CardRegistry,
     last_pending: Option<&PendingAttack>,
+    declared: Option<&tcgop_engine::types::GameAction>,
 ) -> Vec<CombatEvent> {
     let mut out = Vec::new();
 
@@ -317,7 +354,7 @@ pub fn diff(
         let element = crate::vfx::element::element_for(pending.element, pending.has_haki);
         let is_captain = crate::selection::is_captain_key(&pending.attacker_id);
         let big = pending.is_special || is_captain;
-        let (label, sub) = attack_label(state, registry, pending);
+        let (label, sub) = attack_label(state, registry, pending, declared);
         let (def_id, attacker_name) = attacker_identity(state, registry, &pending.attacker_id);
 
         let mut attack = CombatEvent::new(VfxKind::Attack, element);
@@ -429,7 +466,7 @@ mod tests {
     use crate::bridge::testkit::{advance, session};
     use tcgop_engine::types::Element;
 
-    fn pending(attacker: &str, target: &str, target_is_captain: bool) -> PendingAttack {
+    pub(super) fn pending(attacker: &str, target: &str, target_is_captain: bool) -> PendingAttack {
         PendingAttack {
             attacker_id: attacker.into(),
             target_id: target.into(),
@@ -469,7 +506,7 @@ mod tests {
     fn no_change_produces_no_event() {
         let session = session(7);
         let snap = snapshot(&session.state);
-        let events = diff(&snap, &snap, &session.state, &session.registry, None);
+        let events = diff(&snap, &snap, &session.state, &session.registry, None, None);
         assert!(events.is_empty(), "an idle frame must be silent");
     }
 
@@ -486,7 +523,14 @@ mod tests {
             "someone must deploy within 80 actions"
         );
         let after = snapshot(&session.state);
-        let events = diff(&before, &after, &session.state, &session.registry, None);
+        let events = diff(
+            &before,
+            &after,
+            &session.state,
+            &session.registry,
+            None,
+            None,
+        );
         let spawn = events
             .iter()
             .find(|e| e.kind == VfxKind::Spawn)
@@ -504,7 +548,14 @@ mod tests {
         let mut after = before.clone();
         after.pv.insert("unit-1".into(), 3);
 
-        let events = diff(&before, &after, &session.state, &session.registry, None);
+        let events = diff(
+            &before,
+            &after,
+            &session.state,
+            &session.registry,
+            None,
+            None,
+        );
         assert_eq!(events.len(), 1);
         let hit = &events[0];
         assert_eq!(hit.kind, VfxKind::Impact);
@@ -522,12 +573,19 @@ mod tests {
         before.board.insert("u".into());
         let mut hit = before.clone();
         hit.pv.insert("u".into(), 8);
-        let events = diff(&before, &hit, &session.state, &session.registry, None);
+        let events = diff(&before, &hit, &session.state, &session.registry, None, None);
         assert_eq!(events[0].shake, Some(Shake::Soft));
 
         let mut heal = before.clone();
         heal.pv.insert("u".into(), 12);
-        let events = diff(&before, &heal, &session.state, &session.registry, None);
+        let events = diff(
+            &before,
+            &heal,
+            &session.state,
+            &session.registry,
+            None,
+            None,
+        );
         assert_eq!(events[0].kind, VfxKind::Heal);
         assert_eq!(events[0].value, Some(2));
         assert_eq!(events[0].shake, None);
@@ -554,6 +612,7 @@ mod tests {
             &session.state,
             &session.registry,
             Some(&pending),
+            None,
         );
         assert_eq!(events[0].element, VfxElement::Fire);
         assert!(events[0].impact, "impact attacks knock the tile back");
@@ -569,7 +628,14 @@ mod tests {
         before.pv.insert("u".into(), 2);
         before.board.insert("u".into());
         let after = Snapshot::default();
-        let events = diff(&before, &after, &session.state, &session.registry, None);
+        let events = diff(
+            &before,
+            &after,
+            &session.state,
+            &session.registry,
+            None,
+            None,
+        );
         assert_eq!(events.len(), 1, "no PV event for a card that vanished");
         assert_eq!(events[0].kind, VfxKind::Ko);
         assert_eq!(events[0].to_id.as_deref(), Some("u"));
@@ -595,7 +661,14 @@ mod tests {
             "an attack must be declared within 400 actions"
         );
         let after = snapshot(&session.state);
-        let events = diff(&before, &after, &session.state, &session.registry, None);
+        let events = diff(
+            &before,
+            &after,
+            &session.state,
+            &session.registry,
+            None,
+            None,
+        );
         let attack = events
             .iter()
             .find(|e| e.kind == VfxKind::Attack)
@@ -608,5 +681,138 @@ mod tests {
             attack.wants_cut_in(),
             attack.big && attack.attacker_name.is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod ability_names {
+    //! The banner and the cut-in have to shout the move that was actually
+    //! played. `PendingAttack` only records *that* an attack is special, and
+    //! since the port three different declarations set that flag (§8.34(a) the
+    //! captain's ★, §8.34(b) its `surcharge`, §8.28 follow-up × §8.48 an
+    //! awakened fruit's own special), so [`attack_label`] is told which.
+
+    use super::*;
+    use std::sync::Arc;
+    use tcgop_engine::state::CardInstance;
+    use tcgop_engine::types::{GameAction, SpecialAttack, Zone};
+
+    use crate::bridge::testkit::session;
+    use crate::selection::captain_key;
+
+    fn special_pending(attacker: &str) -> PendingAttack {
+        let mut pending = super::tests::pending(attacker, "victim", false);
+        pending.is_special = true;
+        pending
+    }
+
+    /// With no action to go on, the captain still gets its ★ special's name —
+    /// the pre-port behaviour, kept as the fallback.
+    #[test]
+    fn a_captain_special_falls_back_to_the_versos_printed_name() {
+        let session = session(3);
+        let human = session.human;
+        let printed = session
+            .registry
+            .captain_def(&session.state.player(human).captain.def_id)
+            .unwrap()
+            .verso
+            .special_attack
+            .name
+            .clone();
+        let (label, sub) = attack_label(
+            &session.state,
+            &session.registry,
+            &special_pending(&captain_key(human)),
+            None,
+        );
+        assert_eq!(label.as_deref(), Some(printed.as_str()));
+        assert!(sub.is_some(), "the cut-in needs the captain's name");
+    }
+
+    /// §8.34(b) — a surcharge resolves through the same path and would
+    /// otherwise be announced under the ★ special's name.
+    #[test]
+    fn a_surcharge_is_announced_under_its_own_name() {
+        let mut session = session(3);
+        let human = session.human;
+        let def_id = session.state.player(human).captain.def_id.clone();
+        let mut registry = (*session.registry).clone();
+        let mut captain = registry.captain_def(&def_id).unwrap().clone();
+        let star = captain.verso.special_attack.name.clone();
+        captain.verso.surcharge = Some(SpecialAttack {
+            name: "Surcharge d'Essai".to_string(),
+            cost: 2,
+            atk_bonus: 3,
+            ..Default::default()
+        });
+        registry.register_captain(captain);
+        session.registry = Arc::new(registry);
+
+        let key = captain_key(human);
+        let (label, _) = attack_label(
+            &session.state,
+            &session.registry,
+            &special_pending(&key),
+            Some(&GameAction::UseSurcharge {
+                target_instance_id: "victim".into(),
+                target_is_captain: None,
+            }),
+        );
+        assert_eq!(label.as_deref(), Some("Surcharge d'Essai"));
+        assert_ne!(label.as_deref(), Some(star.as_str()));
+    }
+
+    /// §8.28 follow-up × §8.48 — the awakened fruit names itself, not the
+    /// bearer's own printed special.
+    #[test]
+    fn an_awakened_fruits_special_is_announced_under_the_fruits_name() {
+        let mut session = session(3);
+        let human = session.human;
+
+        // A bearer with a printed special of its own, wearing an awakened fruit.
+        let robin = session.ctx.generate_instance_id("MG-006");
+        let mut instance = CardInstance::new(robin.clone(), "MG-006".into(), human, 5);
+        instance.zone = Zone::Board;
+        instance.slot = Some(tcgop_engine::types::Slot::V1);
+        instance.deployed_turn = Some(0);
+        let fruit = session.ctx.generate_instance_id("MG-015");
+        instance.attached_objects.push(fruit.clone());
+        session.state.cards.insert(robin.clone(), instance);
+        let mut object = CardInstance::new(fruit.clone(), "MG-015".into(), human, 0);
+        object.zone = Zone::Board;
+        object.is_awakened = Some(true);
+        session.state.cards.insert(fruit.clone(), object);
+
+        let own_special = session
+            .registry
+            .card_def("MG-006")
+            .unwrap()
+            .special_attack
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        let (label, sub) = attack_label(
+            &session.state,
+            &session.registry,
+            &special_pending(&robin),
+            Some(&GameAction::FruitSpecialAttack {
+                attacker_instance_id: robin.clone(),
+                fruit_instance_id: fruit,
+                target_instance_id: "victim".into(),
+                target_is_captain: None,
+            }),
+        );
+        assert_eq!(label.as_deref(), Some("Gigante Fleur"));
+        assert_ne!(label.as_deref(), Some(own_special.as_str()));
+        assert_eq!(sub.as_deref(), Some("Nico Robin"));
+
+        // And it earns a cut-in like every other special.
+        let mut event = CombatEvent::new(VfxKind::Attack, VfxElement::Physical);
+        event.big = true;
+        event.attacker_name = sub;
+        event.attack_name = label;
+        assert!(event.wants_cut_in());
     }
 }

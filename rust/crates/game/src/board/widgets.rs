@@ -171,8 +171,23 @@ impl Painter<'_, '_, '_> {
         )
     }
 
-    /// A rounded gauge: dark trough + coloured fill.
-    pub fn gauge(&mut self, parent: Entity, height: f32, ratio: f32, color: Color) -> Entity {
+    /// A rounded gauge — dark trough, coloured fill — plus the slice of the
+    /// **printed** maximum that is gone for good (`lost`; pass `0.0` for a
+    /// plain gauge): §8.5/§8.36/§8.38/§8.40's "perd N PV permanent (Sable)".
+    ///
+    /// `lost` is that slice as a fraction of the printed maximum. It is drawn
+    /// as a dead strip pinned to the right end of the track, so a unit at full
+    /// PV after a Sand blow reads "full, but shorter than the card prints"
+    /// instead of simply "full" — the one board cue that a later heal can no
+    /// longer climb that high.
+    pub fn gauge_with_cap(
+        &mut self,
+        parent: Entity,
+        height: f32,
+        ratio: f32,
+        color: Color,
+        lost: f32,
+    ) -> Entity {
         let bar = self.child(
             parent,
             (
@@ -200,6 +215,24 @@ impl Painter<'_, '_, '_> {
                 Pickable::IGNORE,
             ),
         );
+        let lost = lost.clamp(0.0, 1.0);
+        if lost > 0.0 {
+            self.child(
+                bar,
+                (
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(0.0),
+                        top: px(0.0),
+                        bottom: px(0.0),
+                        width: percent(lost * 100.0),
+                        ..default()
+                    },
+                    BackgroundColor(self.palette.hp_low.with_alpha(0.30)),
+                    Pickable::IGNORE,
+                ),
+            );
+        }
         bar
     }
 
@@ -438,7 +471,11 @@ impl Painter<'_, '_, '_> {
                 ),
             );
             let h = self.metrics.chrome(l::SLOT_HP_BAR_H);
-            self.gauge(bar_row, h, unit.hp_ratio, color);
+            // The gauge measures the *effective* maximum; the dead strip is the
+            // slice of the printed one the unit lost for good.
+            let printed = (unit.max_pv + unit.pv_max_loss).max(1) as f32;
+            let lost = unit.pv_max_loss as f32 / printed;
+            self.gauge_with_cap(bar_row, h, unit.hp_ratio * (1.0 - lost), color, lost);
         }
     }
 
@@ -500,7 +537,9 @@ impl Painter<'_, '_, '_> {
             ),
         );
         let bar_h = self.metrics.chrome(l::SLOT_HP_BAR_H);
-        self.gauge(row, bar_h, token.hp_ratio, color);
+        let printed = (token.max_pv + token.pv_max_loss).max(1) as f32;
+        let lost = token.pv_max_loss as f32 / printed;
+        self.gauge_with_cap(row, bar_h, token.hp_ratio * (1.0 - lost), color, lost);
     }
 
     // --------------------------------------------------------
@@ -594,7 +633,15 @@ impl Painter<'_, '_, '_> {
             .palette
             .captain_hp_color(captain.is_you, captain.hp_ratio);
         let gauge_h = self.metrics.chrome(7.0);
-        self.gauge(hp_row, gauge_h, captain.hp_ratio, color);
+        let printed = (captain.max_pv + captain.pv_max_loss).max(1) as f32;
+        let lost = captain.pv_max_loss as f32 / printed;
+        self.gauge_with_cap(
+            hp_row,
+            gauge_h,
+            captain.hp_ratio * (1.0 - lost),
+            color,
+            lost,
+        );
         let poppins_bold = self.fonts.poppins_bold.clone();
         let pv_fs = self.metrics.chrome(l::FS_STAT);
         self.child(

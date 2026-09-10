@@ -887,6 +887,36 @@ fn spawn_action_menu(
                     });
                 }
 
+                // §8.36/§8.38/§8.40 — "perd N PV permanent (Sable)" and the
+                // `noHeal` blow. Both change what the PV number *means*, so
+                // they are stated next to it rather than left to the badge row.
+                if view.pv_max_loss > 0 || view.no_heal {
+                    let mut notes: Vec<String> = Vec::new();
+                    if view.pv_max_loss > 0 {
+                        notes.push(format!("PV max \u{2212}{} (permanent)", view.pv_max_loss));
+                    }
+                    if view.no_heal {
+                        notes.push("Soins bloqués".to_string());
+                    }
+                    pop.spawn(line(
+                        notes.join(" \u{00B7} "),
+                        &ctx.fonts.poppins,
+                        L::FS_TINY,
+                        palette.hp_low,
+                    ));
+                }
+
+                // §8.38 — the Taunt shrank this unit's target list to one, and
+                // the board gives no hint of that on its own.
+                if let Some(taunt) = &view.taunt {
+                    pop.spawn(line(
+                        taunt.clone(),
+                        &ctx.fonts.poppins,
+                        L::FS_TINY,
+                        palette.impact,
+                    ));
+                }
+
                 // `.acts` — "Attaquer" (gold) and "Spéciale ★" (red).
                 pop.spawn((row(6.), Pickable::IGNORE))
                     .with_children(|acts| {
@@ -894,6 +924,14 @@ fn spawn_action_menu(
                         if let Some(base) = &view.base {
                             any = true;
                             spawn_popover_action(acts, ctx, base, "Attaquer");
+                        }
+                        // A support character has both: its printed effect
+                        // *and* the attack above (`actions.rs` offers the two
+                        // in the same turn).
+                        if let Some(support) = &view.support {
+                            any = true;
+                            let label = support.name.clone();
+                            spawn_popover_action(acts, ctx, support, &label);
                         }
                         if let Some(special) = &view.special {
                             any = true;
@@ -909,6 +947,25 @@ fn spawn_action_menu(
                         }
                     });
 
+                // The awakened fruit's own special — `fruitSpecialAttack`
+                // (§8.28 follow-up × §8.48). Its name is the button, because a
+                // unit may wear more than one and "Spéciale" would not say which.
+                for fruit in &view.fruit_specials {
+                    let label = fruit.name.clone();
+                    pop.spawn((row(6.), Pickable::IGNORE))
+                        .with_children(|acts| {
+                            spawn_popover_action(acts, ctx, fruit, &label);
+                        });
+                }
+
+                // *Éveiller* (`awakenFruit`) and *Déplacer* (`moveCharacter`).
+                for extra in view.awakenings.iter().chain(view.free_move.as_ref()) {
+                    pop.spawn((row(6.), Pickable::IGNORE))
+                        .with_children(|acts| {
+                            spawn_popover_ability(acts, ctx, extra);
+                        });
+                }
+
                 if !view.equipment.is_empty() {
                     let equipment: Vec<String> = view.equipment.iter().map(|e| e.label()).collect();
                     pop.spawn(line(
@@ -921,6 +978,28 @@ fn spawn_action_menu(
             });
         });
     true
+}
+
+/// One extra `.acts button` — *Éveiller* / *Déplacer*, the rows that carry an
+/// [`model::AbilityButton`] rather than an [`AttackOption`].
+fn spawn_popover_ability(
+    parent: &mut ChildSpawnerCommands,
+    ctx: &PanelCtx,
+    ability: &model::AbilityButton,
+) {
+    let label = match &ability.reason {
+        Some(reason) => format!("{} \u{2014} {reason}", ability.label),
+        None if ability.cost > 0 => {
+            format!("{} \u{2014} {} Volont\u{00E9}", ability.label, ability.cost)
+        }
+        None => ability.label.clone(),
+    };
+    let mut spec = ButtonSpec::new(label, ButtonTone::Ghost, ability.command.clone())
+        .disabled(ability.disabled)
+        .grow();
+    spec.height = 28.0;
+    spec.font_size = L::FS_LABEL;
+    spawn_button(parent, ctx, spec);
 }
 
 /// One `.acts button`: the mock-up's two gradient calls to action.
@@ -1159,6 +1238,17 @@ fn spawn_captain_menu(
                 );
             }
 
+            // §8.28 follow-up — the captain wears the fruit printed for it.
+            if !view.equipment.is_empty() {
+                let equipment: Vec<String> = view.equipment.iter().map(|e| e.label()).collect();
+                panel.spawn(line(
+                    format!("{ANCHOR} {}", equipment.join(" \u{00B7} ")),
+                    &ctx.fonts.oswald,
+                    L::FS_TINY + 1.0,
+                    palette.amber.with_alpha(0.9),
+                ));
+            }
+
             // --- what engaging unlocks ---
             if let Some(preview) = &view.verso_preview {
                 panel
@@ -1191,11 +1281,25 @@ fn spawn_captain_menu(
                 .with_children(|actions| {
                     if view.is_you {
                         if view.can_flip {
+                            // §8.6 / §8.33: the flip is free while one of the
+                            // five printed clauses holds, and costs
+                            // `flipCondition.cost ?? 0` otherwise. The player
+                            // has to be able to see which, or a "free" flip
+                            // looks like the engine losing Volonté.
+                            let label = match (view.free_flip_reason, view.flip_cost) {
+                                (Some(reason), _) => {
+                                    format!("Engager le Capitaine \u{2014} {reason}")
+                                }
+                                (None, 0) => "Engager le Capitaine \u{2014} gratuit".to_string(),
+                                (None, cost) => {
+                                    format!("Engager le Capitaine \u{2014} {cost} Volont\u{00E9}")
+                                }
+                            };
                             spawn_button(
                                 actions,
                                 ctx,
                                 ButtonSpec::new(
-                                    "Engager le Capitaine",
+                                    label,
                                     ButtonTone::Danger,
                                     view.flip_command.clone(),
                                 )
@@ -1244,6 +1348,64 @@ fn spawn_captain_menu(
                                 )
                                 .glyph(STAR)
                                 .disabled(!view.can_special_attack),
+                            );
+                        }
+                        // §8.34(b) — `useSurcharge`. Only ever drawn when the
+                        // active face prints a `surcharge`, so it is absent on
+                        // the whole shipped catalogue and appears the day data
+                        // defines one.
+                        if let Some(surcharge) = &view.surcharge {
+                            let label = match (&surcharge.reason, surcharge.cost) {
+                                (Some(reason), _) => {
+                                    format!("{} \u{2014} {reason}", surcharge.label)
+                                }
+                                (None, cost) => {
+                                    format!("{} \u{2014} {cost} Volont\u{00E9}", surcharge.label)
+                                }
+                            };
+                            spawn_button(
+                                actions,
+                                ctx,
+                                ButtonSpec::new(label, ButtonTone::Gold, surcharge.command.clone())
+                                    .glyph(BOLT)
+                                    .disabled(surcharge.disabled),
+                            );
+                        }
+                        // §8.28 follow-up × §8.48 — the fruit the captain wears.
+                        for fruit in &view.fruit_specials {
+                            let label = match (&fruit.reason, fruit.cost) {
+                                (Some(reason), _) => format!("{} \u{2014} {reason}", fruit.name),
+                                (None, cost) => {
+                                    format!("{} \u{2014} {cost} Volont\u{00E9}", fruit.name)
+                                }
+                            };
+                            spawn_button(
+                                actions,
+                                ctx,
+                                ButtonSpec::new(label, ButtonTone::Danger, fruit.command.clone())
+                                    .glyph(STAR)
+                                    .disabled(fruit.disabled),
+                            );
+                        }
+                        for awakening in &view.awakenings {
+                            let label = match (&awakening.reason, awakening.cost) {
+                                (Some(reason), _) => {
+                                    format!("{} \u{2014} {reason}", awakening.label)
+                                }
+                                (None, cost) => {
+                                    format!("{} \u{2014} {cost} Volont\u{00E9}", awakening.label)
+                                }
+                            };
+                            spawn_button(
+                                actions,
+                                ctx,
+                                ButtonSpec::new(
+                                    label,
+                                    ButtonTone::Ghost,
+                                    awakening.command.clone(),
+                                )
+                                .glyph(SPARKLE)
+                                .disabled(awakening.disabled),
                             );
                         }
                         if view.can_king_haki {
@@ -1332,6 +1494,15 @@ fn spawn_ability_row(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, ability:
                     palette.text_dim,
                 ));
             });
+            // §8.34(c) — a recto attack / surcharge is printed but unplayable.
+            if let Some(reason) = ability.reason {
+                node.spawn(line(
+                    reason,
+                    &ctx.fonts.oswald,
+                    L::FS_TINY + 1.0,
+                    palette.hp_low,
+                ));
+            }
             if let Some(description) = &ability.description {
                 node.spawn(body(
                     description.clone(),
@@ -2030,6 +2201,7 @@ fn spawn_counter_window(
 mod tests {
     use super::*;
     use crate::bridge::testkit::{advance, session as make_session};
+    use crate::selection::AttackKind;
     use model::{ActionMenuView, CounterView};
 
     #[test]
@@ -2040,7 +2212,7 @@ mod tests {
             active_panels(
                 &UiMode::SelectingTarget {
                     attacker_id: "a".into(),
-                    is_special: false
+                    kind: AttackKind::Base
                 },
                 false
             )

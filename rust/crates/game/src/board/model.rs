@@ -87,6 +87,8 @@ pub fn acting_id(mode: &UiMode) -> Option<&str> {
         UiMode::SelectingTarget { attacker_id, .. } => Some(attacker_id),
         UiMode::SelectingSupportTarget { instance_id } => Some(instance_id),
         UiMode::ActionMenu { instance_id } => Some(instance_id),
+        // §8.29 — the unit waiting for a case to step into is the one acting.
+        UiMode::SelectingMoveSlot { instance_id } => Some(instance_id),
         _ => None,
     }
 }
@@ -116,7 +118,14 @@ pub struct UnitView {
     pub art: Option<&'static str>,
     pub focus: Focus,
     pub pv: i32,
+    /// The **effective** maximum: the printed `def.pv` minus the permanent
+    /// max-PV loss the unit has taken (§8.5/§8.36/§8.38 — "perd N PV
+    /// permanent (Sable)"). Reading the printed PV instead would draw a
+    /// full-looking gauge on a unit that can never be healed that high again.
     pub max_pv: i32,
+    /// How much of the printed maximum is gone for good (`0` normally). The
+    /// tile paints that slice of the gauge as dead space.
+    pub pv_max_loss: i32,
     /// `current_pv < max_pv` — the only case where the thin HP bar shows.
     pub damaged: bool,
     pub hp_ratio: f32,
@@ -137,7 +146,10 @@ pub struct CaptainTokenView {
     pub art: Option<&'static str>,
     pub focus: Focus,
     pub pv: i32,
+    /// `verso.pv` minus [`CaptainTokenView::pv_max_loss`] (§8.40 gave the
+    /// captain a `pv_max_loss` of its own).
     pub max_pv: i32,
+    pub pv_max_loss: i32,
     pub hp_ratio: f32,
 }
 
@@ -195,7 +207,9 @@ pub struct CaptainCardView {
     pub atk: i32,
     pub def: i32,
     pub pv: i32,
+    /// The face's printed PV minus the captain's permanent loss (§8.40).
     pub max_pv: i32,
+    pub pv_max_loss: i32,
     pub hp_ratio: f32,
     pub tapped: bool,
     pub flipped: bool,
@@ -220,6 +234,14 @@ pub struct ResourceView {
     pub pips: usize,
     pub hand: usize,
     pub deck: usize,
+    /// §8.37 (`MR-027` Embargo) — turns left on the ban that makes `deployShip`
+    /// and `equipObject` illegal for this player, `0` when there is none.
+    ///
+    /// The enumerator simply drops both action groups while it is up, so
+    /// without this the affected hand cards lose their green pip exactly as an
+    /// unaffordable card does. The command bar draws the count so a timed ban
+    /// reads as a timed ban.
+    pub embargo_turns: i32,
 }
 
 /// Captain + ship + resources.
@@ -359,7 +381,15 @@ impl Ctx<'_> {
 fn header_view(session: &Session, mode: &UiMode) -> HeaderView {
     HeaderView {
         turn: session.state.turn_number,
-        status: status_hint(mode, session.is_ai_turn(), session.in_counter_window()),
+        status: status_hint(
+            mode,
+            session.is_ai_turn(),
+            session.in_counter_window(),
+            // §8.38 — a support special is aimed like an attack but deals no
+            // damage, so the pill has to say "Cible du pouvoir", not
+            // "Choisissez une cible".
+            selection::aim_is_support(mode, &session.state, &session.registry),
+        ),
         can_end_turn: !session.is_ai_turn() && !session.in_counter_window(),
         can_cancel: !mode.is_idle(),
     }
@@ -406,7 +436,8 @@ fn cell_view(ctx: &Ctx, player: PlayerId, is_you: bool, slot: Slot) -> CellView 
             .registry
             .captain_def(&ps.captain.def_id)
             .map(|def| {
-                let max_pv = def.verso.pv.max(1);
+                let pv_max_loss = ps.captain.pv_max_loss.unwrap_or(0).max(0);
+                let max_pv = (def.verso.pv - pv_max_loss).max(1);
                 CellContent::Captain(CaptainTokenView {
                     player,
                     is_you,
@@ -416,6 +447,7 @@ fn cell_view(ctx: &Ctx, player: PlayerId, is_you: bool, slot: Slot) -> CellView 
                     focus: tile_focus(&def.id),
                     pv: ps.captain.current_pv,
                     max_pv,
+                    pv_max_loss,
                     hp_ratio: ratio(ps.captain.current_pv, max_pv),
                 })
             })
@@ -435,7 +467,8 @@ fn cell_view(ctx: &Ctx, player: PlayerId, is_you: bool, slot: Slot) -> CellView 
         .and_then(|id| state.card(id))
         .and_then(|instance| {
             let def = session.registry.card_def(&instance.def_id)?;
-            let max_pv = def.pv.unwrap_or(1).max(1);
+            let pv_max_loss = instance.pv_max_loss.unwrap_or(0).max(0);
+            let max_pv = instance.max_pv(def.pv).unwrap_or(1).max(1);
             Some(CellContent::Unit(UnitView {
                 instance_id: instance.instance_id.clone(),
                 def_id: instance.def_id.clone(),
@@ -445,7 +478,10 @@ fn cell_view(ctx: &Ctx, player: PlayerId, is_you: bool, slot: Slot) -> CellView 
                 focus: tile_focus(&instance.def_id),
                 pv: instance.current_pv,
                 max_pv,
-                damaged: instance.current_pv < max_pv,
+                pv_max_loss,
+                // A permanent loss is worth showing even at full PV: the
+                // gauge is shorter than the card prints.
+                damaged: instance.current_pv < max_pv || pv_max_loss > 0,
                 hp_ratio: ratio(instance.current_pv, max_pv),
                 tapped: instance.tapped,
                 equipment: instance.attached_objects.len(),
@@ -485,8 +521,11 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
         captain.slot.unwrap_or(Slot::V1),
         // Decision §8.28 (follow-up): the captain can be an *equip* target now,
         // and `cell_highlight` only lights one on the player's own side. The
-        // attack and impact branches are the other side's and are unaffected —
-        // your own captain key is never in `attack_targets`.
+        // attack branch no longer tests the side (an ally-facing support
+        // special aims your own half, §8.38), but no declaration in the engine
+        // ever offers your **own** captain as a target — `resolve_support_special`,
+        // the only ally-facing writer, targets a card instance — so the
+        // command card is still lit only when the enemy captain is aimed.
         is_you,
         Some(&key),
         &BTreeSet::new(),
@@ -510,6 +549,10 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
         dimmed: ctx.mode.is_selecting() && !is_target && !highlight.equip_target,
     };
 
+    // §8.40 — the captain has a permanent max-PV loss of its own (a Sand blow,
+    // Desert Girasol, the `sand` entry effect), so the command card's gauge is
+    // measured against the reduced maximum like every other body's.
+    let pv_max_loss = captain.pv_max_loss.unwrap_or(0).max(0);
     let (name, def_id, atk, def, max_pv, accent) =
         match session.registry.captain_def(&captain.def_id) {
             Some(cap) => {
@@ -523,7 +566,7 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
                     cap.id.clone(),
                     side_atk,
                     side_def,
-                    side_pv.max(1),
+                    (side_pv - pv_max_loss).max(1),
                     art::faction_visual(cap.faction).accent,
                 )
             }
@@ -563,6 +606,7 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
             def,
             pv: captain.current_pv,
             max_pv,
+            pv_max_loss,
             hp_ratio: ratio(captain.current_pv, max_pv),
             tapped: captain.tapped,
             flipped: captain.flipped,
@@ -576,6 +620,7 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
             pips: (ps.volonte.max(0) as usize).min(crate::app::layout::WILL_PIPS),
             hand: ps.hand.len(),
             deck: ps.deck.len(),
+            embargo_turns: ps.embargo_turns.unwrap_or(0).max(0),
         },
     }
 }
@@ -596,7 +641,7 @@ mod tests {
     use super::*;
     use crate::bridge::AutoAction;
     use crate::bridge::testkit::{advance, session as make_session};
-    use crate::selection::StatusTone;
+    use crate::selection::{AttackKind, StatusTone};
     use tcgop_engine::types::Zone;
 
     fn session() -> Session {
@@ -841,7 +886,7 @@ mod tests {
 
         let mode = UiMode::SelectingTarget {
             attacker_id: attacker.clone(),
-            is_special: false,
+            kind: AttackKind::Base,
         };
         let view = board_view(&s, &mode);
 

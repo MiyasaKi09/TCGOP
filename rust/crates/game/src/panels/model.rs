@@ -16,11 +16,23 @@
 //! | `EventConfirm.tsx` (+ `FullCard.describeEvent`) | [`confirm_view`] |
 //! | `Game.tsx::renderCounterWindow` | [`counter_view`] |
 //!
+//! Four rows have no TSX counterpart — they are the engine's post-port
+//! actions, each carrying its cost and its French disabled reason like every
+//! other gated control here: the captain's `surcharge`
+//! ([`CaptainMenuView::surcharge`], §8.34(b)), an awakened fruit's own special
+//! ([`ActionMenuView::fruit_specials`], §8.28 follow-up × §8.48), *Éveiller*
+//! ([`ActionMenuView::awakenings`], §8.47) and the free move
+//! ([`ActionMenuView::free_move`], §8.29). A fifth split an existing row in
+//! two: a support character's effect and its attack are both legal in the same
+//! turn, so [`ActionMenuView::base`] and [`ActionMenuView::support`] are
+//! separate buttons (§8.38).
+//!
 //! Every button carries the [`UiCommand`] it produces, so the renderer only has
 //! to hand it to
 //! [`apply_ui_command`](crate::board::interaction::apply_ui_command).
 
 use tcgop_engine::board::{get_effective_atk, get_effective_def, has_summoning_sickness};
+use tcgop_engine::captain::FreeFlipReason;
 use tcgop_engine::registry::CardRegistry;
 use tcgop_engine::state::GameState;
 use tcgop_engine::types::{
@@ -30,7 +42,10 @@ use tcgop_engine::types::{
 };
 
 use crate::hand::card_face::{describe_counter, describe_event};
-use crate::selection::{UiCommand, UiMode, captain_key, support_needs_target};
+use crate::selection::{
+    AttackKind, UiCommand, UiMode, awakenable_fruits, captain_key, fruit_awakening_special,
+    fruit_special_ids, move_slots, support_needs_target,
+};
 
 // ============================================================
 // Shared little models
@@ -177,9 +192,38 @@ pub struct ActionMenuView {
     pub def: i32,
     /// TS's four state pills, in the same order.
     pub flags: Vec<&'static str>,
+    /// The printed base **attack** (`baseAttack`). A support character keeps
+    /// this row whenever the engine offers it the attack too — the two are not
+    /// exclusive (`actions.rs`: "even support chars … do their effect *and*
+    /// attack").
     pub base: Option<AttackOption>,
+    /// The printed base **support** action (`baseSupportAction`), when the def
+    /// carries `isSupport`.
+    pub support: Option<AttackOption>,
     pub special: Option<AttackOption>,
+    /// One row per awakened Devil Fruit this unit wears whose
+    /// `fruitEffects.awakening.specialAttack` it may declare — the
+    /// `fruitSpecialAttack` action (§8.28 follow-up × §8.48). Without it the
+    /// awakening is a dead end: the fruit flips its art and nothing can spend
+    /// it.
+    pub fruit_specials: Vec<AttackOption>,
+    /// *Éveiller* — one per Devil Fruit the engine is offering
+    /// [`GameAction::AwakenFruit`] for, plus the fruits it refuses with the
+    /// reason why.
+    pub awakenings: Vec<AbilityButton>,
+    /// *Déplacer* — the once-per-turn free repositioning (§8.29). `None` when
+    /// the unit carries no move at all (never deployed, off the board).
+    pub free_move: Option<AbilityButton>,
     pub equipment: Vec<EquipmentLine>,
+    /// The permanent maximum-PV loss this unit has taken (§8.36/§8.38/§8.40
+    /// "perd N PV permanent (Sable)"), `0` when it has taken none. The menu
+    /// prints it because a heal can never climb back over it.
+    pub pv_max_loss: i32,
+    /// The unit carries a `noHeal` status — its PV cannot go back up at all.
+    pub no_heal: bool,
+    /// §8.38 — "Provoqué : doit cibler {taunter}" while a Taunt binds this
+    /// unit; `None` otherwise.
+    pub taunt: Option<String>,
     /// *Détails* → `cardDetail`.
     pub detail_command: UiCommand,
 }
@@ -199,11 +243,30 @@ fn support_command(valid: &[GameAction], instance_id: &str) -> UiCommand {
     }
 }
 
-fn aim(instance_id: &str, is_special: bool) -> UiCommand {
+fn aim(attacker_id: &str, kind: AttackKind) -> UiCommand {
     UiCommand::SetMode(UiMode::SelectingTarget {
-        attacker_id: instance_id.to_string(),
-        is_special,
+        attacker_id: attacker_id.to_string(),
+        kind,
     })
+}
+
+/// One extra ability button of a menu — the rows that are not the base action
+/// and not the printed special: the free move (§8.29), *Éveiller* (`awakenFruit`),
+/// an awakened fruit's special (§8.28 follow-up × §8.48) and the captain's
+/// surcharge (§8.34(b)).
+///
+/// It carries the same three things every gated control in this client carries:
+/// what it costs, whether the engine is offering it, and — when it is not —
+/// the French reason it is greyed out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbilityButton {
+    /// What the button says, without the cost suffix the renderer appends.
+    pub label: String,
+    /// Volonté the action spends (`0` when it is free).
+    pub cost: i32,
+    pub disabled: bool,
+    pub reason: Option<String>,
+    pub command: UiCommand,
 }
 
 /// TS `ActionMenu` — the unit's stats, its two rules rows with their disabled
@@ -244,23 +307,43 @@ pub fn action_menu_view(
     let base_def = def.base_action.as_ref();
     let is_support = base_def.and_then(|b| b.is_support).unwrap_or(false);
 
-    // TS `baseReason`, same order.
-    let base_reason: Option<String> = if frozen {
-        Some("Gelé !".into())
-    } else if immobilised {
-        Some("Immobilisé !".into())
-    } else if sickness {
-        Some("Mal de terre".into())
-    } else if tapped {
-        Some("Incliné".into())
-    } else if instance.used_base_action {
-        Some("Déjà utilisé ce tour".into())
-    } else if atk <= 0 && !is_support {
-        Some("ATK 0".into())
-    } else if !can_base_attack && !can_support {
-        Some("Pas de cible".into())
-    } else {
+    // TS `baseReason`, same clauses in the same order — but split in two, one
+    // per row, because the two base actions are gated independently: a support
+    // unit whose effect is live may still have nothing in range to hit, and a
+    // row that is dead must say which of the two reasons killed it.
+    // §8.38 — a Taunt binds its bearer to its source: while the taunter is a
+    // legal target it is the *only* one, and `combat::enforce_taunt` refuses
+    // every other declaration. It is never a *reason a row is dead* (a taunter
+    // that dies, goes Furtif or drifts out of range releases the attacker, so
+    // "bound" and "no target" cannot both hold); it is a live row whose target
+    // list has silently shrunk to one, which is exactly the kind of thing a
+    // player reads as a bug unless the menu names the unit it has to hit.
+    let taunt: Option<String> = instance.status(StatusEffectType::Taunt).map(|effect| {
+        let taunter = state
+            .card(&effect.source)
+            .and_then(|c| registry.card_def(&c.def_id))
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| effect.source.clone());
+        format!("Provoqué : doit cibler {taunter}")
+    });
+    let blocked: Option<String> = first_reason(&[
+        (frozen, "Gelé !"),
+        (immobilised, "Immobilisé !"),
+        (sickness, "Mal de terre"),
+        (tapped, "Incliné"),
+        (instance.used_base_action, "Déjà utilisé ce tour"),
+    ]);
+    let attack_reason: Option<String> = if can_base_attack {
         None
+    } else {
+        blocked
+            .clone()
+            .or_else(|| Some(if atk <= 0 { "ATK 0" } else { "Pas de cible" }.to_string()))
+    };
+    let support_reason: Option<String> = if can_support {
+        None
+    } else {
+        blocked.clone().or_else(|| Some("Pas de cible".to_string()))
     };
 
     let special_def = def.special_attack.as_ref();
@@ -286,8 +369,40 @@ pub fn action_menu_view(
         None
     };
 
-    let base = base_def.map(|b| {
-        let heals = is_support && b.heal_amount.is_some();
+    // The base row is the **attack**, and a support unit gets a second row of
+    // its own.
+    //
+    // The TS fused the two into one button because `baseAttack` and
+    // `baseSupportAction` looked mutually exclusive there. They are not: the
+    // Rust enumerator offers `baseAttack` to "ALL characters with ATK > 0
+    // (even support chars like Chopper ATK 1 — they do their effect *and*
+    // attack)" while the support loop offers `baseSupportAction` in the same
+    // breath, so a support character with ATK could only ever reach one of the
+    // two legal actions through a single button — the support one, since it
+    // won the `if`. Splitting the row is the only way the menu can offer both.
+    let base = base_def
+        // A pure support card with no ATK at all has no attack to show; the
+        // engine never offers it one (`get_effective_atk > 0`).
+        .filter(|_| !is_support || atk > 0)
+        .map(|b| AttackOption {
+            name: if is_support {
+                "Attaque".to_string()
+            } else {
+                b.name.clone()
+            },
+            description: (!is_support).then(|| b.description.clone()).flatten(),
+            element: b.element,
+            attack_traits: b.attack_traits.clone().unwrap_or_default(),
+            cost: 0,
+            atk: Some(atk),
+            is_special: false,
+            disabled: !can_base_attack,
+            reason: attack_reason,
+            command: aim(instance_id, AttackKind::Base),
+        });
+
+    let support = base_def.filter(|_| is_support).map(|b| {
+        let heals = b.heal_amount.is_some();
         AttackOption {
             name: b.name.clone(),
             description: b.description.clone(),
@@ -296,12 +411,12 @@ pub fn action_menu_view(
             cost: 0,
             atk: (!heals).then_some(atk),
             is_special: false,
-            disabled: !(can_base_attack || can_support),
-            reason: base_reason,
-            command: if is_support && can_support {
+            disabled: !can_support,
+            reason: support_reason,
+            command: if can_support {
                 support_command(valid, instance_id)
             } else {
-                aim(instance_id, false)
+                UiCommand::Ignore
             },
         }
     });
@@ -318,7 +433,7 @@ pub fn action_menu_view(
             is_special: true,
             disabled: !can_special_attack,
             reason: special_reason,
-            command: aim(instance_id, true),
+            command: aim(instance_id, AttackKind::Special),
         }
     });
 
@@ -335,6 +450,65 @@ pub fn action_menu_view(
     if immobilised {
         flags.push("Immobilisé");
     }
+    if instance.has_status(StatusEffectType::NoHeal) {
+        flags.push("Soins bloqués");
+    }
+    if instance.has_status(StatusEffectType::Taunt) {
+        flags.push("Provoqué");
+    }
+    // §8.42 — natural Haki in **either** printed form (the `naturalHaki` array
+    // or a `PassiveEffect::NaturalHaki`) is what lets this unit's blows land on
+    // a Logia. The engine reads both; the menu says so, since nothing else on
+    // screen explains why one attacker goes through an intangible target and
+    // its neighbour does not.
+    if tcgop_engine::haki::def_has_natural_haki(def) {
+        flags.push("Haki naturel");
+    }
+
+    // --- the awakened fruits this unit may fire (§8.28 follow-up × §8.48) ---
+    let fruit_specials = fruit_special_rows(
+        state,
+        registry,
+        valid,
+        instance_id,
+        &instance.attached_objects,
+        atk,
+        volonte,
+        // The engine gates a character's fruit special on the same three
+        // "cannot act" flags as its own special, plus summoning sickness.
+        first_reason(&[
+            (frozen, "Gelé !"),
+            (immobilised, "Immobilisé !"),
+            (sickness, "Mal de terre"),
+        ]),
+    );
+
+    // --- *Éveiller* (§8.47/§8.48: awakening is what unlocks the above) ---
+    let awakenings = awakening_rows(state, registry, valid, &instance.attached_objects, volonte);
+
+    // --- the free move (§8.29) ---
+    let move_targets = move_slots(valid, instance_id);
+    let free_move = def.pv.map(|_| {
+        let reason = first_reason(&[
+            (frozen, "Gelé !"),
+            (immobilised, "Immobilisé !"),
+            (tapped, "Incliné"),
+            (
+                state.player(instance.controller()).used_free_move,
+                "Déplacement déjà utilisé",
+            ),
+            (move_targets.is_empty(), "Aucune case adjacente"),
+        ]);
+        AbilityButton {
+            label: "Déplacer".to_string(),
+            cost: 0,
+            disabled: move_targets.is_empty(),
+            reason,
+            command: UiCommand::SetMode(UiMode::SelectingMoveSlot {
+                instance_id: instance_id.to_string(),
+            }),
+        }
+    });
 
     Some(ActionMenuView {
         instance_id: instance_id.to_string(),
@@ -345,13 +519,151 @@ pub fn action_menu_view(
         def: def_value,
         flags,
         base,
+        support,
         special,
+        fruit_specials,
+        awakenings,
+        free_move,
         equipment: equipment_lines(state, registry, &instance.attached_objects),
+        pv_max_loss: instance.pv_max_loss.unwrap_or(0).max(0),
+        no_heal: instance.has_status(StatusEffectType::NoHeal),
+        taunt,
         detail_command: UiCommand::SetMode(UiMode::CardDetail {
             def_id: instance.def_id.clone(),
             instance_id: Some(instance_id.to_string()),
         }),
     })
+}
+
+/// The first clause that holds, in declaration order — the shape every
+/// `…Reason` block in `ActionMenu.tsx` / `CaptainMenu.tsx` has.
+fn first_reason(clauses: &[(bool, &'static str)]) -> Option<String> {
+    clauses
+        .iter()
+        .find(|(holds, _)| *holds)
+        .map(|(_, text)| (*text).to_string())
+}
+
+/// One [`AttackOption`] per awakened Devil Fruit in `attached` whose special
+/// `attacker_id` could fire — the `fruitSpecialAttack` rows of a unit menu or
+/// of the captain menu.
+///
+/// `blocked` is the bearer-level reason (frozen / tapped / …) that outranks the
+/// per-fruit ones, exactly like `specReason` outranks the cost check.
+#[allow(clippy::too_many_arguments)]
+fn fruit_special_rows(
+    state: &GameState,
+    registry: &CardRegistry,
+    valid: &[GameAction],
+    attacker_id: &str,
+    attached: &[String],
+    atk: i32,
+    volonte: i32,
+    blocked: Option<String>,
+) -> Vec<AttackOption> {
+    let offered = fruit_special_ids(valid, attacker_id);
+    let mut rows = Vec::new();
+    for fruit_id in attached {
+        let Some(fruit) = state.card(fruit_id) else {
+            continue;
+        };
+        // A fruit that is not awakened yet has no special to show: the menu
+        // offers *Éveiller* for it instead.
+        if !fruit.is_awakened.unwrap_or(false) {
+            continue;
+        }
+        let Some(spec) = fruit_awakening_special(state, registry, fruit_id) else {
+            continue;
+        };
+        let can = offered.contains(fruit_id);
+        let bearer_used_once = state
+            .card(attacker_id)
+            .map(|c| c.used_once(&spec.name))
+            .unwrap_or_else(|| {
+                crate::selection::captain_key_owner(attacker_id)
+                    .is_some_and(|p| state.player(p).captain.used_once(&spec.name))
+            });
+        let reason = if can {
+            None
+        } else if blocked.is_some() {
+            blocked.clone()
+        } else {
+            first_reason(&[
+                (
+                    spec.once_per_game.unwrap_or(false) && bearer_used_once,
+                    "Déjà utilisé (1x/partie)",
+                ),
+                (volonte < spec.cost, "Volonté insuffisante"),
+            ])
+            .or_else(|| Some("Pas de cible".to_string()))
+        };
+        rows.push(AttackOption {
+            name: spec.name.clone(),
+            description: Some(spec.description.clone()),
+            element: spec.element,
+            attack_traits: spec.attack_traits.clone().unwrap_or_default(),
+            cost: spec.cost,
+            atk: Some(atk + spec.atk_bonus),
+            is_special: true,
+            disabled: !can,
+            reason,
+            command: aim(
+                attacker_id,
+                AttackKind::Fruit {
+                    fruit_instance_id: fruit_id.clone(),
+                },
+            ),
+        });
+    }
+    rows
+}
+
+/// One *Éveiller* button per Devil Fruit in `attached` that is not awakened
+/// yet — offered when the engine lists [`GameAction::AwakenFruit`] for it,
+/// greyed out with a reason otherwise.
+fn awakening_rows(
+    state: &GameState,
+    registry: &CardRegistry,
+    valid: &[GameAction],
+    attached: &[String],
+    volonte: i32,
+) -> Vec<AbilityButton> {
+    let offered = awakenable_fruits(valid, attached);
+    let mut rows = Vec::new();
+    for fruit_id in attached {
+        let Some(fruit) = state.card(fruit_id) else {
+            continue;
+        };
+        if fruit.is_awakened.unwrap_or(false) {
+            continue;
+        }
+        let Some(def) = registry.card_def(&fruit.def_id) else {
+            continue;
+        };
+        if def.subtype != Some(ObjectSubtype::Fruit) {
+            continue;
+        }
+        let cost = def
+            .fruit_effects
+            .as_ref()
+            .and_then(|fx| fx.awakening.as_ref())
+            .map(|aw| aw.vol_cost)
+            .unwrap_or(0);
+        let can = offered.contains(fruit_id);
+        rows.push(AbilityButton {
+            label: format!("Éveiller {}", def.name),
+            cost,
+            disabled: !can,
+            reason: (!can).then(|| {
+                first_reason(&[(volonte < cost, "Volonté insuffisante")])
+                    .unwrap_or_else(|| "Conditions non réunies".to_string())
+            }),
+            command: UiCommand::Dispatch(GameAction::AwakenFruit {
+                fruit_instance_id: fruit_id.clone(),
+            }),
+        });
+    }
+    rows
 }
 
 // ============================================================
@@ -377,6 +689,14 @@ pub struct AbilityRow {
     pub element: Option<Element>,
     pub cost: i32,
     pub description: Option<String>,
+    /// Why this printed power cannot be played from the face that is showing.
+    ///
+    /// §8.34(c): `recto.attacks` and `recto.surcharge` are never enumerated —
+    /// "Le Capitaine recto ne peut pas attaquer" (Rulebook v3.1 §2.1, quoted
+    /// verbatim in `captains.ts`) — so the row is drawn (the card prints it)
+    /// but it carries the rule that forbids it instead of pretending to be
+    /// clickable.
+    pub reason: Option<&'static str>,
 }
 
 /// TS "En Verso (engagé)" preview, shown on the recto only.
@@ -431,7 +751,26 @@ pub struct CaptainMenuView {
     pub special_attack_name: String,
     pub special_attack_cost: i32,
     pub special_attack_reason: Option<&'static str>,
+    /// *Surcharge* — §8.34(b)'s `useSurcharge`. `None` while the active face
+    /// prints no `surcharge` (which is every face of the shipped catalogue),
+    /// so the button only ever appears for data that defines one.
+    pub surcharge: Option<AbilityButton>,
+    /// The awakened fruits the captain wears and may fire (§8.28 follow-up ×
+    /// §8.48 — `MG-014` Kong Gun, `BW-011` Ground Death, `MR-011` Inugami
+    /// Guren).
+    pub fruit_specials: Vec<AttackOption>,
+    /// *Éveiller* for a fruit the captain wears but has not awakened yet.
+    pub awakenings: Vec<AbilityButton>,
+    /// The equipment the captain wears (§8.28 follow-up).
+    pub equipment: Vec<EquipmentLine>,
     pub can_king_haki: bool,
+    /// What *Engager* costs — `flipCondition.cost ?? 0` (§8.6: a condition
+    /// with no cost is a cost of zero, and the flip is then always affordable).
+    pub flip_cost: i32,
+    /// Why the flip is **free** right now, in French — §8.33's five clauses,
+    /// read straight off the engine's own [`free_flip_reason`]. `None` means
+    /// the player pays [`CaptainMenuView::flip_cost`].
+    pub free_flip_reason: Option<&'static str>,
     /// *Engager* → pick the slot the verso lands on.
     pub flip_command: UiCommand,
     /// *Attaquer* → aim the human captain.
@@ -440,6 +779,17 @@ pub struct CaptainMenuView {
     pub special_attack_command: UiCommand,
     /// *Haki des Rois* → dispatch straight away.
     pub king_haki_command: UiCommand,
+}
+
+/// §8.33 — the printed clause that makes the flip free, in French.
+pub fn free_flip_label(reason: FreeFlipReason) -> &'static str {
+    match reason {
+        FreeFlipReason::AllyKo => "Gratuit : un allié est KO ce tour",
+        FreeFlipReason::AutoIfAlliesLte => "Gratuit : trop peu d'alliés",
+        FreeFlipReason::EnemyCursed => "Gratuit : un ennemi Maudit est en jeu",
+        FreeFlipReason::AlliesGte => "Gratuit : assez d'alliés en jeu",
+        FreeFlipReason::TurnGte => "Gratuit : le tour est venu",
+    }
 }
 
 /// TS `HakiType` labels (the TSX prints the raw ids).
@@ -519,6 +869,12 @@ pub fn captain_menu_view(
                 }
             )
         });
+    // §8.34(b) — `useSurcharge` is its own variant, so it is asked for by name.
+    let can_surcharge = is_you
+        && captain.flipped
+        && valid
+            .iter()
+            .any(|a| matches!(a, GameAction::UseSurcharge { .. }));
 
     // TS `attackReason`.
     let attack_reason = if captain.has_status(StatusEffectType::Freeze) {
@@ -550,6 +906,10 @@ pub fn captain_menu_view(
         None
     };
 
+    // §8.34(c): the recto captain has no attack and no surcharge — the rows are
+    // still drawn (the card prints them) but they carry the rule instead.
+    const RECTO_RULE: &str = "Le Capitaine recto ne peut pas attaquer";
+
     let mut abilities = Vec::new();
     if captain.flipped {
         abilities.push(AbilityRow {
@@ -558,6 +918,7 @@ pub fn captain_menu_view(
             element: def.verso.base_action.element,
             cost: 0,
             description: def.verso.base_action.description.clone(),
+            reason: None,
         });
         abilities.push(AbilityRow {
             kind: AbilityKind::Attack,
@@ -565,6 +926,7 @@ pub fn captain_menu_view(
             element: def.verso.special_attack.element,
             cost: def.verso.special_attack.cost,
             description: def.verso.special_attack.description.clone(),
+            reason: None,
         });
         if let Some(surcharge) = &def.verso.surcharge {
             abilities.push(AbilityRow {
@@ -573,6 +935,7 @@ pub fn captain_menu_view(
                 element: surcharge.element,
                 cost: surcharge.cost,
                 description: surcharge.description.clone(),
+                reason: None,
             });
         }
     } else {
@@ -583,6 +946,7 @@ pub fn captain_menu_view(
                 element: attack.element,
                 cost: attack.cost,
                 description: attack.description.clone(),
+                reason: Some(RECTO_RULE),
             });
         }
         if let Some(surcharge) = &def.recto.surcharge {
@@ -592,9 +956,75 @@ pub fn captain_menu_view(
                 element: surcharge.element,
                 cost: surcharge.cost,
                 description: surcharge.description.clone(),
+                reason: Some(RECTO_RULE),
             });
         }
     }
+
+    // --- the surcharge button (§8.34(b)) ---
+    let surcharge = def.verso.surcharge.as_ref().map(|s| {
+        let once_used =
+            s.once_per_game.unwrap_or(false) && captain.used_once(&format!("surcharge_{}", s.name));
+        let reason = if can_surcharge {
+            None
+        } else {
+            first_reason(&[
+                (!captain.flipped, RECTO_RULE),
+                (attack_reason.is_some(), attack_reason.unwrap_or("")),
+                (captain.used_special_attack, "Déjà utilisée ce tour"),
+                (once_used, "Une fois par partie"),
+                (!state.can_afford(player, s.cost), "Volonté insuffisante"),
+            ])
+            .or_else(|| Some("Pas de cible".to_string()))
+        };
+        AbilityButton {
+            label: s.name.clone(),
+            cost: s.cost,
+            disabled: !can_surcharge,
+            reason,
+            command: aim(&captain_key(player), AttackKind::Surcharge),
+        }
+    });
+
+    // --- the fruits the captain wears (§8.28 follow-up × §8.48) ---
+    let captain_id = captain_key(player);
+    let fruit_specials = if is_you {
+        fruit_special_rows(
+            state,
+            registry,
+            valid,
+            &captain_id,
+            &captain.attached_objects,
+            atk,
+            state.player(player).volonte,
+            first_reason(&[
+                (!captain.flipped, RECTO_RULE),
+                (attack_reason.is_some(), attack_reason.unwrap_or("")),
+                (captain.used_special_attack, "Déjà utilisée ce tour"),
+            ]),
+        )
+    } else {
+        Vec::new()
+    };
+    let awakenings = if is_you {
+        awakening_rows(
+            state,
+            registry,
+            valid,
+            &captain.attached_objects,
+            state.player(player).volonte,
+        )
+    } else {
+        Vec::new()
+    };
+
+    // --- what engaging costs, and when it is free (§8.6 / §8.33) ---
+    let flip_cost = def.flip_condition.cost.unwrap_or(0);
+    let free_flip_reason = (!captain.flipped)
+        .then(|| tcgop_engine::captain::free_flip_reason(state, registry, player).ok())
+        .flatten()
+        .flatten()
+        .map(free_flip_label);
 
     Some(CaptainMenuView {
         player,
@@ -637,16 +1067,16 @@ pub fn captain_menu_view(
         special_attack_name: def.verso.special_attack.name.clone(),
         special_attack_cost: def.verso.special_attack.cost,
         special_attack_reason,
+        surcharge,
+        fruit_specials,
+        awakenings,
+        equipment: equipment_lines(state, registry, &captain.attached_objects),
         can_king_haki,
+        flip_cost,
+        free_flip_reason,
         flip_command: UiCommand::SetMode(UiMode::SelectingCaptainSlot),
-        attack_command: UiCommand::SetMode(UiMode::SelectingTarget {
-            attacker_id: captain_key(human),
-            is_special: false,
-        }),
-        special_attack_command: UiCommand::SetMode(UiMode::SelectingTarget {
-            attacker_id: captain_key(human),
-            is_special: true,
-        }),
+        attack_command: aim(&captain_key(human), AttackKind::Base),
+        special_attack_command: aim(&captain_key(human), AttackKind::Special),
         king_haki_command: UiCommand::Dispatch(GameAction::UseHaki {
             haki_type: HakiType::King,
             target_instance_id: None,
@@ -852,11 +1282,16 @@ pub fn describe_event_confirm(effect: &EventEffect) -> String {
             Some(d) => format!("Pioche {amount} carte(s), défausse {d}."),
             None => format!("Pioche {amount} carte(s)."),
         },
+        // §8.36 — `healAlly` without `allAllies` heals **one** ally, and the
+        // engine picks it: the most wounded, first on a tie. There is no
+        // target to offer (the `playEvent` action carries `targets: None` and
+        // the executor never reads the field), so the panel states the rule
+        // instead of inventing a picker whose choice the engine would ignore.
         EventEffect::HealAlly { amount, all_allies } => {
             if all_allies.unwrap_or(false) {
                 format!("Tous les alliés +{amount} PV.")
             } else {
-                format!("1 allié +{amount} PV.")
+                format!("+{amount} PV à l'allié le plus blessé.")
             }
         }
         EventEffect::BuffAllies {
@@ -875,15 +1310,33 @@ pub fn describe_event_confirm(effect: &EventEffect) -> String {
                 BuffDuration::Permanent => "permanent",
             }
         ),
-        EventEffect::DamageEnemies { amount, target, .. } => format!(
-            "{amount} dégâts à {}.",
-            match target {
-                DamageTarget::AllFront => "toute la Ligne Avant ennemie",
-                DamageTarget::AllCursed => "tous les Maudits ennemis",
-                DamageTarget::Single => "1 ennemi",
-                DamageTarget::All => "tous les ennemis",
+        // §8.36 — `single` hits exactly one enemy, chosen by the engine's
+        // standing convention (highest effective ATK of the enemy front pool,
+        // else of the whole board, else the enemy captain). Same reason as
+        // `HealAlly` above: the rule is printed, not offered as a choice.
+        EventEffect::DamageEnemies {
+            amount,
+            target,
+            sand,
+            ..
+        } => {
+            let mut line = format!(
+                "{amount} dégâts à {}.",
+                match target {
+                    DamageTarget::AllFront => "toute la Ligne Avant ennemie",
+                    DamageTarget::AllCursed => "tous les Maudits ennemis",
+                    DamageTarget::Single =>
+                        "l'ennemi le plus fort de la Ligne Avant (à défaut, le Capitaine)",
+                    DamageTarget::All => "tous les ennemis",
+                }
+            );
+            // §8.36 follow-up: `sand` is a permanent loss of maximum PV, not a
+            // point of extra damage — a heal can never undo it.
+            if sand.unwrap_or(false) {
+                line.push_str(" Sable : \u{2212}1 PV maximum, définitivement.");
             }
-        ),
+            line
+        }
         EventEffect::DodgeAll => {
             "Tous vos personnages esquivent toutes les attaques ce tour.".to_string()
         }
@@ -1231,7 +1684,7 @@ mod tests {
             assert!(matches!(
                 base.command,
                 UiCommand::SetMode(UiMode::SelectingTarget {
-                    is_special: false,
+                    kind: AttackKind::Base,
                     ..
                 }) | UiCommand::SetMode(UiMode::SelectingSupportTarget { .. })
                     | UiCommand::Dispatch(GameAction::BaseSupportAction { .. })
@@ -1327,7 +1780,7 @@ mod tests {
             view.attack_command,
             UiCommand::SetMode(UiMode::SelectingTarget {
                 attacker_id: captain_key(session.human),
-                is_special: false,
+                kind: AttackKind::Base,
             })
         );
         assert_eq!(
@@ -1434,7 +1887,7 @@ mod tests {
             view.special_attack_command,
             UiCommand::SetMode(UiMode::SelectingTarget {
                 attacker_id: captain_key(human),
-                is_special: true,
+                kind: AttackKind::Special,
             }),
             "the button must arm the *special* aim, not the base one"
         );
@@ -1751,13 +2204,245 @@ mod tests {
             );
         }
 
-        // Whatever the label says, the row's own `disabled` mirrors the engine.
+        // Whatever the label says, each row's own `disabled` mirrors the
+        // engine — and the two base rows are gated separately.
         if let Some(base) = &view.base {
-            let can_act = session.valid.iter().any(|a| {
+            let can_attack = session.valid.iter().any(|a| {
                 matches!(a, GameAction::BaseAttack { attacker_instance_id, .. } if attacker_instance_id == &id)
-                    || matches!(a, GameAction::BaseSupportAction { instance_id, .. } if instance_id == &id)
             });
-            assert_eq!(base.disabled, !can_act);
+            assert_eq!(base.disabled, !can_attack);
         }
+        if let Some(support) = &view.support {
+            let can_support = session.valid.iter().any(|a| {
+                matches!(a, GameAction::BaseSupportAction { instance_id, .. } if instance_id == &id)
+            });
+            assert_eq!(support.disabled, !can_support);
+        }
+    }
+
+    /// §8.38 — a support character's effect and its attack are **both** legal
+    /// in the same turn (`actions.rs`: "even support chars … do their effect +
+    /// attack"), so the menu has to carry two rows. Fusing them, as the TSX
+    /// did, made one of the two engine actions unreachable.
+    #[test]
+    fn a_support_character_gets_its_effect_and_its_attack_as_two_rows() {
+        use tcgop_engine::state::CardInstance;
+        use tcgop_engine::types::{PlayerId, Zone};
+
+        let mut session = make_session(8);
+        let human = session.human;
+        assert!(advance(&mut session, 200, |s: &Session| {
+            s.state.current_player == human && s.state.pending_attack.is_none()
+        }));
+        session.state.players.get_mut(human).volonte = 10;
+
+        // `MG-004` Chopper: `isSupport` heal *and* ATK 1.
+        let mut put = |def_id: &str, owner: PlayerId, slot: Slot| {
+            let pv = session
+                .registry
+                .card_def(def_id)
+                .and_then(|d| d.pv)
+                .unwrap_or(1);
+            let id = session.ctx.generate_instance_id(def_id);
+            let mut instance = CardInstance::new(id.clone(), def_id.to_string(), owner, pv);
+            instance.zone = Zone::Board;
+            instance.slot = Some(slot);
+            instance.deployed_turn = Some(0);
+            session.state.cards.insert(id.clone(), instance);
+            *session.state.players.get_mut(owner).board.slot_mut(slot) = Some(id.clone());
+            id
+        };
+        let chopper = put("MG-004", human, Slot::V1);
+        // Someone to heal and someone to hit.
+        let hurt = put("MG-002", human, Slot::V2);
+        put("MR-001", human.opponent(), Slot::V1);
+        session.state.card_mut(&hurt).unwrap().current_pv = 1;
+        session.refresh_valid();
+
+        let offers_attack = session.valid.iter().any(
+            |a| matches!(a, GameAction::BaseAttack { attacker_instance_id, .. } if *attacker_instance_id == chopper),
+        );
+        let offers_support = session.valid.iter().any(
+            |a| matches!(a, GameAction::BaseSupportAction { instance_id, .. } if *instance_id == chopper),
+        );
+        assert!(
+            offers_attack && offers_support,
+            "the engine offers both to a support character: {:?}",
+            session.valid
+        );
+
+        let view = action_menu_view(&session.state, &session.registry, &session.valid, &chopper)
+            .expect("the unit has a menu");
+        let base = view.base.expect("the attack row");
+        let support = view.support.expect("the support row");
+        assert!(!base.disabled && !support.disabled);
+        assert_eq!(
+            base.command,
+            UiCommand::SetMode(UiMode::SelectingTarget {
+                attacker_id: chopper.clone(),
+                kind: AttackKind::Base,
+            }),
+            "the attack row aims a base attack"
+        );
+        assert!(
+            matches!(
+                support.command,
+                UiCommand::SetMode(UiMode::SelectingSupportTarget { .. })
+                    | UiCommand::Dispatch(GameAction::BaseSupportAction { .. })
+            ),
+            "the support row plays the support action: {:?}",
+            support.command
+        );
+    }
+
+    /// §8.38 — a taunted unit is bound to its taunter, and the menu says which
+    /// one instead of the misleading "Pas de cible".
+    #[test]
+    fn a_taunted_unit_is_told_who_it_must_hit() {
+        use tcgop_engine::state::CardInstance;
+        use tcgop_engine::types::{StatusEffect, Zone};
+
+        let mut session = make_session(6);
+        let human = session.human;
+        assert!(advance(&mut session, 200, |s: &Session| {
+            s.state.current_player == human && s.state.pending_attack.is_none()
+        }));
+
+        let id = session.ctx.generate_instance_id("MG-002");
+        let mut zoro = CardInstance::new(id.clone(), "MG-002".into(), human, 5);
+        zoro.zone = Zone::Board;
+        zoro.slot = Some(Slot::V1);
+        zoro.deployed_turn = Some(0);
+        // A taunter that is *not* on the board: nothing is a legal target, so
+        // the row is dead and the reason has to be the taunt.
+        zoro.status_effects.push(StatusEffect {
+            effect_type: StatusEffectType::Taunt,
+            turns_remaining: 1,
+            damage_per_turn: 0,
+            source: "absent_taunter".into(),
+        });
+        session.state.cards.insert(id.clone(), zoro);
+        *session
+            .state
+            .players
+            .get_mut(human)
+            .board
+            .slot_mut(Slot::V1) = Some(id.clone());
+        session.refresh_valid();
+
+        let view = action_menu_view(&session.state, &session.registry, &session.valid, &id)
+            .expect("the unit has a menu");
+        assert!(view.flags.contains(&"Provoqué"));
+        assert_eq!(
+            view.taunt.as_deref(),
+            Some("Provoqué : doit cibler absent_taunter"),
+            "the menu names the unit the taunt binds this one to"
+        );
+
+        // And with the taunter actually on the board, the note names the card,
+        // and the engine really does narrow the target list to it.
+        let taunter = session.ctx.generate_instance_id("MR-001");
+        let mut foe = CardInstance::new(taunter.clone(), "MR-001".into(), human.opponent(), 4);
+        foe.zone = Zone::Board;
+        foe.slot = Some(Slot::V1);
+        foe.deployed_turn = Some(0);
+        session.state.cards.insert(taunter.clone(), foe);
+        *session
+            .state
+            .players
+            .get_mut(human.opponent())
+            .board
+            .slot_mut(Slot::V1) = Some(taunter.clone());
+        session
+            .state
+            .card_mut(&id)
+            .unwrap()
+            .status_effects
+            .iter_mut()
+            .for_each(|e| e.source = taunter.clone());
+        session.refresh_valid();
+
+        let view = action_menu_view(&session.state, &session.registry, &session.valid, &id)
+            .expect("the unit has a menu");
+        let name = session.registry.card_def("MR-001").unwrap().name.clone();
+        assert_eq!(
+            view.taunt.as_deref(),
+            Some(format!("Provoqué : doit cibler {name}").as_str())
+        );
+        let targets: Vec<&String> = session
+            .valid
+            .iter()
+            .filter_map(|a| match a {
+                GameAction::BaseAttack {
+                    attacker_instance_id,
+                    target_instance_id,
+                    ..
+                } if *attacker_instance_id == id => Some(target_instance_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(targets, vec![&taunter], "the taunter is the only target");
+    }
+
+    /// §8.36 — a "single" event has **no** target to pick: `playEvent` carries
+    /// `targets: None` and the executor never reads the field, so the engine's
+    /// own convention chooses. The confirmation states that rule; offering a
+    /// picker would send a choice the engine throws away.
+    #[test]
+    fn a_single_target_event_states_the_rule_instead_of_asking() {
+        use tcgop_engine::types::{DamageTarget, EventEffect};
+
+        let damage = describe_event_confirm(&EventEffect::DamageEnemies {
+            amount: 4,
+            target: DamageTarget::Single,
+            cursed_bonus: None,
+            sand: Some(true),
+            destroy_ships: None,
+        });
+        assert!(
+            damage.contains("le plus fort de la Ligne Avant"),
+            "the pick has to be spelled out: {damage}"
+        );
+        assert!(
+            damage.contains("PV maximum"),
+            "and `sand` is a permanent maximum-PV loss, not one more damage: {damage}"
+        );
+
+        let heal = describe_event_confirm(&EventEffect::HealAlly {
+            amount: 3,
+            all_allies: None,
+        });
+        assert!(
+            heal.contains("le plus blessé"),
+            "the heal names its own pick: {heal}"
+        );
+
+        // And the engine really does hand the client a target-less action.
+        let session = make_session(2);
+        assert!(
+            session.valid.iter().all(|a| !matches!(
+                a,
+                GameAction::PlayEvent {
+                    targets: Some(_),
+                    ..
+                }
+            )),
+            "the enumerator never fills `targets`"
+        );
+    }
+
+    /// §8.42 — natural Haki is what pierces a Logia, and it is printed in two
+    /// forms; the menu surfaces both.
+    #[test]
+    fn natural_haki_is_shown_on_the_units_that_have_it() {
+        let (session, id) = deploy_one(11).expect("seed 11 must allow a deploy");
+        let view =
+            action_menu_view(&session.state, &session.registry, &session.valid, &id).unwrap();
+        let def = session.registry.card_def(&view.def_id).unwrap();
+        assert_eq!(
+            view.flags.contains(&"Haki naturel"),
+            tcgop_engine::haki::def_has_natural_haki(def),
+            "the pill must agree with the engine's own predicate"
+        );
     }
 }

@@ -132,6 +132,30 @@ fn def_of<'a>(
         .and_then(|card| registry.card_def(&card.def_id))
 }
 
+/// Which power of the captain's **verso** an announcement is naming.
+///
+/// The recto has neither (§8.34(c), Rulebook v3.1 §2.1), and a surcharge only
+/// ever resolves from the verso, so both live on that one face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptainAbility {
+    Special,
+    Surcharge,
+}
+
+/// The printed name of one of the captain's verso powers, when the data has it.
+fn captain_ability_name(
+    state: &GameState,
+    registry: &CardRegistry,
+    player: PlayerId,
+    ability: CaptainAbility,
+) -> Option<String> {
+    let def = registry.captain_def(&state.player(player).captain.def_id)?;
+    match ability {
+        CaptainAbility::Special => Some(def.verso.special_attack.name.clone()),
+        CaptainAbility::Surcharge => def.verso.surcharge.as_ref().map(|s| s.name.clone()),
+    }
+}
+
 const fn slot_code(slot: Slot) -> &'static str {
     match slot {
         Slot::V1 => "V1",
@@ -369,8 +393,18 @@ pub fn build_announcement(
             ann.dest_id = Some(captain_key(actor));
             Some(ann)
         }
-        GameAction::CaptainAttack { .. } => {
-            let mut ann = PlayAnnouncement::base(side, kind, "Le Capitaine attaque".to_string());
+        GameAction::CaptainAttack { is_special, .. } => {
+            // §8.2 item 34(a): the ★ special is the same action with a flag,
+            // and it is the captain's signature move — it says its own name,
+            // like every other special does.
+            let caption = if is_special.unwrap_or(false) {
+                captain_ability_name(state, registry, actor, CaptainAbility::Special)
+                    .map(|name| format!("Capitaine : {name} !"))
+                    .unwrap_or_else(|| "Le Capitaine attaque".to_string())
+            } else {
+                "Le Capitaine attaque".to_string()
+            };
+            let mut ann = PlayAnnouncement::base(side, kind, caption);
             ann.big = false;
             ann.toast = true;
             ann.dest_id = Some(captain_key(actor));
@@ -378,8 +412,10 @@ pub fn build_announcement(
         }
         // Engine §8.2 item 34(b): the captain's surcharge ability.
         GameAction::UseSurcharge { .. } => {
-            let mut ann =
-                PlayAnnouncement::base(side, kind, "Le Capitaine utilise sa Surcharge".to_string());
+            let caption = captain_ability_name(state, registry, actor, CaptainAbility::Surcharge)
+                .map(|name| format!("Surcharge : {name} !"))
+                .unwrap_or_else(|| "Le Capitaine utilise sa Surcharge".to_string());
+            let mut ann = PlayAnnouncement::base(side, kind, caption);
             ann.big = false;
             ann.toast = true;
             ann.dest_id = Some(captain_key(actor));

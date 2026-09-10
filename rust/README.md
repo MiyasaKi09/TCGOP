@@ -27,6 +27,27 @@ rust/
   waterline), front/back lines of three slots per side, dedicated captain /
   ship / Volonté command bars, full-illustration unit tiles (details on click),
   fanned hand, animated sea, per-element combat VFX and cut-ins.
+* **Nothing the engine allows is out of reach.** Every `GameAction` that
+  `valid_actions()` can return has a path in the UI, and every rule the engine
+  enforces is *shown* rather than left to be discovered:
+  * the captain menu prices and plays the verso's ★ special attack, its
+    `surcharge`, and the awakened Devil Fruit the captain wears — a recto
+    captain's printed attacks are listed with the rule that forbids them
+    ("Le Capitaine recto ne peut pas attaquer");
+  * *Engager* says what the flip costs, or which printed clause is making it
+    free (an ally KO'd, a Cursed enemy in play, enough allies, the turn count);
+  * a unit's popover carries its base attack **and**, separately, its support
+    effect (a support character may do both in one turn), each awakened
+    fruit's own special, *Éveiller* for a fruit it has not awakened, and the
+    once-per-turn free move — every one of them greyed out with the reason
+    when the engine is not offering it;
+  * permanent maximum-PV loss ("Sable") shortens the HP gauge and is spelled
+    out, blocked healing and *Provocation* (which unit a taunt binds you to)
+    are named, and natural Haki — in either printed form — is flagged on the
+    units that pierce a Logia;
+  * ally-facing and self-targeting specials light up on your own half, and
+    every special attack — the captain's, the surcharge, an awakened fruit's
+    — gets the same cut-in, under its own name.
 
 ## Build & run
 

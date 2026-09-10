@@ -151,6 +151,15 @@ pub struct VfxHistory {
     pub previous_state: Option<GameState>,
     /// Most recent pending attack, kept after the engine cleared it.
     pub last_pending: Option<PendingAttack>,
+    /// The action that declared [`VfxHistory::last_pending`].
+    ///
+    /// `PendingAttack` says *that* an attack is special, never which ability
+    /// produced it, and the port has three that all set the flag (§8.34(a) the
+    /// captain's ★, §8.34(b) its surcharge, §8.28×§8.48 an awakened fruit's
+    /// own special). The declaring action is the only thing that tells them
+    /// apart, so the banner and the cut-in read it — see
+    /// [`detect::attack_label`].
+    pub last_attack_action: Option<GameAction>,
 }
 
 /// Reveals waiting for the screen — only the head is displayed (TS
@@ -364,6 +373,19 @@ pub fn detect_combat(
     // 2. combat, from the state diff.
     if let Some(pending) = session.state.pending_attack.as_ref() {
         history.last_pending = Some(pending.clone());
+        // Whichever declaration opened this window is in this frame's actions.
+        if let Some(declaration) = actions.iter().rev().find(|a| {
+            matches!(
+                a,
+                GameAction::BaseAttack { .. }
+                    | GameAction::SpecialAttack { .. }
+                    | GameAction::CaptainAttack { .. }
+                    | GameAction::UseSurcharge { .. }
+                    | GameAction::FruitSpecialAttack { .. }
+            )
+        }) {
+            history.last_attack_action = Some(declaration.clone());
+        }
     }
     let next = detect::snapshot(&session.state);
     if let Some(previous) = history.previous.as_ref() {
@@ -373,6 +395,7 @@ pub fn detect_combat(
             &session.state,
             &session.registry,
             history.last_pending.as_ref(),
+            history.last_attack_action.as_ref(),
         ) {
             if let Some(kind) = event.shake {
                 shake.hit(kind, &reduced);

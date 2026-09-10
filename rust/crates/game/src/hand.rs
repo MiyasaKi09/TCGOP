@@ -360,6 +360,11 @@ enum HintNode {
     KingHaki,
     /// `⚓ Clique ton Navire pour l'activer`.
     Ship,
+    /// `⚡ Ton Capitaine a un pouvoir à dépenser` — the captain's surcharge
+    /// (§8.34(b)) or an awakened fruit it wears (§8.28 follow-up × §8.48),
+    /// both of which live behind the captain menu and would otherwise never
+    /// be looked for.
+    CaptainPower,
 }
 
 /// The gold "Fin de tour ➡" button. The flag is what the button currently
@@ -431,11 +436,14 @@ pub struct FooterHints {
     pub can_flip: bool,
     pub can_king_haki: bool,
     pub can_activate_ship: bool,
+    /// §8.34(b) / §8.28 follow-up — the captain has a surcharge or an awakened
+    /// fruit special it may spend right now.
+    pub can_captain_power: bool,
 }
 
 impl FooterHints {
     pub fn any(&self) -> bool {
-        self.can_flip || self.can_king_haki || self.can_activate_ship
+        self.can_flip || self.can_king_haki || self.can_activate_ship || self.can_captain_power
     }
 
     fn shows(&self, node: HintNode) -> bool {
@@ -444,13 +452,22 @@ impl FooterHints {
             HintNode::Flip => self.can_flip,
             HintNode::KingHaki => self.can_king_haki,
             HintNode::Ship => self.can_activate_ship,
+            HintNode::CaptainPower => self.can_captain_power,
         }
     }
 }
 
-/// Derive the three hints from the human's legal actions.
+/// Derive the hints from the human's legal actions.
 pub fn footer_hints(valid: &[GameAction]) -> FooterHints {
     FooterHints {
+        can_captain_power: valid.iter().any(|a| match a {
+            GameAction::UseSurcharge { .. } => true,
+            GameAction::FruitSpecialAttack {
+                attacker_instance_id,
+                ..
+            } => crate::selection::is_captain_key(attacker_instance_id),
+            _ => false,
+        }),
         can_flip: valid
             .iter()
             .any(|a| matches!(a, GameAction::FlipCaptain { .. })),
@@ -884,6 +901,11 @@ fn spawn_hint_box(
                 ),
                 (HintNode::KingHaki, STAR, "Haki des Rois dispo (Capitaine)"),
                 (HintNode::Ship, ANCHOR, "Clique ton Navire pour l'activer"),
+                (
+                    HintNode::CaptainPower,
+                    STAR,
+                    "Pouvoir de Capitaine dispo (clique-le)",
+                ),
             ] {
                 hints
                     .spawn((
