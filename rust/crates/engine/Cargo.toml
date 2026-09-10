@@ -1,0 +1,13 @@
+[package]
+name = "tcgop_engine"
+description = "TCGOP — pure, deterministic One Piece TCG rules engine (no rendering)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,68 @@
+name: Rust (native game)
+
+on:
+  push:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  engine:
+    name: Engine tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run: { working-directory: rust }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: rust }
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p tcgop_engine --all-targets -- -D warnings
+      - run: cargo test -p tcgop_engine
+
+  game:
+    name: Game build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run: { working-directory: rust }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: rust }
+      - name: Linux system libraries for Bevy (X11 backend; audio/gamepad features are disabled)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxkbcommon-dev
+      - run: cargo clippy -p tcgop_game --all-targets -- -D warnings
+      - run: cargo build -p tcgop_game --release
+      - name: Package (assets next to the binary)
+        shell: bash
+        run: |
+          set -e
+          out=dist/tcgop-${{ runner.os }}
+          mkdir -p "$out"
+          cp target/release/tcgop* "$out"/ 2>/dev/null || true
+          # assets/ holds symlinks to ../public in the repo; ship real files.
+          mkdir -p "$out/assets"
+          cp -RL crates/game/assets/. "$out/assets/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tcgop-${{ runner.os }}
+          path: rust/dist/
