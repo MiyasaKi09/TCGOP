@@ -974,6 +974,33 @@ mod tests {
         );
     }
 
+    /// §8.37 (`MR-027`) — the Embargo is a *timed ban*, not a Volonté
+    /// shortfall. The enumerator silently drops `deployShip` / `equipObject`
+    /// while it is up, so the command bar is the only place on the board that
+    /// can tell the player which of the two is happening, and for how long.
+    #[test]
+    fn the_command_bar_counts_the_embargo_down() {
+        let mut s = session();
+        let human = s.human;
+        assert_eq!(
+            board_view(&s, &UiMode::Idle)
+                .you
+                .command
+                .resources
+                .embargo_turns,
+            0,
+            "no ban, no pill"
+        );
+
+        s.state.players.get_mut(human).embargo_turns = Some(3);
+        let view = board_view(&s, &UiMode::Idle);
+        assert_eq!(view.you.command.resources.embargo_turns, 3);
+        assert_eq!(
+            view.foe.command.resources.embargo_turns, 0,
+            "the ban is per player"
+        );
+    }
+
     #[test]
     fn ring_priority_matches_the_web_client() {
         let full = CellHighlight {

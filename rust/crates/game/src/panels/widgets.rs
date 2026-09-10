@@ -84,6 +84,8 @@ pub const EYE: &str = "\u{25C9}";
 pub const SHIELD: &str = "\u{26E8}";
 pub const CROWN: &str = "\u{265B}";
 pub const CROSS: &str = "\u{2715}";
+/// §8.37 Embargo — the ban marker (U+2298; DejaVu Sans has no 🚫).
+pub const NO_ENTRY: &str = "\u{2298}";
 pub const HEART: &str = "\u{2665}";
 
 // ============================================================

@@ -157,6 +157,9 @@ pub const CARET_LEFT: &str = "\u{25C4}";
 pub const HAND_GLYPH: &str = "\u{261E}";
 /// Deck count — the mock-up's 🂠 (U+1F0A0), which DejaVu Sans *does* carry.
 pub const CARD_BACK: &str = "\u{1F0A0}";
+/// §8.37 Embargo — U+2298, the "no ship / no equipment" ban marker. The
+/// mock-up's 🚫 (U+1F6AB) is not in DejaVu Sans; this circled slash is.
+pub const NO_ENTRY: &str = "\u{2298}";
 /// The "✦ À toi" pill's leading glyph (U+2726 — same as [`SPARKLE`], named for
 /// its own use so the header does not read as an ability marker).
 pub const READY_MARK: &str = SPARKLE;
@@ -563,10 +566,14 @@ struct ActionLine<'a> {
     description: Option<&'a str>,
     attack_traits: &'a [AttackTrait],
     element: Option<Element>,
-    /// `None` for a support action (TS hides ATK when it heals).
+    /// `None` when the action deals no damage — a heal, and since §8.38 any
+    /// support special.
     atk: Option<i32>,
     cost: i32,
     is_special: bool,
+    /// §8.38 — a support special resolves its structured fields and never
+    /// builds a `PendingAttack`, so it drops the ★ / attack-red accent.
+    is_support: bool,
 }
 
 impl<'a> ActionLine<'a> {
@@ -581,27 +588,45 @@ impl<'a> ActionLine<'a> {
             atk: (!heals).then_some(atk),
             cost: 0,
             is_special: false,
+            is_support: support,
         }
     }
 
     fn special(a: &'a SpecialAttack, atk: i32) -> ActionLine<'a> {
-        let heals = a.is_support.unwrap_or(false) && a.heal_amount.is_some();
+        // §8.38 — `resolve_support_special` short-circuits: the cost is spent,
+        // the caster taps and the structured fields resolve, but no
+        // `PendingAttack` is ever built, so a support special deals zero
+        // damage whatever ATK it prints. The old `is_support &&
+        // heal_amount.is_some()` predates `taunt` / `cleanse` /
+        // `buff_ally_atk`; `is_support` alone is the rule.
+        let support = a.is_support.unwrap_or(false);
         ActionLine {
             name: &a.name,
             description: a.description.as_deref(),
             attack_traits: a.attack_traits.as_deref().unwrap_or(&[]),
             element: a.element,
-            atk: (!heals).then_some(atk + a.atk_bonus),
+            atk: (!support).then_some(atk + a.atk_bonus),
             cost: a.cost,
             is_special: true,
+            is_support: support,
         }
     }
 }
 
 fn spawn_action_row(parent: &mut ChildSpawnerCommands, ctx: &FaceCtx, line: &ActionLine, s: f32) {
     let pal = ctx.palette;
-    let accent = if line.is_special { pal.atk } else { pal.deploy };
-    let icon = if line.is_special {
+    // §8.38 — a support special is not an attack: it wears the support accent
+    // (the blue the header's "Cible du pouvoir" uses) and the ✦ marker, never
+    // the ★ and the attack red, because it can never deal damage.
+    let support_special = line.is_special && line.is_support;
+    let accent = match (line.is_special, support_special) {
+        (_, true) => pal.def,
+        (true, false) => pal.atk,
+        (false, false) => pal.deploy,
+    };
+    let icon = if support_special {
+        SPARKLE
+    } else if line.is_special {
         STAR
     } else if line.atk.is_none() {
         SPARKLE
@@ -802,8 +827,20 @@ pub fn describe_event(effect: &EventEffect) -> String {
         EventEffect::Rally { atk, def, heal } => {
             format!("Ralliement : +{atk} ATK, +{def} DEF, +{heal} PV.")
         }
-        EventEffect::BuffSingle { stat, amount, .. } => {
-            format!("1 allié +{amount} {}.", stat_label(*stat))
+        // §8.57 — `requiresOwnKO` (MG-024) keeps the card out of
+        // `valid_actions` until one of your characters has been KO'd, so the
+        // face has to hint at the condition the pip is dark for.
+        EventEffect::BuffSingle {
+            stat,
+            amount,
+            requires_own_ko,
+            ..
+        } => {
+            let mut line = format!("1 allié +{amount} {}.", stat_label(*stat));
+            if requires_own_ko.unwrap_or(false) {
+                line.push_str(" Si un allié a été KO.");
+            }
+            line
         }
         EventEffect::RushBuff { atk } => format!("Rush : +{atk} ATK."),
         EventEffect::Tutor { .. } => "Cherche une carte dans ton deck.".to_string(),

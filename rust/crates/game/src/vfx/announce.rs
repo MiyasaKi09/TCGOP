@@ -89,7 +89,13 @@ impl PlayAnnouncement {
 pub fn announce_duration(announcement: &PlayAnnouncement) -> Duration {
     match announcement.kind {
         "specialAttack" | "fruitSpecialAttack" => REVEAL_SPECIAL,
-        "captainAttack" => REVEAL_CAPTAIN,
+        // §8.34(b) — the surcharge is a captain declaration that resolves
+        // through `declare_captain_spec_attack`, exactly like the ★ special,
+        // and `detect::diff` already builds it a full cut-in payload. Leaving
+        // it in the `toast` branch held it 750 ms — less than half of what the
+        // captain's plain base attack gets — and shortened the AI pacing
+        // window for the same action.
+        "captainAttack" | "useSurcharge" => REVEAL_CAPTAIN,
         _ if announcement.toast => {
             if announcement.kind == "endTurn" {
                 REVEAL_END_TURN
@@ -487,6 +493,30 @@ mod tests {
         assert_eq!(ann.caption, "Fin de tour");
         assert_eq!(ann.duration(), REVEAL_END_TURN);
         assert!(ann.dest_id.is_none());
+    }
+
+    /// §8.34(b) — the surcharge resolves through `declare_captain_spec_attack`
+    /// exactly like the ★ special, so it gets a captain-length reveal window,
+    /// not the 750 ms text toast every other `toast` action gets.
+    #[test]
+    fn a_surcharge_is_held_as_long_as_a_captain_declaration() {
+        let session = session(3);
+        let ann = build_announcement(
+            &GameAction::UseSurcharge {
+                target_instance_id: "foe".into(),
+                target_is_captain: None,
+            },
+            &session.state,
+            &session.registry,
+            session.human,
+        )
+        .expect("the surcharge is announced");
+        assert_eq!(ann.kind, "useSurcharge");
+        assert_eq!(ann.duration(), REVEAL_CAPTAIN);
+        assert!(
+            ann.duration() > REVEAL_TOAST,
+            "a captain declaration outlasts a text toast"
+        );
     }
 
     #[test]

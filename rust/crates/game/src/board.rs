@@ -25,9 +25,12 @@
 //! [`on_captain_click`](crate::selection::on_captain_click)); a
 //! [`UiCommand::Dispatch`](crate::selection::UiCommand) writes
 //! [`DispatchAction`](crate::bridge::DispatchAction) **and** resets the UI.
-//! Cells also observe `Pointer<DragDrop>`, so a card dragged out of the hand is
-//! played by releasing it over a slot
-//! ([`on_cell_drop`](crate::selection::on_cell_drop)).
+//! Cells **and the command card** observe `Pointer<DragDrop>`, so a card
+//! dragged out of the hand is played by releasing it over a slot
+//! ([`on_cell_drop`](crate::selection::on_cell_drop)) or over the captain
+//! ([`on_captain_drop`](crate::selection::on_captain_drop) — the §8.28
+//! follow-up equip, which §8.31 would otherwise strand because the flipped
+//! captain is not in `player.board`).
 //!
 //! The board owns **no button**: the mock-up has a single `.cta` row, and
 //! [`crate::hand`]'s footer builds it. The header is brand / turn ring /
@@ -56,7 +59,8 @@ use crate::art::{ArtCache, Focus};
 use crate::bridge::{BridgeSet, DispatchAction, Session};
 use crate::hand::SymbolFont;
 use crate::selection::{
-    SelectedHandCard, UiCommand, UiMode, on_captain_click, on_cell_click, on_cell_drop,
+    SelectedHandCard, UiCommand, UiMode, on_captain_click, on_captain_drop, on_cell_click,
+    on_cell_drop,
 };
 
 use geometry::{HalfMetrics, cover, half_available_h, half_metrics};
@@ -833,7 +837,14 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
         Pickable::IGNORE,
         ChildOf(captain),
     ));
-    painter.commands.entity(captain).observe(on_captain_clicked);
+    painter
+        .commands
+        .entity(captain)
+        .observe(on_captain_clicked)
+        // §8.28 follow-up: `command_view` lights this card with `Ring::Deploy`
+        // while an object is looking for a bearer, so it has to be able to
+        // *accept* the drop — click-only made `MG-014` unequippable by drag.
+        .observe(on_captain_dropped);
 
     // --- ship slot ---
     let ship_content = painter.commands.spawn_empty().id();
@@ -1493,12 +1504,45 @@ fn on_cell_dropped(
     let ai = session.ai_player();
     let player = if cell.is_you { session.human } else { ai };
     let ps = session.state.player(player);
-    let occupant = ps
-        .board
-        .get(cell.slot)
-        .and_then(|id| session.state.card(id))
-        .map(|card| (card.instance_id.as_str(), card.def_id.as_str()));
-    let command = on_cell_drop(&mode, &session.valid, ai, cell.slot, cell.is_you, occupant);
+    // The same branch `on_cell_clicked` takes: §8.31 keeps the flipped captain
+    // out of `board`, so without it `occupant` is `None` on the captain's own
+    // cell and the equip drop is swallowed.
+    let command = if ps.captain.flipped && ps.captain.slot == Some(cell.slot) {
+        on_captain_drop(&mode, &session.valid, ai, player)
+    } else {
+        let occupant = ps
+            .board
+            .get(cell.slot)
+            .and_then(|id| session.state.card(id))
+            .map(|card| (card.instance_id.as_str(), card.def_id.as_str()));
+        on_cell_drop(&mode, &session.valid, ai, cell.slot, cell.is_you, occupant)
+    };
+    submit(command, &mut mode, &mut selected, &mut dispatch);
+}
+
+/// The command card was dropped on — the drop twin of [`on_captain_clicked`].
+fn on_captain_dropped(
+    drop: On<Pointer<DragDrop>>,
+    captains: Query<&CaptainNode>,
+    session: Option<Res<Session>>,
+    mut drag: ResMut<crate::hand::HandDrag>,
+    mut mode: ResMut<UiMode>,
+    mut selected: ResMut<SelectedHandCard>,
+    mut dispatch: MessageWriter<DispatchAction>,
+) {
+    if drop.button != PointerButton::Primary {
+        return;
+    }
+    if !drag.carries(drop.dropped) {
+        return;
+    }
+    let Some(session) = session else { return };
+    let Ok(captain) = captains.get(drop.entity) else {
+        return;
+    };
+    drag.consumed = true;
+    let ai = session.ai_player();
+    let command = on_captain_drop(&mode, &session.valid, ai, captain.player);
     submit(command, &mut mode, &mut selected, &mut dispatch);
 }
 

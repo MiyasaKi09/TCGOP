@@ -170,9 +170,16 @@ pub struct AttackOption {
     pub attack_traits: Vec<AttackTrait>,
     /// `0 Vol.` for a base action, `SpecialAttack::cost` for the special.
     pub cost: i32,
-    /// `None` when the action heals (TS hides the ATK column then).
+    /// `None` when the action deals no damage — a heal, and since §8.38 every
+    /// support special (`taunt`, `cleanse`, `buffAllyAtk`…), which
+    /// short-circuits into `resolve_support_special` and never builds a
+    /// `PendingAttack` at all.
     pub atk: Option<i32>,
     pub is_special: bool,
+    /// §8.38 — this row spends the caster's action on an *effect*, not a blow.
+    /// The renderer swaps the attack-red ★ accent for the support one so a
+    /// row that can never deal damage does not read as an attack.
+    pub is_support: bool,
     pub disabled: bool,
     /// Why it is greyed out, in French — the exact `ActionMenu.tsx` strings.
     pub reason: Option<String>,
@@ -303,6 +310,14 @@ pub fn action_menu_view(
     let sickness = has_summoning_sickness(state, registry, instance_id).unwrap_or(false);
     let frozen = instance.has_status(StatusEffectType::Freeze);
     let immobilised = instance.has_status(StatusEffectType::Immobilize);
+    // `actions::is_action_blocked` treats Freeze | Immobilize | **Sleep** |
+    // **LoseAction** as one family of hard blocks on `baseAttack`,
+    // `specialAttack` and `baseSupportAction` alike (MG-004 Usopp's *Bluff*
+    // pushes `LoseAction` onto an enemy of DEF ≤ 1, so this is a shipped ST01
+    // case, not a hypothetical). Without the last two the menu greys every row
+    // and blames "Pas de cible" — a target list the unit actually has.
+    let asleep = instance.has_status(StatusEffectType::Sleep);
+    let lost_action = instance.has_status(StatusEffectType::LoseAction);
 
     let base_def = def.base_action.as_ref();
     let is_support = base_def.and_then(|b| b.is_support).unwrap_or(false);
@@ -329,6 +344,8 @@ pub fn action_menu_view(
     let blocked: Option<String> = first_reason(&[
         (frozen, "Gelé !"),
         (immobilised, "Immobilisé !"),
+        (asleep, status_label(StatusEffectType::Sleep)),
+        (lost_action, status_label(StatusEffectType::LoseAction)),
         (sickness, "Mal de terre"),
         (tapped, "Incliné"),
         (instance.used_base_action, "Déjà utilisé ce tour"),
@@ -352,6 +369,10 @@ pub fn action_menu_view(
         Some("Gelé !".into())
     } else if immobilised {
         Some("Immobilisé !".into())
+    } else if asleep {
+        Some(status_label(StatusEffectType::Sleep).into())
+    } else if lost_action {
+        Some(status_label(StatusEffectType::LoseAction).into())
     } else if sickness {
         Some("Mal de terre".into())
     } else if instance.used_special_attack {
@@ -396,6 +417,7 @@ pub fn action_menu_view(
             cost: 0,
             atk: Some(atk),
             is_special: false,
+            is_support: false,
             disabled: !can_base_attack,
             reason: attack_reason,
             command: aim(instance_id, AttackKind::Base),
@@ -411,6 +433,7 @@ pub fn action_menu_view(
             cost: 0,
             atk: (!heals).then_some(atk),
             is_special: false,
+            is_support: true,
             disabled: !can_support,
             reason: support_reason,
             command: if can_support {
@@ -422,15 +445,23 @@ pub fn action_menu_view(
     });
 
     let special = special_def.map(|s| {
-        let heals = s.is_support.unwrap_or(false) && s.heal_amount.is_some();
+        // §8.38 — a support special short-circuits into
+        // `resolve_support_special`: it spends the cost, taps the caster and
+        // resolves its structured fields, and never builds a `PendingAttack`,
+        // so it deals **zero** damage whatever it prints. The old predicate
+        // (`is_support && heal_amount.is_some()`) predates `taunt` / `cleanse`
+        // / `buff_ally_atk` and advertised an ATK figure `RH-004`, `RH-009`
+        // and `BW-005` can never deal. `is_support` alone is the rule.
+        let support = s.is_support.unwrap_or(false);
         AttackOption {
             name: s.name.clone(),
             description: s.description.clone(),
             element: s.element,
             attack_traits: s.attack_traits.clone().unwrap_or_default(),
             cost: s.cost,
-            atk: (!heals).then_some(atk + s.atk_bonus),
+            atk: (!support).then_some(atk + s.atk_bonus),
             is_special: true,
+            is_support: support,
             disabled: !can_special_attack,
             reason: special_reason,
             command: aim(instance_id, AttackKind::Special),
@@ -449,6 +480,12 @@ pub fn action_menu_view(
     }
     if immobilised {
         flags.push("Immobilisé");
+    }
+    if asleep {
+        flags.push(status_label(StatusEffectType::Sleep));
+    }
+    if lost_action {
+        flags.push(status_label(StatusEffectType::LoseAction));
     }
     if instance.has_status(StatusEffectType::NoHeal) {
         flags.push("Soins bloqués");
@@ -492,6 +529,9 @@ pub fn action_menu_view(
         let reason = first_reason(&[
             (frozen, "Gelé !"),
             (immobilised, "Immobilisé !"),
+            // §8.29 — `board::can_move` refuses a sleeper's move but *not* a
+            // unit that merely lost its action, so only Sleep belongs here.
+            (asleep, status_label(StatusEffectType::Sleep)),
             (tapped, "Incliné"),
             (
                 state.player(instance.controller()).used_free_move,
@@ -605,6 +645,8 @@ fn fruit_special_rows(
             cost: spec.cost,
             atk: Some(atk + spec.atk_bonus),
             is_special: true,
+            // An awakened fruit's special always builds a blow.
+            is_support: false,
             disabled: !can,
             reason,
             command: aim(
@@ -718,7 +760,18 @@ pub struct CaptainMenuView {
     pub faction: Faction,
     pub flipped: bool,
     pub pv: i32,
+    /// The **effective** maximum: the active face's printed PV minus the
+    /// captain's permanent loss (§8.34(a)/§8.38/§8.40 — Desert Girasol, the
+    /// Sand element on a captain). Reading `def.verso.pv` / `def.recto.pv`
+    /// alone would print a maximum the engine no longer uses and draw the
+    /// gauge against the wrong denominator.
     pub max_pv: i32,
+    /// How much of the printed maximum is gone for good (`0` normally) —
+    /// `CaptainInstance::pv_max_loss`. The panel states it next to the PV,
+    /// exactly as the character menu does.
+    pub pv_max_loss: i32,
+    /// The captain carries a `noHeal` status: its PV cannot go back up at all.
+    pub no_heal: bool,
     /// `max(0, pv / max_pv)`, clamped to 1.
     pub ratio: f32,
     pub atk: i32,
@@ -730,11 +783,23 @@ pub struct CaptainMenuView {
     pub abilities: Vec<AbilityRow>,
     /// Verso only.
     pub natural_haki: Vec<HakiType>,
-    /// Verso only.
+    /// §8.40 × §8.28 follow-up — the captain's **live** traits, the union the
+    /// engine reads: `def.traits` (card-level, on *both* faces — where
+    /// `CAP-LUFFY`'s Conquérant lives) ∪ `verso.traits` when flipped ∪ every
+    /// trait its equipment grants (`logia` / `cursed` on a worn signature
+    /// fruit). Reading `verso.traits` alone hid the very keyword that unlocks
+    /// *Haki des Rois* on a recto captain.
     pub traits: Vec<Trait>,
     /// Recto only.
     pub verso_preview: Option<VersoPreview>,
+    /// *Engager* is only drawn while the captain is still recto (the flip is
+    /// irreversible).
+    pub show_flip: bool,
     pub can_flip: bool,
+    /// Why *Engager* is greyed out, in French — §8.31 (the flipped captain
+    /// occupies a slot, so a full half has nowhere to put it) and §8.6 (a
+    /// `flipCondition` with no cost still goes through `can_afford(0)`).
+    pub flip_reason: Option<&'static str>,
     /// The *Attaquer* button only exists once the captain is engaged.
     pub show_attack: bool,
     pub can_attack: bool,
@@ -763,7 +828,14 @@ pub struct CaptainMenuView {
     pub awakenings: Vec<AbilityButton>,
     /// The equipment the captain wears (§8.28 follow-up).
     pub equipment: Vec<EquipmentLine>,
+    /// *Haki des Rois* is drawn from the turn it becomes a rule at all, so the
+    /// player can read why it is not available yet.
+    pub show_king_haki: bool,
     pub can_king_haki: bool,
+    /// Why *Haki des Rois* is greyed out, in the engine's own order of tests
+    /// (`actions.rs`: turn threshold, once per game, a Conquérant in play,
+    /// then a target whose effective DEF is 3 or less).
+    pub king_haki_reason: Option<&'static str>,
     /// What *Engager* costs — `flipCondition.cost ?? 0` (§8.6: a condition
     /// with no cost is a cost of zero, and the flip is then always affordable).
     pub flip_cost: i32,
@@ -801,6 +873,52 @@ pub fn haki_label(haki: HakiType) -> &'static str {
     }
 }
 
+/// Every [`Trait`] the catalogue knows, in declaration order — the list the
+/// captain's *live* trait set is sieved through (there is no reflection over a
+/// plain `enum`, and the union below has to be able to name every keyword an
+/// equipment can grant).
+const ALL_TRAITS: [Trait; 8] = [
+    Trait::Shield,
+    Trait::Range,
+    Trait::Stealth,
+    Trait::Rush,
+    Trait::Cursed,
+    Trait::Logia,
+    Trait::Piercing,
+    Trait::Conqueror,
+];
+
+/// §8.40 × §8.28 (follow-up) — the captain's **live** traits, exactly the set
+/// every engine reader goes through.
+///
+/// `captain_traits(def, flipped) = def.traits ∪ (flipped ? verso.traits : [])`
+/// — the card-level list counts on **both** faces, which is why a recto
+/// `CAP-LUFFY` really does carry Conquérant and really can fire King Haki
+/// (`haki.rs` asks `captain_has_trait_now`, with no `flipped` requirement) —
+/// and the traits its equipment grants (`logia` / `cursed` on a worn signature
+/// fruit, plus the awakening list once awakened) sit on top.
+///
+/// The printed union keeps the engine's order; the granted ones are appended
+/// in [`ALL_TRAITS`] order so the row is stable frame to frame.
+fn captain_traits_now(
+    state: &GameState,
+    registry: &CardRegistry,
+    player: PlayerId,
+    def: &tcgop_engine::types::CaptainDef,
+    flipped: bool,
+) -> Vec<Trait> {
+    let mut traits = tcgop_engine::captain::captain_traits(def, flipped);
+    for t in ALL_TRAITS {
+        if !traits.contains(&t)
+            && tcgop_engine::captain::captain_has_trait_now(state, registry, player, t)
+                .unwrap_or(false)
+        {
+            traits.push(t);
+        }
+    }
+    traits
+}
+
 /// TS `CaptainMenu` — stats, PV, passive, the powers of the current side, the
 /// verso preview and the three action buttons.
 pub fn captain_menu_view(
@@ -814,7 +932,7 @@ pub fn captain_menu_view(
     let def = registry.captain_def(&captain.def_id)?;
     let is_you = player == human;
 
-    let (max_pv, atk, def_value, passive) = if captain.flipped {
+    let (printed_pv, atk, def_value, passive) = if captain.flipped {
         (
             def.verso.pv,
             def.verso.atk,
@@ -829,11 +947,15 @@ pub fn captain_menu_view(
             &def.recto.passive,
         )
     };
-    let ratio = if max_pv > 0 {
-        (captain.current_pv as f32 / max_pv as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    // §8.34(a)/§8.38/§8.40 — the captain has a permanent maximum-PV loss of
+    // its own (Desert Girasol, the Sand element on a captain), and
+    // `apply_captain_permanent_pv_loss` measures the maximum against the
+    // **active** face. The board's command token already subtracts it; the
+    // panel has to, or it prints a maximum the engine no longer uses and draws
+    // the gauge against the wrong denominator.
+    let pv_max_loss = captain.pv_max_loss.unwrap_or(0).max(0);
+    let max_pv = (printed_pv - pv_max_loss).max(1);
+    let ratio = (captain.current_pv as f32 / max_pv as f32).clamp(0.0, 1.0);
 
     let can_flip = is_you
         && !captain.flipped
@@ -877,7 +999,15 @@ pub fn captain_menu_view(
             .any(|a| matches!(a, GameAction::UseSurcharge { .. }));
 
     // TS `attackReason`.
-    let attack_reason = if captain.has_status(StatusEffectType::Freeze) {
+    //
+    // `can_attack` / `can_special_attack` are `is_you &&` …, so on an enemy
+    // captain every clause below is false and both rows would come back
+    // `None` — a bare disabled button. *Engager* and *Haki des Rois* already
+    // open with this clause; the two attack rows in the same panel have to
+    // agree, or half the panel explains itself and half does not.
+    let attack_reason = if !is_you {
+        Some("Capitaine adverse")
+    } else if captain.has_status(StatusEffectType::Freeze) {
         Some("Gelé !")
     } else if captain.has_status(StatusEffectType::Immobilize) {
         Some("Immobilisé !")
@@ -1026,6 +1156,44 @@ pub fn captain_menu_view(
         .flatten()
         .map(free_flip_label);
 
+    // Why *Engager* is dead, in the engine's own order: §8.31 made the flipped
+    // captain occupy a slot, so a full half has nowhere to put it; otherwise
+    // §8.6's `can_afford(flipCondition.cost ?? 0)` is the only gate left.
+    // Showing the row greyed out is the client's convention — dropping it left
+    // the two rules that explain the flip with nothing to explain.
+    let flip_reason = if can_flip {
+        None
+    } else if !is_you {
+        Some("Capitaine adverse")
+    } else if tcgop_engine::board::get_empty_slots(state, player).is_empty() {
+        Some("Aucun emplacement libre")
+    } else if free_flip_reason.is_none() && !state.can_afford(player, flip_cost) {
+        Some("Volonté insuffisante")
+    } else {
+        Some("Indisponible")
+    };
+
+    // Why *Haki des Rois* is dead, in `actions.rs`'s order of tests.
+    let king_threshold = tcgop_engine::haki::haki_threshold(HakiType::King);
+    let king_haki_reason = if can_king_haki {
+        None
+    } else if !is_you {
+        Some("Capitaine adverse")
+    } else if state.turn_number < king_threshold {
+        Some("Tour 10 minimum")
+    } else if state.player(player).king_used {
+        Some("Une fois par partie")
+    } else if !tcgop_engine::haki::has_conqueror_in_play(state, registry, player).unwrap_or(false) {
+        Some("Aucun Conquérant en jeu")
+    } else if !tcgop_engine::board::get_board_characters(state, player.opponent())
+        .iter()
+        .any(|c| get_effective_def(state, registry, &c.instance_id).unwrap_or(99) <= 3)
+    {
+        Some("Aucune cible DEF \u{2264} 3")
+    } else {
+        Some("Indisponible")
+    };
+
     Some(CaptainMenuView {
         player,
         is_you,
@@ -1035,6 +1203,8 @@ pub fn captain_menu_view(
         flipped: captain.flipped,
         pv: captain.current_pv,
         max_pv,
+        pv_max_loss,
+        no_heal: captain.has_status(StatusEffectType::NoHeal),
         ratio,
         atk,
         def: def_value,
@@ -1047,18 +1217,18 @@ pub fn captain_menu_view(
         } else {
             Vec::new()
         },
-        traits: if captain.flipped {
-            def.verso.traits.clone().unwrap_or_default()
-        } else {
-            Vec::new()
-        },
+        traits: captain_traits_now(state, registry, player, def, captain.flipped),
         verso_preview: (!captain.flipped).then(|| VersoPreview {
             atk: def.verso.atk,
             def: def.verso.def,
-            pv: def.verso.pv,
+            // §8.40 — the permanent loss follows the captain across the flip,
+            // so the preview promises the maximum the verso will really have.
+            pv: (def.verso.pv - pv_max_loss).max(1),
             passive_name: def.verso.passive.name.clone(),
         }),
+        show_flip: is_you && !captain.flipped,
         can_flip,
+        flip_reason,
         show_attack: captain.flipped,
         can_attack,
         attack_reason,
@@ -1071,7 +1241,9 @@ pub fn captain_menu_view(
         fruit_specials,
         awakenings,
         equipment: equipment_lines(state, registry, &captain.attached_objects),
+        show_king_haki: is_you,
         can_king_haki,
+        king_haki_reason,
         flip_cost,
         free_flip_reason,
         flip_command: UiCommand::SetMode(UiMode::SelectingCaptainSlot),
@@ -1207,6 +1379,15 @@ pub struct CardDetailView {
     pub equipment: Vec<EquipmentLine>,
     /// TS `hasSide` — when false the column shows one italic line instead.
     pub has_side: bool,
+    /// §8.37 (`MR-027` Embargo) — why this card cannot be played right now,
+    /// even though its owner can afford it.
+    ///
+    /// While `PlayerState::embargo_turns > 0` the enumerator drops the whole
+    /// `deployShip` and `equipObject` groups, so a Ship or an Object simply
+    /// loses its green pip — the same signal an unaffordable card gives. A
+    /// refused hand card opens this panel ([`crate::hand::hand_click_command`]),
+    /// which is where the ban gets to say it is a ban and how long it lasts.
+    pub unavailable: Option<String>,
 }
 
 /// TS `CardDetail` — the full card plus its traits / synergies / statuses /
@@ -1257,6 +1438,39 @@ pub fn card_detail_view(
         || !equipment.is_empty()
         || !traits.is_empty();
 
+    // §8.37 — the ban is on the two action groups, not on the card, so it is
+    // read off the owner rather than off the definition.
+    let embargo = instance
+        .filter(|_| matches!(def.card_type, CardType::Ship | CardType::Object))
+        .map(|i| state.player(i.owner))
+        .filter(|p| p.is_embargoed())
+        .map(|p| {
+            let turns = p.embargo_turns.unwrap_or(0).max(0);
+            format!(
+                "Embargo : ni Navire ni Objet pendant encore {turns} tour{}",
+                if turns > 1 { "s" } else { "" }
+            )
+        });
+    // §8.57 — the other "legal card, banned action" case: `build_valid_actions`
+    // withholds a `requiresOwnKO` event until one of the owner's own characters
+    // has been KO'd this game, so `hand_card_playable` darkens the pip and the
+    // click falls through to this panel. Without a line here nothing on screen
+    // ever names the condition.
+    let requires_own_ko = instance
+        .filter(|_| def.card_type == CardType::Event)
+        .filter(|_| {
+            matches!(
+                def.event_effect.as_ref(),
+                Some(EventEffect::BuffSingle {
+                    requires_own_ko: Some(true),
+                    ..
+                })
+            )
+        })
+        .filter(|i| !state.player(i.owner).char_koed_this_game())
+        .map(|_| "Nécessite qu'un de vos personnages ait été KO cette partie".to_string());
+    let unavailable = embargo.or(requires_own_ko);
+
     Some(CardDetailView {
         def_id: def_id.to_string(),
         name: def.name.clone(),
@@ -1266,6 +1480,7 @@ pub fn card_detail_view(
         statuses,
         equipment,
         has_side,
+        unavailable,
     })
 }
 
@@ -1334,6 +1549,33 @@ pub fn describe_event_confirm(effect: &EventEffect) -> String {
             // point of extra damage — a heal can never undo it.
             if sand.unwrap_or(false) {
                 line.push_str(" Sable : \u{2212}1 PV maximum, définitivement.");
+            }
+            line
+        }
+        // §8.57 — `buffSingle` buffs **one** ally and the engine picks it
+        // (`strongest_ally`), so there is nothing to aim; and `MG-024`
+        // « Flashback : Promesse » carries `requiresOwnKO`, which
+        // `build_valid_actions` enforces by withholding the card entirely.
+        // Printing the flat buff would read as unconditional.
+        EventEffect::BuffSingle {
+            stat,
+            amount,
+            duration,
+            requires_own_ko,
+        } => {
+            let mut line = format!(
+                "+{amount} {} à votre allié le plus fort ({}).",
+                match stat {
+                    AtkDefStat::Atk => "ATK",
+                    AtkDefStat::Def => "DEF",
+                },
+                match duration {
+                    BuffDuration::Turn => "ce tour",
+                    BuffDuration::Permanent => "permanent",
+                }
+            );
+            if requires_own_ko.unwrap_or(false) {
+                line.push_str(" Nécessite qu'un de vos personnages ait été KO cette partie.");
             }
             line
         }
@@ -1913,6 +2155,165 @@ mod tests {
         }
     }
 
+    /// §8.34(a)/§8.38/§8.40 — `CaptainInstance::pv_max_loss` is the panel's
+    /// denominator, not the printed PV. Every other surface already honours it
+    /// (the action menu's note, the command token's dead gauge segment); the
+    /// captain panel used to print a maximum the engine no longer uses.
+    #[test]
+    fn the_captain_menu_measures_pv_against_the_permanent_loss() {
+        let mut session = make_session(5);
+        let human = session.human;
+        let def = session
+            .registry
+            .captain_def(&session.you().captain.def_id)
+            .unwrap()
+            .clone();
+        {
+            let captain = &mut session.state.player_mut(human).captain;
+            captain.pv_max_loss = Some(2);
+            captain.current_pv = def.recto.pv - 2;
+        }
+        session.refresh_valid();
+
+        let view = captain_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            human,
+            human,
+        )
+        .unwrap();
+        assert_eq!(view.pv_max_loss, 2, "the panel carries the permanent loss");
+        assert_eq!(
+            view.max_pv,
+            def.recto.pv - 2,
+            "the maximum the engine caps heals at, not the printed one"
+        );
+        assert!(
+            (view.ratio - 1.0).abs() < 1e-6,
+            "the gauge is full at the reduced maximum"
+        );
+        assert_eq!(
+            view.verso_preview.expect("recto previews the verso").pv,
+            def.verso.pv - 2,
+            "the loss follows the captain across the flip"
+        );
+    }
+
+    /// §8.40 — `captain_traits(def, flipped) = def.traits ∪ (flipped ?
+    /// verso.traits : [])`: the card-level list counts on **both** faces, so a
+    /// recto `CAP-LUFFY` really does carry the Conquérant that `haki.rs` reads
+    /// for King Haki. The panel used to show `verso.traits` alone and hid it.
+    #[test]
+    fn a_recto_captain_lists_its_card_level_traits() {
+        let session = make_session(5);
+        let def = session
+            .registry
+            .captain_def(&session.you().captain.def_id)
+            .unwrap();
+        let printed = tcgop_engine::captain::captain_traits(def, false);
+        let view = captain_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            session.human,
+            session.human,
+        )
+        .unwrap();
+        assert!(!view.flipped);
+        assert_eq!(
+            view.traits, printed,
+            "the recto shows the engine's own trait union, not an empty list"
+        );
+        assert!(
+            view.traits.contains(&Trait::Conqueror),
+            "CAP-LUFFY prints Conquérant at card level: {:?}",
+            view.traits
+        );
+    }
+
+    /// The client's convention is that a menu **shows** a control and greys it
+    /// out with a French reason. *Engager* and *Haki des Rois* were the last
+    /// two captain controls that simply vanished.
+    #[test]
+    fn engager_and_king_haki_are_greyed_out_rather_than_dropped() {
+        let mut session = make_session(5);
+        let human = session.human;
+        session.state.player_mut(human).volonte = 0;
+        session.refresh_valid();
+
+        let view = captain_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            human,
+            human,
+        )
+        .unwrap();
+        assert!(view.show_flip, "a recto captain always offers *Engager*");
+        assert!(view.show_king_haki, "your own captain always offers it");
+        assert_eq!(
+            view.can_flip,
+            view.flip_reason.is_none(),
+            "a dead *Engager* must carry a reason and a live one must not"
+        );
+        assert!(!view.can_king_haki, "turn 1 is far below the T10 threshold");
+        assert_eq!(view.king_haki_reason, Some("Tour 10 minimum"));
+
+        // The enemy panel keeps its controls hidden, as it always did.
+        let foe = captain_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            session.ai_player(),
+            human,
+        )
+        .unwrap();
+        assert!(!foe.show_flip);
+        assert!(!foe.show_king_haki);
+    }
+
+    /// §8.38 — a support special short-circuits into `resolve_support_special`
+    /// and never builds a `PendingAttack`, so it can never deal damage. The
+    /// old predicate only hid the ATK column for a *heal*, which left
+    /// `RH-004` Provocation (a pure taunt) advertising "ATK 3".
+    #[test]
+    fn a_support_special_advertises_no_atk() {
+        use tcgop_engine::state::CardInstance;
+        use tcgop_engine::types::Zone;
+
+        let mut session = make_session(6);
+        let human = session.human;
+        assert!(advance(&mut session, 200, |s: &Session| {
+            s.state.current_player == human && s.state.pending_attack.is_none()
+        }));
+
+        let id = session.ctx.generate_instance_id("RH-004");
+        let mut rockstar = CardInstance::new(id.clone(), "RH-004".into(), human, 6);
+        rockstar.zone = Zone::Board;
+        rockstar.slot = Some(Slot::V1);
+        rockstar.deployed_turn = Some(0);
+        session.state.cards.insert(id.clone(), rockstar);
+        *session
+            .state
+            .players
+            .get_mut(human)
+            .board
+            .slot_mut(Slot::V1) = Some(id.clone());
+        session.refresh_valid();
+
+        let view = action_menu_view(&session.state, &session.registry, &session.valid, &id)
+            .expect("the unit has a menu");
+        let special = view.special.expect("RH-004 prints a special");
+        assert!(special.is_support, "Provocation is `isSupport`");
+        assert_eq!(
+            special.atk, None,
+            "a support special deals zero damage, whatever ATK the bearer has"
+        );
+        // Its printed attack is untouched: the two are separate rows.
+        assert_eq!(view.base.expect("RH-004 also attacks").atk, Some(view.atk));
+    }
+
     /// A recto captain has no ★ button at all.
     #[test]
     fn a_recto_captain_has_no_special_attack_button() {
@@ -1930,6 +2331,53 @@ mod tests {
     }
 
     // --- card detail ----------------------------------------
+
+    /// §8.37 (`MR-027`) — while the Embargo is up the enumerator drops the
+    /// whole `deployShip` / `equipObject` groups, so the card loses its green
+    /// pip exactly as an unaffordable one does. A refused hand card opens the
+    /// detail panel, which is where the ban has to name itself.
+    #[test]
+    fn an_embargoed_ship_says_why_it_cannot_be_played() {
+        use tcgop_engine::state::CardInstance;
+        use tcgop_engine::types::Zone;
+
+        let mut session = make_session(4);
+        let human = session.human;
+        let ship_def = session
+            .registry
+            .all_card_defs()
+            .values()
+            .find(|d| d.card_type == CardType::Ship)
+            .expect("the catalogue ships at least one Navire")
+            .id
+            .clone();
+
+        let id = session.ctx.generate_instance_id(&ship_def);
+        let mut ship = CardInstance::new(id.clone(), ship_def.clone(), human, 0);
+        ship.zone = Zone::Hand;
+        session.state.cards.insert(id.clone(), ship);
+        session.state.players.get_mut(human).hand.push(id.clone());
+        session.state.players.get_mut(human).embargo_turns = Some(2);
+        session.refresh_valid();
+
+        assert!(
+            !crate::selection::hand_card_playable(&session.valid, &id),
+            "the enumerator drops the whole deployShip group"
+        );
+        let view = card_detail_view(&session.state, &session.registry, &ship_def, Some(&id))
+            .expect("the ship has a detail panel");
+        let reason = view.unavailable.expect("the ban states itself");
+        assert!(
+            reason.contains("Embargo") && reason.contains('2'),
+            "the note names the ban and counts the turns down: {reason}"
+        );
+
+        // Lift it and the note is gone.
+        session.state.players.get_mut(human).embargo_turns = None;
+        let view = card_detail_view(&session.state, &session.registry, &ship_def, Some(&id))
+            .expect("the ship has a detail panel");
+        assert_eq!(view.unavailable, None);
+    }
 
     #[test]
     fn a_card_detail_without_extras_hides_its_side_column() {
@@ -2444,5 +2892,171 @@ mod tests {
             tcgop_engine::haki::def_has_natural_haki(def),
             "the pill must agree with the engine's own predicate"
         );
+    }
+
+    /// §8.2 — `actions::is_action_blocked` treats Sleep and LoseAction exactly
+    /// like Freeze / Immobilize for `baseAttack`, `specialAttack` and
+    /// `baseSupportAction`; `board::can_move` blocks on Sleep but deliberately
+    /// not on LoseAction. Before this, both statuses produced a menu of dead
+    /// rows blaming "Pas de cible" and no chip naming the status — with
+    /// MG-004 Usopp's *Bluff* pushing LoseAction in the shipped ST01 starter.
+    #[test]
+    fn sleep_and_a_lost_action_name_themselves_instead_of_blaming_the_targets() {
+        for (effect, label, move_blocked) in [
+            (StatusEffectType::Sleep, "Endormi", true),
+            (StatusEffectType::LoseAction, "Action perdue", false),
+        ] {
+            let (mut session, id) = deploy_one(7).expect("seed 7 must let the human deploy");
+            {
+                let card = session.state.cards.get_mut(&id).expect("the deployed unit");
+                // Out of the mal de terre, and untapped, so the *only* thing
+                // left that can stop it is the status under test.
+                card.deployed_turn = Some(0);
+                card.tapped = false;
+                card.status_effects.push(StatusEffect {
+                    effect_type: effect,
+                    turns_remaining: 2,
+                    damage_per_turn: 0,
+                    source: "probe".into(),
+                });
+            }
+            session.state.player_mut(session.human).volonte = 9;
+            session.refresh_valid();
+
+            let view = action_menu_view(&session.state, &session.registry, &session.valid, &id)
+                .expect("the unit has a menu");
+            assert!(
+                view.flags.contains(&label),
+                "{label}: the panel must carry a chip naming the status, got {:?}",
+                view.flags
+            );
+            if let Some(base) = &view.base {
+                assert!(base.disabled, "{label}: the base row is blocked");
+                assert_eq!(base.reason.as_deref(), Some(label));
+            }
+            if let Some(special) = &view.special {
+                assert!(special.disabled, "{label}: the special row is blocked");
+                assert_eq!(special.reason.as_deref(), Some(label));
+            }
+            let free_move = view.free_move.expect("a character always shows *Déplacer*");
+            if move_blocked {
+                assert!(
+                    free_move.disabled,
+                    "{label}: `can_move` refuses a sleeper's move"
+                );
+                assert_eq!(
+                    free_move.reason.as_deref(),
+                    Some(label),
+                    "{label}: and it must say so rather than \"Aucune case adjacente\""
+                );
+            } else {
+                assert!(
+                    !free_move.disabled && free_move.reason.is_none(),
+                    "{label}: `can_move` ignores LoseAction, so the move stays live"
+                );
+            }
+        }
+    }
+
+    /// The enemy captain panel used to disable *Attaquer* and the ★ button
+    /// with no reason at all, while *Engager* and *Haki des Rois* in the same
+    /// panel said "Capitaine adverse".
+    #[test]
+    fn an_enemy_captains_attack_rows_say_whose_captain_it_is() {
+        let mut session = make_session(1);
+        let human = session.human;
+        let ai = session.ai_player();
+        let def = session
+            .registry
+            .captain_def(&session.state.player(ai).captain.def_id)
+            .unwrap()
+            .clone();
+        {
+            let captain = &mut session.state.player_mut(ai).captain;
+            captain.flipped = true;
+            captain.current_pv = def.verso.pv;
+            captain.slot = Some(Slot::V1);
+            captain.deployed_turn = Some(0);
+            captain.tapped = false;
+        }
+        session.state.player_mut(ai).volonte = def.verso.special_attack.cost + 5;
+        assert!(advance(&mut session, 200, |s: &Session| {
+            s.state.current_player == human && s.state.pending_attack.is_none()
+        }));
+
+        let view = captain_menu_view(&session.state, &session.registry, &session.valid, ai, human)
+            .unwrap();
+        assert!(view.show_attack && view.show_special_attack);
+        assert!(!view.can_attack && !view.can_special_attack);
+        assert_eq!(view.attack_reason, Some("Capitaine adverse"));
+        assert_eq!(view.special_attack_reason, Some("Capitaine adverse"));
+        assert_eq!(
+            view.flip_reason.is_some(),
+            view.attack_reason.is_some(),
+            "all four rows of one panel explain themselves the same way"
+        );
+    }
+
+    /// §8.57 — MG-024 « Flashback : Promesse » is withheld by
+    /// `build_valid_actions` until one of your own characters has been KO'd,
+    /// so the detail panel is the only place that can name the condition.
+    #[test]
+    fn a_requires_own_ko_event_says_what_unlocks_it() {
+        use tcgop_engine::state::CardInstance;
+        use tcgop_engine::types::Zone;
+
+        let mut session = make_session(3);
+        let human = session.human;
+        assert!(advance(&mut session, 200, |s: &Session| {
+            s.state.current_player == human && s.state.pending_attack.is_none()
+        }));
+
+        let id = session.ctx.generate_instance_id("MG-024");
+        let mut card = CardInstance::new(id.clone(), "MG-024".into(), human, 0);
+        card.zone = Zone::Hand;
+        session.state.cards.insert(id.clone(), card);
+        session.state.player_mut(human).hand.push(id.clone());
+        session.refresh_valid();
+
+        let view = card_detail_view(&session.state, &session.registry, "MG-024", Some(&id))
+            .expect("the event has a detail panel");
+        assert_eq!(
+            view.unavailable.as_deref(),
+            Some("Nécessite qu'un de vos personnages ait été KO cette partie"),
+            "no ally has been KO'd yet, so the panel names the gate"
+        );
+
+        // Once the gate opens the line goes away — and so does the ban.
+        session.state.player_mut(human).char_ko_ed_this_game = Some(true);
+        session.refresh_valid();
+        let open =
+            card_detail_view(&session.state, &session.registry, "MG-024", Some(&id)).unwrap();
+        assert_eq!(open.unavailable, None);
+    }
+
+    /// The confirmation panel prints the rule the engine actually applies:
+    /// one ally, picked by `strongest_ally`, plus the §8.57 condition.
+    #[test]
+    fn a_buff_single_confirmation_states_the_condition_and_the_engines_pick() {
+        let flashback = EventEffect::BuffSingle {
+            stat: AtkDefStat::Atk,
+            amount: 3,
+            duration: BuffDuration::Permanent,
+            requires_own_ko: Some(true),
+        };
+        let line = describe_event_confirm(&flashback);
+        assert!(line.contains("le plus fort"), "{line}");
+        assert!(line.contains("permanent"), "{line}");
+        assert!(line.contains("KO cette partie"), "{line}");
+
+        let plain = EventEffect::BuffSingle {
+            stat: AtkDefStat::Def,
+            amount: 1,
+            duration: BuffDuration::Turn,
+            requires_own_ko: None,
+        };
+        let line = describe_event_confirm(&plain);
+        assert!(!line.contains("KO cette partie"), "{line}");
+        assert!(line.contains("ce tour"), "{line}");
     }
 }

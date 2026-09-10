@@ -881,6 +881,36 @@ pub fn on_cell_drop(
     on_cell_click(mode, valid, ai_player, slot, is_player_side, occupant)
 }
 
+/// The captain end of the same gesture — TS has no equivalent because the DOM
+/// captain card carried the very same `onDrop={act}` as a board slot.
+///
+/// §8.31 keeps the flipped captain out of `player.board`, so a drop on the cell
+/// it occupies finds `occupant == None` and [`on_cell_click`] falls straight
+/// through to [`UiCommand::Ignore`]. That silently killed the only way `MG-014`
+/// *Gomu Gomu no Mi* is ever equipped: its `restriction: "Luffy"` matches no
+/// card in the catalogue, only the captain `Monkey D. Luffy`, so the §8.28
+/// follow-up `EquipObject { target_is_captain: Some(true) }` in
+/// [`on_captain_click`] is its sole route — and `hand_drag_command` arms the
+/// drag for Objects, so dragging the fruit out of the hand was a dead end onto
+/// a cell the board had already lit with `Ring::Deploy`.
+///
+/// Same gate as [`on_cell_drop`]: a release only completes a gesture the hand
+/// actually armed.
+pub fn on_captain_drop(
+    mode: &UiMode,
+    valid: &[GameAction],
+    ai_player: PlayerId,
+    player_id: PlayerId,
+) -> UiCommand {
+    if !matches!(
+        mode,
+        UiMode::SelectingSlot { .. } | UiMode::SelectingEquipTarget { .. }
+    ) {
+        return UiCommand::Ignore;
+    }
+    on_captain_click(mode, valid, ai_player, player_id)
+}
+
 /// Build the right attack action for an attacker id (card **or** captain key)
 /// — TS `handleBoardCharClick`, which branches on
 /// `uiMode.attackerId.startsWith("captain_")`.
@@ -1372,13 +1402,13 @@ mod tests {
     /// Mock-up `<span class="you-turn">✦ À toi</span>`.
     #[test]
     fn the_ready_pill_is_the_mock_ups() {
-        let hint = status_hint(&UiMode::Idle, false, false);
+        let hint = status_hint(&UiMode::Idle, false, false, false);
         assert_eq!(hint.text, "À toi");
         assert_eq!(hint.glyph, Some("\u{2726}"));
         assert_eq!(hint.tone, StatusTone::Ready);
         assert!(!hint.pulse);
         // Every other state keeps its bare label.
-        assert_eq!(status_hint(&UiMode::Idle, true, false).glyph, None);
+        assert_eq!(status_hint(&UiMode::Idle, true, false, false).glyph, None);
     }
 
     // --- highlighting ---------------------------------------
@@ -1627,6 +1657,40 @@ mod tests {
         assert_eq!(on_captain_click(&mode, &valid, AI, AI), UiCommand::Ignore);
     }
 
+    /// …and the **drag** has to land there too. §8.31 keeps the flipped
+    /// captain out of `player.board`, so a drop on the cell it occupies finds
+    /// no occupant and `on_cell_drop` swallows the release — which made
+    /// `MG-014` *Gomu Gomu no Mi* undroppable, and it has no other route:
+    /// its `restriction: "Luffy"` matches no card in the catalogue, only the
+    /// captain `Monkey D. Luffy`.
+    #[test]
+    fn your_captain_accepts_the_equip_as_a_drop_too() {
+        let human = PlayerId::Player1;
+        let key = captain_key(human);
+        let equip = GameAction::EquipObject {
+            object_instance_id: "gomu".into(),
+            target_instance_id: key.clone(),
+            target_is_captain: Some(true),
+        };
+        let valid = vec![equip.clone()];
+        let mode = UiMode::SelectingEquipTarget {
+            object_id: "gomu".into(),
+        };
+
+        assert_eq!(
+            on_captain_drop(&mode, &valid, AI, human),
+            UiCommand::Dispatch(equip),
+            "the gesture the board lights with `Ring::Deploy` must complete"
+        );
+        // Same gate as `on_cell_drop`: a release no hand drag armed is inert.
+        assert_eq!(
+            on_captain_drop(&UiMode::Idle, &valid, AI, human),
+            UiCommand::Ignore
+        );
+        // And the foe's captain is no more a bearer on drop than on click.
+        assert_eq!(on_captain_drop(&mode, &valid, AI, AI), UiCommand::Ignore);
+    }
+
     #[test]
     fn captain_clicks_attack_then_open_the_menu() {
         let key = captain_key(AI);
@@ -1720,14 +1784,32 @@ mod tests {
             attacker_id: "zoro".into(),
             kind: AttackKind::Base,
         };
-        assert_eq!(status_hint(&target, true, false).tone, StatusTone::Waiting);
-        assert_eq!(status_hint(&target, false, true).tone, StatusTone::Danger);
-        assert_eq!(status_hint(&target, false, false).tone, StatusTone::Target);
         assert_eq!(
-            status_hint(&UiMode::Idle, false, false).tone,
+            status_hint(&target, true, false, false).tone,
+            StatusTone::Waiting
+        );
+        assert_eq!(
+            status_hint(&target, false, true, false).tone,
+            StatusTone::Danger
+        );
+        assert_eq!(
+            status_hint(&target, false, false, false).tone,
+            StatusTone::Target
+        );
+        // §8.38 — the same mode, aiming a support special: cyan, not red.
+        assert_eq!(
+            status_hint(&target, false, false, true).tone,
+            StatusTone::Support
+        );
+        assert_eq!(
+            status_hint(&target, false, false, true).text,
+            "Cible du pouvoir"
+        );
+        assert_eq!(
+            status_hint(&UiMode::Idle, false, false, false).tone,
             StatusTone::Ready
         );
-        assert!(!status_hint(&UiMode::Idle, false, false).pulse);
+        assert!(!status_hint(&UiMode::Idle, false, false, false).pulse);
     }
 
     // --- against a real engine session -----------------------
@@ -2486,6 +2568,53 @@ mod tests {
                 }
             );
             assert_offered(&session, &action);
+        }
+
+        /// §8.38 — the same aim runs through [`UiMode::SelectingTarget`], but a
+        /// support special never builds a `PendingAttack`: it deals no damage
+        /// and its legal target may be one of your own allies. The header has
+        /// to fly the support colours, not the attack red.
+        #[test]
+        fn aiming_a_support_special_flies_the_support_colours() {
+            let mut session = table(41);
+            let human = session.human;
+            let caster = put(&mut session, "RH-004", human, Slot::V1);
+            let blade = put(&mut session, "MG-002", human, Slot::V2);
+            session.refresh_valid();
+
+            let support = UiMode::SelectingTarget {
+                attacker_id: caster.clone(),
+                kind: AttackKind::Special,
+            };
+            assert!(aim_is_support(&support, &session.state, &session.registry));
+            let hint = status_hint(&support, false, false, true);
+            assert_eq!(hint.tone, StatusTone::Support);
+            assert_eq!(hint.text, "Cible du pouvoir");
+
+            // A special that really is a blow keeps the attack red.
+            let blow = UiMode::SelectingTarget {
+                attacker_id: blade,
+                kind: AttackKind::Special,
+            };
+            assert!(!aim_is_support(&blow, &session.state, &session.registry));
+            assert_eq!(
+                status_hint(
+                    &blow,
+                    false,
+                    false,
+                    aim_is_support(&blow, &session.state, &session.registry)
+                )
+                .tone,
+                StatusTone::Target
+            );
+
+            // The base action of the very same unit is not this: it has its
+            // own `baseSupportAction` route and its own mode.
+            let base = UiMode::SelectingTarget {
+                attacker_id: caster,
+                kind: AttackKind::Base,
+            };
+            assert!(!aim_is_support(&base, &session.state, &session.registry));
         }
 
         // --- §8.5/§8.36/§8.38/§8.40 the permanent max-PV loss ----

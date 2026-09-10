@@ -16,7 +16,7 @@ use crate::board::model::{
     UnitView,
 };
 use crate::board::style::{caption, overlay, text, tone_color};
-use crate::hand::card_face::{ANCHOR, CARD_BACK, CROSSED_SWORDS, HAND_GLYPH, SHIELD};
+use crate::hand::card_face::{ANCHOR, CARD_BACK, CROSSED_SWORDS, HAND_GLYPH, NO_ENTRY, SHIELD};
 
 /// Nominal pixel size of every illustration in `assets/cards` (they are all
 /// 700x1050) and of the two ship-deck floors in `assets/decks`.
@@ -735,10 +735,54 @@ impl Painter<'_, '_, '_> {
         if res.is_you {
             self.will_row(column, res);
             self.counts_row(column, res);
+            self.embargo_row(column, res);
         } else {
+            self.embargo_row(column, res);
             self.counts_row(column, res);
             self.will_row(column, res);
         }
+    }
+
+    /// §8.37 (`MR-027`) — the Embargo pill: "⊘ EMBARGO n".
+    ///
+    /// While it is up the enumerator drops the whole `deployShip` and
+    /// `equipObject` groups, so the affected hand cards simply lose their green
+    /// pip — the same signal an unaffordable card gives. This is the one place
+    /// on the board that tells the two apart, and it counts the turns down.
+    /// Drawn on either half: the ban is public information.
+    fn embargo_row(&mut self, parent: Entity, res: &ResourceView) {
+        if res.embargo_turns <= 0 {
+            return;
+        }
+        let accent = self.palette.atk;
+        let row = self.child(
+            parent,
+            (
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: px(4.0),
+                    padding: UiRect::axes(px(7.0), px(2.0)),
+                    border_radius: BorderRadius::all(px(7.0)),
+                    ..default()
+                },
+                BackgroundColor(accent.with_alpha(0.18)),
+                Pickable::IGNORE,
+            ),
+        );
+        let symbols = self.symbols.clone();
+        let font = self.fonts.poppins_semi.clone();
+        self.child(row, text(NO_ENTRY, &symbols, l::FS_TINY, accent));
+        self.child(
+            row,
+            caption(
+                format!("EMBARGO {}", res.embargo_turns),
+                &font,
+                l::FS_TINY,
+                accent,
+                1.0,
+            ),
+        );
     }
 
     fn will_row(&mut self, parent: Entity, res: &ResourceView) {

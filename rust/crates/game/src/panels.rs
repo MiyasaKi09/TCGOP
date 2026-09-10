@@ -60,9 +60,10 @@ use model::{
     AbilityKind, AbilityRow, AttackOption, CounterKind, StatusChip, haki_label, turns_label,
 };
 use widgets::{
-    ANCHOR, BOLT, ButtonSpec, ButtonTone, CROWN, ClickCommand, EYE, HEART, PanelButton, PanelCtx,
-    SHIELD, SPARKLE, STAR, SWORD, body, button_gradient, catcher, column, line, panel, popover,
-    row, scrim, section, spawn_button, spawn_caption, spawn_close_cross, spawn_gauge, spawn_pill,
+    ANCHOR, BOLT, ButtonSpec, ButtonTone, CROWN, ClickCommand, EYE, HEART, NO_ENTRY, PanelButton,
+    PanelCtx, SHIELD, SPARKLE, STAR, SWORD, body, button_gradient, catcher, column, line, panel,
+    popover, row, scrim, section, spawn_button, spawn_caption, spawn_close_cross, spawn_gauge,
+    spawn_pill,
 };
 
 // ============================================================
@@ -1009,12 +1010,18 @@ fn spawn_popover_action(
     option: &AttackOption,
     label: &str,
 ) {
-    let tone = if option.is_special {
-        ButtonTone::Danger
-    } else {
-        ButtonTone::Gold
+    // §8.38 — a support special spends the caster's action on an *effect* and
+    // never builds a `PendingAttack`, so it drops the attack-red ★ gradient for
+    // the support cyan the header uses while it is aimed. Its ATK column is
+    // gone for the same reason. The printed base support action keeps the gold
+    // it always had: it is the row the mock-up drew.
+    let support_special = option.is_special && option.is_support;
+    let tone = match (option.is_special, support_special) {
+        (_, true) => ButtonTone::Cyan,
+        (true, false) => ButtonTone::Danger,
+        (false, false) => ButtonTone::Gold,
     };
-    let label = match (&option.reason, option.is_special) {
+    let label = match (&option.reason, option.is_special && !support_special) {
         (Some(reason), _) => format!("{label} — {reason}"),
         (None, true) => format!("{label} {STAR}"),
         (None, false) => label.to_string(),
@@ -1188,6 +1195,26 @@ fn spawn_captain_menu(
                     spawn_stat_pair(stats, ctx, view.atk, view.def);
                 });
 
+            // §8.34(a)/§8.38/§8.40 — the captain's own permanent maximum-PV
+            // loss and the `noHeal` blow. Both change what the PV number
+            // *means*, so they are stated next to it, exactly as the character
+            // menu states them.
+            if view.pv_max_loss > 0 || view.no_heal {
+                let mut notes: Vec<String> = Vec::new();
+                if view.pv_max_loss > 0 {
+                    notes.push(format!("PV max \u{2212}{} (permanent)", view.pv_max_loss));
+                }
+                if view.no_heal {
+                    notes.push("Soins bloqués".to_string());
+                }
+                panel.spawn(line(
+                    notes.join(" \u{00B7} "),
+                    &ctx.fonts.poppins,
+                    L::FS_TINY,
+                    palette.hp_low,
+                ));
+            }
+
             spawn_status_pills(panel, ctx, &view.statuses);
 
             // --- passive of the visible side ---
@@ -1280,20 +1307,30 @@ fn spawn_captain_menu(
                 .spawn((column(6.), Pickable::IGNORE))
                 .with_children(|actions| {
                     if view.is_you {
-                        if view.can_flip {
-                            // §8.6 / §8.33: the flip is free while one of the
-                            // five printed clauses holds, and costs
-                            // `flipCondition.cost ?? 0` otherwise. The player
-                            // has to be able to see which, or a "free" flip
-                            // looks like the engine losing Volonté.
-                            let label = match (view.free_flip_reason, view.flip_cost) {
-                                (Some(reason), _) => {
+                        // §8.6 / §8.33: the flip is free while one of the five
+                        // printed clauses holds, and costs
+                        // `flipCondition.cost ?? 0` otherwise. The player has
+                        // to be able to see which, or a "free" flip looks like
+                        // the engine losing Volonté — and when the engine is
+                        // *not* offering it (§8.31: the verso needs an empty
+                        // slot) the row still shows, greyed out with the rule,
+                        // like every other gated control here.
+                        if view.show_flip {
+                            let label = match (view.can_flip, view.flip_reason) {
+                                (false, Some(reason)) => {
                                     format!("Engager le Capitaine \u{2014} {reason}")
                                 }
-                                (None, 0) => "Engager le Capitaine \u{2014} gratuit".to_string(),
-                                (None, cost) => {
-                                    format!("Engager le Capitaine \u{2014} {cost} Volont\u{00E9}")
-                                }
+                                _ => match (view.free_flip_reason, view.flip_cost) {
+                                    (Some(reason), _) => {
+                                        format!("Engager le Capitaine \u{2014} {reason}")
+                                    }
+                                    (None, 0) => {
+                                        "Engager le Capitaine \u{2014} gratuit".to_string()
+                                    }
+                                    (None, cost) => format!(
+                                        "Engager le Capitaine \u{2014} {cost} Volont\u{00E9}"
+                                    ),
+                                },
                             };
                             spawn_button(
                                 actions,
@@ -1303,7 +1340,8 @@ fn spawn_captain_menu(
                                     ButtonTone::Danger,
                                     view.flip_command.clone(),
                                 )
-                                .glyph(SWORD),
+                                .glyph(SWORD)
+                                .disabled(!view.can_flip),
                             );
                         }
                         if view.show_attack {
@@ -1408,16 +1446,28 @@ fn spawn_captain_menu(
                                 .disabled(awakening.disabled),
                             );
                         }
-                        if view.can_king_haki {
+                        // The last captain control that used to vanish instead
+                        // of explaining itself: turn 10, once per game, a
+                        // Conquérant in play (§8.40 counts a *recto* card-level
+                        // one) and an enemy at DEF ≤ 3 are four separate rules,
+                        // and the button is where they are read.
+                        if view.show_king_haki {
+                            let label = match (view.can_king_haki, view.king_haki_reason) {
+                                (false, Some(reason)) => {
+                                    format!("Haki des Rois \u{2014} {reason}")
+                                }
+                                _ => "Haki des Rois".to_string(),
+                            };
                             spawn_button(
                                 actions,
                                 ctx,
                                 ButtonSpec::new(
-                                    "Haki des Rois",
+                                    label,
                                     ButtonTone::Gold,
                                     view.king_haki_command.clone(),
                                 )
-                                .glyph(CROWN),
+                                .glyph(CROWN)
+                                .disabled(!view.can_king_haki),
                             );
                         }
                     }
@@ -1780,6 +1830,37 @@ fn spawn_card_detail(
                                 });
                                 spawn_close_cross(head, ctx);
                             });
+
+                            // §8.37 — the reason a Ship / Object went dark
+                            // that is *not* a Volonté shortfall. Stated before
+                            // anything else on the column: the player opened
+                            // this panel because the card refused a click.
+                            if let Some(reason) = &view.unavailable {
+                                col.spawn((
+                                    section(
+                                        palette.atk.with_alpha(0.12),
+                                        Some(palette.atk.with_alpha(0.40)),
+                                    ),
+                                    Pickable::IGNORE,
+                                ))
+                                .with_children(|box_| {
+                                    box_.spawn((row(5.), Pickable::IGNORE))
+                                        .with_children(|head| {
+                                            head.spawn(line(
+                                                NO_ENTRY,
+                                                ctx.symbols,
+                                                L::FS_BODY,
+                                                palette.atk,
+                                            ));
+                                            head.spawn(body(
+                                                reason.clone(),
+                                                &ctx.fonts.poppins,
+                                                L::FS_LABEL,
+                                                palette.atk,
+                                            ));
+                                        });
+                                });
+                            }
 
                             let traits: Vec<&str> =
                                 view.traits.iter().map(|t| trait_label(*t)).collect();
