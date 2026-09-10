@@ -102,6 +102,12 @@ export interface SpecialAttack {
   noHeal?: boolean;
   /** Self-transformation special (Chopper Monster Point): set stats + Rush for N turns, then self-KO */
   transform?: { atk: number; def: number; pv: number; turns: number };
+  /** Support: the target must attack the caster on its next turn (RH-004, BW-005) */
+  taunt?: boolean;
+  /** Support: the ally loses gelé / immobilisé (RH-009 Stimulant) */
+  cleanse?: boolean;
+  /** Support: one ally gains +N ATK this turn (RH-009 Stimulant) */
+  buffAllyAtk?: number;
   description?: string;
 }
 
@@ -355,7 +361,7 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal" | "taunt";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;

@@ -39,7 +39,7 @@ export const baroqueCards: CardDef[] = [
     atk: 1, def: 1, pv: 4, tags: ["baroque", "female"], preferredRow: "back",
     passive: { name: "Colors Trap", description: "Un ennemi a -2 ATK tant que Miss Goldenweek est en jeu.", effects: [{ type: "debuffOneEnemy", amount: 2 }] },
     baseAction: { name: "Peinture du Rire", atk: 0, isSupport: true, immobilize: true, description: "Un ennemi perd sa prochaine action (figé de rire)." },
-    specialAttack: { name: "Peinture de la Colère", cost: 1, atkBonus: 0, isSupport: true, description: "Un ennemi doit cibler Miss Goldenweek à son prochain tour." },
+    specialAttack: { name: "Peinture de la Colère", cost: 1, atkBonus: 0, isSupport: true, taunt: true, description: "Un ennemi doit cibler Miss Goldenweek à son prochain tour." },
   },
   {
     id: "BW-006", name: "Mr. 5", type: "character", cost: 2,
