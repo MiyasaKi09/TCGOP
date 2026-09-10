@@ -175,6 +175,59 @@ fn all_four_decks_verify_against_the_registry() {
     }
 }
 
+/// Decision §8.28 (follow-up) — every shipped decklist's signature SR Devil
+/// Fruit has a legal bearer.
+///
+/// `MG-014` / `BW-011` / `MR-011` are printed "Équipable sur Luffy /
+/// Crocodile / Akainu": names that exist in the game only as captains. Under
+/// the character-only reading each of the three decks carried a permanently
+/// dead SR card, and `BW-011`'s Ground Death — the §8.38 × §8.48 work — could
+/// never be played at all.
+#[test]
+fn every_signature_fruit_has_a_bearer_in_its_own_deck() {
+    let registry = cards::registry();
+    for (deck, fruit_id) in [
+        ("Mugiwara - Pre-Ellipse", "MG-014"),
+        ("Marines - Justice Absolue", "MR-011"),
+        ("Baroque Works - Utopia", "BW-011"),
+    ] {
+        let deck_def = all_decks()
+            .into_iter()
+            .find(|d| d.name == deck)
+            .expect("a shipped decklist");
+        assert!(
+            deck_def.cards.iter().any(|c| c.card_id == fruit_id),
+            "{deck} ships {fruit_id}"
+        );
+        let fruit = registry.get_card_def(fruit_id).expect("a shipped fruit");
+        let restriction = fruit
+            .restriction
+            .as_deref()
+            .expect("the fruit prints a restriction");
+        // No character in the whole catalogue satisfies it …
+        assert!(
+            !registry.all_card_defs().values().any(|c| c.card_type
+                == tcgop_engine::types::CardType::Character
+                && (c.name.contains(restriction)
+                    || c.tags
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|t| t == restriction))),
+            "{fruit_id} would have a character bearer after all"
+        );
+        // … and the deck's own captain does.
+        let cap = registry
+            .get_captain_def(&deck_def.captain_id)
+            .expect("a shipped captain");
+        assert!(
+            cap.name.contains(restriction),
+            "{} does not satisfy \"Équipable sur {restriction}\"",
+            cap.name
+        );
+    }
+}
+
 #[test]
 fn a_game_can_be_created_from_every_deck_pairing() {
     let registry = cards::registry();
@@ -271,6 +324,14 @@ fn ai_games_terminate_with_a_winner_for_every_difficulty_and_seed() {
         run - finished,
         unfinished.join("\n")
     );
+    // Decision §8.57: `get_valid_actions` is the legality contract, so the AI
+    // never needs the host's `passCounter` / `endTurn` catch. The last five
+    // fallbacks were `survive` counters offered against a captain-targeted
+    // attack, which `get_eligible_counters` now screens out.
+    assert_eq!(
+        fallbacks, 0,
+        "the AI lost {fallbacks} action(s) to the host fallback — an offered action threw"
+    );
 }
 
 // ============================================================
@@ -340,52 +401,31 @@ fn a_serde_round_trip_of_a_final_state_is_stable() {
 // (d) valid_actions ⊆ accepted-by-apply
 // ============================================================
 
-/// The four places where the TypeScript engine itself offers an action that
-/// its own `executeAction` then refuses — `getValidActions` screens on card
-/// *type* and cost only, while the mutator re-checks the rule. The port
-/// reproduces them exactly (zero behavioural drift), so they are listed rather
-/// than fixed; anything outside this list is a port bug.
+/// Decision §8.57: **every** action `get_valid_actions` offers must be one
+/// `apply` accepts — there is no whitelist any more.
 ///
-/// - `equipObject`: `getValidActions` (turnManager.ts:899-913) never looks at
-///   equipment slots; `equipObject` (board.ts:383-387) throws
-///   `"${name} already has max ${subtype} equipped"`.
-/// - `playEvent`: the event branch (turnManager.ts:915-922) only checks cost;
-///   the `buffSingle` / Flashback effect (turnManager.ts:379-381) throws when
-///   no own character has been KO'd this game.
-/// - `useHaki { observation }`: offered when the *defender* still has it
-///   (turnManager.ts:848), but `executeAction` runs `handleHaki` with
-///   `state.currentPlayer` — the attacker (turnManager.ts:108-109, 809-816) —
-///   so `useObservationHaki` (haki.ts:41) throws on the wrong player's flag.
-/// - `playCounter`: every eligible counter is offered
-///   (turnManager.ts:841-843), but a `survive` counter refuses a captain
-///   target (combat.ts:572).
-fn is_known_ts_mismatch(action: &GameAction, err: &EngineError) -> bool {
-    let msg = err.to_string();
-    match action {
-        GameAction::EquipObject { .. } => msg.ends_with(" equipped"),
-        GameAction::PlayEvent { .. } => {
-            msg == "Flashback: aucun de vos personnages n'a été KO ce match"
-        }
-        GameAction::UseHaki { .. } => msg == "Observation Haki not available",
-        GameAction::PlayCounter { .. } => msg == "Survive only protects allies",
-        _ => false,
-    }
-}
-
+/// The four screening gaps the TypeScript engine had (`equipObject` ignoring
+/// the slot cap and the printed restriction, `playEvent` ignoring a
+/// `requiresOwnKO` Flashback, `useHaki { observation }` run for the wrong
+/// player, and a `survive` `playCounter` offered against a captain target)
+/// were all closed by decisions §8.28/§8.43/§8.57, so a rejection here is a
+/// bug, not a documented mismatch. Every state of every game is checked (the
+/// old stride of 7 hid the `equipObject: Not your character` class that
+/// §8.37's borrowed bodies introduced).
 #[test]
 fn every_valid_action_is_accepted_by_apply() {
     let registry = cards::registry();
     let decks = all_decks();
     let mut checked_states = 0usize;
     let mut checked_actions = 0usize;
-    let mut known_mismatches = 0usize;
-    let mut unexpected: Vec<String> = Vec::new();
+    let mut rejected: Vec<String> = Vec::new();
+    let mut loan_states = 0usize;
 
     for difficulty in DIFFICULTIES {
-        for (i, seed) in [5u64, 17, 2024].iter().enumerate() {
+        for (i, seed) in [5u64, 17, 2024, 999_983].iter().enumerate() {
             let a = &decks[i % decks.len()];
             let b = &decks[(i + 2) % decks.len()];
-            let out = play_game(&registry, a, b, *seed, difficulty, 7).expect("game");
+            let out = play_game(&registry, a, b, *seed, difficulty, 1).expect("game");
             assert!(
                 out.state.winner.is_some(),
                 "{difficulty:?} seed {seed}: the game did not finish"
@@ -401,16 +441,57 @@ fn every_valid_action_is_accepted_by_apply() {
                     "{difficulty:?} seed {seed}: a live state offered no legal action"
                 );
                 checked_states += 1;
+                if sample.cards.values().any(|c| c.controlled_by.is_some()) {
+                    loan_states += 1;
+                }
                 for action in actions {
+                    // Decision §8.37: an attack is always offered against the
+                    // *other* side, borrowed bodies included — a loan fights
+                    // for whoever controls it, never against its borrower.
+                    let friendly_fire = match &action {
+                        GameAction::BaseAttack {
+                            attacker_instance_id,
+                            target_instance_id,
+                            ..
+                        }
+                        | GameAction::FruitSpecialAttack {
+                            attacker_instance_id,
+                            target_instance_id,
+                            ..
+                        } => {
+                            // Decision §8.28 (follow-up): a captain now wears
+                            // the fruit printed for it, so both ends of an
+                            // attack may be the synthetic `captain_{playerId}`
+                            // id, which is never a key of `state.cards`.
+                            let side = |id: &String| -> Option<PlayerId> {
+                                if let Some(rest) = id.strip_prefix("captain_") {
+                                    return match rest {
+                                        "player1" => Some(PlayerId::Player1),
+                                        _ => Some(PlayerId::Player2),
+                                    };
+                                }
+                                sample
+                                    .cards
+                                    .get(id)
+                                    .map(|c| c.controlled_by.unwrap_or(c.owner))
+                            };
+                            side(attacker_instance_id) == side(target_instance_id)
+                        }
+                        _ => false,
+                    };
+                    assert!(
+                        !friendly_fire,
+                        "{difficulty:?} seed {seed} turn {}: friendly fire offered: {}",
+                        sample.turn_number,
+                        describe(&action)
+                    );
                     let mut probe = sample.clone();
                     let label = describe(&action);
-                    match apply(&mut probe, &registry, action.clone()) {
-                        Ok(()) => {}
-                        Err(e) if is_known_ts_mismatch(&action, &e) => known_mismatches += 1,
-                        Err(e) => unexpected.push(format!(
+                    if let Err(e) = apply(&mut probe, &registry, action) {
+                        rejected.push(format!(
                             "{difficulty:?} seed {seed} turn {}: {label} -> {e}",
                             sample.turn_number
-                        )),
+                        ));
                     }
                     checked_actions += 1;
                 }
@@ -419,26 +500,24 @@ fn every_valid_action_is_accepted_by_apply() {
     }
 
     assert!(
-        checked_states > 50 && checked_actions > 500,
+        checked_states > 500 && checked_actions > 5_000,
         "the sample is too thin to be meaningful ({checked_states} states, \
          {checked_actions} actions)"
     );
     assert!(
-        unexpected.is_empty(),
-        "{} of {checked_actions} actions offered by valid_actions were rejected by apply \
-         for a reason the TypeScript engine does not have:\n{}",
-        unexpected.len(),
-        unexpected.join("\n")
+        loan_states > 0,
+        "no sampled state had a body on loan — the friendly-fire screen above \
+         (decision §8.37) went unexercised"
     );
-    // The documented TS mismatches must stay a rounding error, not the norm.
     assert!(
-        known_mismatches * 20 < checked_actions,
-        "{known_mismatches}/{checked_actions} rejections — far more than the four \
-         known TypeScript screening gaps can explain"
+        rejected.is_empty(),
+        "{} of {checked_actions} actions offered by valid_actions were rejected by apply:\n{}",
+        rejected.len(),
+        rejected.join("\n")
     );
     println!(
-        "checked {checked_actions} actions over {checked_states} states; \
-         {known_mismatches} known TS screening gaps, 0 unexpected rejections"
+        "checked {checked_actions} actions over {checked_states} states \
+         ({loan_states} of them with a body on loan); 0 rejections"
     );
 }
 

@@ -332,7 +332,7 @@ fn create_game_runs_start_turn_like_init_ts() {
 
     // endTurn then startTurn for P2: P2 draws (7 cards), gains min(turn, 10) = 1 Vol.
     let mut state = state;
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     assert_eq!(state.current_player, PlayerId::Player2);
     assert_eq!(state.turn_number, 1);
     assert_eq!(state.phase, Phase::End);
@@ -343,7 +343,7 @@ fn create_game_runs_start_turn_like_init_ts() {
     assert!(p2.has_drawn);
     assert_eq!(p2.volonte, 1);
     // …and back to P1 on turn 2: draws, 2 Vol.
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     assert_eq!(state.turn_number, 2);
     state.start_turn(&reg, &ctx).unwrap();
     let p1 = state.player(PlayerId::Player1);
@@ -368,9 +368,9 @@ fn start_turn_ko_check_and_self_ko_timers_mirror_game_state_ts() {
     let reg = fake_registry();
     let mut ctx = EngineContext::new(5, 1234);
     let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     state.start_turn(&reg, &ctx).unwrap();
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     // Now P1's turn 2 is about to start.
     assert_eq!(state.current_player, PlayerId::Player1);
     assert_eq!(state.turn_number, 2);
@@ -491,7 +491,7 @@ fn end_turn_applies_crocodile_desiccation() {
     // made the recto half of the face selection unreachable.
     assert!(!state.players.player1.captain.flipped);
     assert!(state.log.is_empty());
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     assert_eq!(state.cards[&injured].current_pv, 1);
     assert_eq!(state.cards[&healthy].current_pv, 3);
     assert_eq!(
@@ -509,13 +509,39 @@ fn end_turn_applies_crocodile_desiccation() {
     // a second application drops the target to 0 → removeFromBoard.
     state.end_turn_switch();
     state.players.player1.captain.flipped = true;
-    state.end_turn(&reg).unwrap();
+    let vol_before = state.player(PlayerId::Player2).volonte;
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
+    let msgs: Vec<&str> = state.log.iter().map(|l| l.message.as_str()).collect();
+    assert!(
+        msgs.contains(
+            &format!(
+                "Déshydratation : Card {} perd 1 PV permanent.",
+                state.cards[&injured].def_id
+            )
+            .as_str()
+        )
+    );
+    // Decision §8.17 (on the §8.11/§8.12 principle): a desiccation KO is a KO
+    // like any other, so the chain runs — the log line, the +2 Volonté for the
+    // player who *lost* the character and the on-KO triggers. This test used
+    // to assert the "Déshydratation" line was the **last** log entry, i.e. it
+    // encoded the missing chain.
     assert_eq!(
         state.log.last().unwrap().message,
         format!(
-            "Déshydratation : Card {} perd 1 PV permanent.",
+            "Card {} est KO (Déshydratation) !",
             state.cards[&injured].def_id
         )
+    );
+    assert_eq!(state.log.last().unwrap().player, PlayerId::Player2);
+    assert_eq!(
+        state.player(PlayerId::Player2).volonte,
+        (vol_before + crate::state::ALLY_KO_BONUS_VOL).min(crate::state::VOLONTE_CAP)
+    );
+    assert!(state.player(PlayerId::Player2).ally_koed_this_turn());
+    assert_eq!(
+        state.player(PlayerId::Player2).char_ko_ed_this_game,
+        Some(true)
     );
     assert_eq!(state.cards[&injured].current_pv, 0);
     assert_eq!(state.cards[&injured].zone, Zone::Graveyard);
@@ -1018,6 +1044,30 @@ fn game_state_round_trips_through_serde_json() {
         v["players"]["player1"]["captain"]["modifiers"][0]["duration"],
         json!("nextTurn")
     );
+    // Decision §8.28 (follow-up): the captain's `attachedObjects` is a new
+    // optional field — absent from the wire while the captain wears nothing,
+    // and present as a plain id list once it does.
+    assert!(
+        v["players"]["player1"]["captain"]
+            .get("attachedObjects")
+            .is_none(),
+        "an empty captain attachment list stays off the wire"
+    );
+    {
+        let mut worn = state.clone();
+        worn.players
+            .player1
+            .captain
+            .attached_objects
+            .push("MG-014_1".into());
+        let vw: Value = serde_json::from_str(&serde_json::to_string(&worn).unwrap()).unwrap();
+        assert_eq!(
+            vw["players"]["player1"]["captain"]["attachedObjects"],
+            json!(["MG-014_1"])
+        );
+        let back: GameState = serde_json::from_value(vw).unwrap();
+        assert_eq!(back, worn);
+    }
     assert_eq!(
         v["log"][0],
         json!({"turn": 1, "player": "player2", "message": "hello"})
@@ -1060,8 +1110,20 @@ fn game_action_wire_format_matches_ts_discriminators() {
             GameAction::EquipObject {
                 object_instance_id: "o".into(),
                 target_instance_id: "t".into(),
+                target_is_captain: None,
             },
             json!({"type": "equipObject", "objectInstanceId": "o", "targetInstanceId": "t"}),
+        ),
+        (
+            // Decision §8.28 (follow-up): the captain bearer rides on the same
+            // optional flag every other captain target uses; absent means the
+            // character equip the TS engine knew.
+            GameAction::EquipObject {
+                object_instance_id: "o".into(),
+                target_instance_id: "captain_player1".into(),
+                target_is_captain: Some(true),
+            },
+            json!({"type": "equipObject", "objectInstanceId": "o", "targetInstanceId": "captain_player1", "targetIsCaptain": true}),
         ),
         (
             GameAction::DeployShip {
@@ -1161,7 +1223,9 @@ fn game_action_wire_format_matches_ts_discriminators() {
         ),
         (GameAction::EndTurn, json!({"type": "endTurn"})),
     ];
-    assert_eq!(cases.len(), 18, "all 18 TS GameAction variants covered");
+    // 18 variants, one of them (`equipObject`) exercised in both of its
+    // forms — the character bearer and the §8.28 captain bearer.
+    assert_eq!(cases.len(), 19, "all 18 TS GameAction variants covered");
     for (action, expected) in cases {
         let v = serde_json::to_value(&action).unwrap();
         assert_eq!(v, expected, "{action:?}");
@@ -1497,7 +1561,12 @@ fn slot_row_mapping_is_single_sourced() {
             "{}",
             slot.as_str()
         );
-        assert_eq!(crate::board::is_back_slot(slot), !front, "{}", slot.as_str());
+        assert_eq!(
+            crate::board::is_back_slot(slot),
+            !front,
+            "{}",
+            slot.as_str()
+        );
     }
 
     // Unchanged by construction: the derived constants are exactly the old
@@ -1522,7 +1591,13 @@ fn slot_row_mapping_is_single_sourced() {
         for other in slot.adjacency() {
             let (r2, c2) = coords(*other);
             let d = r.abs_diff(r2) + c.abs_diff(c2);
-            assert_eq!(d, 1, "{} -> {} is not orthogonal", slot.as_str(), other.as_str());
+            assert_eq!(
+                d,
+                1,
+                "{} -> {} is not orthogonal",
+                slot.as_str(),
+                other.as_str()
+            );
         }
     }
 }
@@ -1764,9 +1839,9 @@ fn a_captain_killed_by_a_burn_tick_loses_at_the_start_of_the_turn() {
     let reg = fake_registry();
     let mut ctx = EngineContext::new(5, 4242);
     let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     state.start_turn(&reg, &ctx).unwrap();
-    state.end_turn(&reg).unwrap();
+    state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
     assert_eq!(state.current_player, PlayerId::Player1);
     assert!(state.winner.is_none());
 

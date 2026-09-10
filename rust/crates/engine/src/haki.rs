@@ -117,13 +117,13 @@ pub fn has_conqueror_in_play(
     registry: &CardRegistry,
     player_id: PlayerId,
 ) -> Result<bool, EngineError> {
-    let captain = &state.players.get(player_id).captain;
-    let cap_def = registry.get_captain_def(&captain.def_id)?;
     // Decision §8.40: the captain's active traits come from the single helper
     // `captain_traits(def, flipped) = def.traits ∪ (flipped ? verso.traits : [])`,
     // which is exactly what the two reads below used to spell out by hand
     // (card-level traits on both faces, verso traits only when flipped).
-    if crate::captain::captain_has_trait(cap_def, captain.flipped, Trait::Conqueror) {
+    // Decision §8.28 (follow-up) adds the traits the captain's equipment
+    // grants, the captain half of `has_trait`.
+    if crate::captain::captain_has_trait_now(state, registry, player_id, Trait::Conqueror)? {
         return Ok(true);
     }
 

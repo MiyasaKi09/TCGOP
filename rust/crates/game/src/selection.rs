@@ -192,9 +192,15 @@ pub fn equip_targets(mode: &UiMode, valid: &[GameAction]) -> BTreeSet<String> {
         return targets;
     };
     for a in valid {
+        // Decision §8.28 (follow-up): an equip target may be the player's own
+        // captain, which is addressed by its `captain_{playerId}` key — the
+        // same key the captain command card is drawn under, so it highlights
+        // like any other bearer. A board cell never holds that key, so no cell
+        // can be lit by mistake.
         if let GameAction::EquipObject {
             object_instance_id,
             target_instance_id,
+            ..
         } = a
             && object_instance_id == object_id
         {
@@ -576,6 +582,7 @@ pub fn on_board_char_click(
         return UiCommand::Dispatch(GameAction::EquipObject {
             object_instance_id: object_id.clone(),
             target_instance_id: instance_id.to_string(),
+            target_is_captain: None,
         });
     }
     if let UiMode::SelectingSupportTarget { instance_id: actor } = mode
@@ -624,6 +631,22 @@ pub fn on_captain_click(
         if player_id == ai_player && attack_targets(mode, valid, ai_player).contains(&key) {
             return UiCommand::Dispatch(attack_action(attacker_id, *is_special, &key, true));
         }
+    }
+    // Decision §8.28 (follow-up): the three signature SR Devil Fruits are worn
+    // by the captain they name, so a click on your own captain while an object
+    // is waiting for a bearer equips it — the captain counterpart of
+    // `on_board_char_click`'s equip branch.
+    if let UiMode::SelectingEquipTarget { object_id } = mode
+        && player_id != ai_player
+        && let Some(action) = valid.iter().find(|a| {
+            matches!(
+                a,
+                GameAction::EquipObject { object_instance_id, target_is_captain: Some(true), .. }
+                    if object_instance_id == object_id
+            )
+        })
+    {
+        return UiCommand::Dispatch(action.clone());
     }
     if mode.is_idle() {
         return UiCommand::SetMode(UiMode::CaptainMenu { player_id });
@@ -913,10 +936,12 @@ mod tests {
             GameAction::EquipObject {
                 object_instance_id: "obj".into(),
                 target_instance_id: "zoro".into(),
+                target_is_captain: None,
             },
             GameAction::EquipObject {
                 object_instance_id: "other".into(),
                 target_instance_id: "nami".into(),
+                target_is_captain: None,
             },
         ];
         let mode = UiMode::SelectingEquipTarget {
@@ -1323,6 +1348,7 @@ mod tests {
         let equip = vec![GameAction::EquipObject {
             object_instance_id: "wado".into(),
             target_instance_id: "zoro".into(),
+            target_is_captain: None,
         }];
         let mode = UiMode::SelectingEquipTarget {
             object_id: "wado".into(),
@@ -1343,6 +1369,32 @@ mod tests {
             on_board_char_click(&mode, &support, AI, "zoro", true, "MG-001"),
             UiCommand::Dispatch(support[0].clone())
         );
+    }
+
+    /// Decision §8.28 (follow-up) — the captain wears the fruit printed for it,
+    /// so it is an equip target: clicking your own captain while an object is
+    /// waiting for a bearer dispatches the equip, and it lights up like one.
+    #[test]
+    fn your_captain_is_an_equip_target() {
+        let human = PlayerId::Player1;
+        let key = captain_key(human);
+        let equip = GameAction::EquipObject {
+            object_instance_id: "gomu".into(),
+            target_instance_id: key.clone(),
+            target_is_captain: Some(true),
+        };
+        let valid = vec![equip.clone()];
+        let mode = UiMode::SelectingEquipTarget {
+            object_id: "gomu".into(),
+        };
+
+        assert_eq!(equip_targets(&mode, &valid), BTreeSet::from([key.clone()]));
+        assert_eq!(
+            on_captain_click(&mode, &valid, AI, human),
+            UiCommand::Dispatch(equip)
+        );
+        // The foe's captain is never a bearer of *your* object.
+        assert_eq!(on_captain_click(&mode, &valid, AI, AI), UiCommand::Ignore);
     }
 
     #[test]
@@ -1535,6 +1587,7 @@ mod tests {
         let valid = vec![GameAction::EquipObject {
             object_instance_id: "o1".into(),
             target_instance_id: "u1".into(),
+            target_is_captain: None,
         }];
         let mode = UiMode::SelectingEquipTarget {
             object_id: "o1".into(),
@@ -1551,6 +1604,7 @@ mod tests {
             UiCommand::Dispatch(GameAction::EquipObject {
                 object_instance_id: "o1".into(),
                 target_instance_id: "u1".into(),
+                target_is_captain: None,
             })
         );
     }

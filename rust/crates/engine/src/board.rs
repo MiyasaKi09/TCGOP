@@ -198,7 +198,27 @@ pub fn has_trait(
         return Ok(true);
     }
 
-    for obj_id in &card.attached_objects {
+    if attachments_grant_trait(state, registry, &card.attached_objects, t)? {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Does any of `attached` grant `t` to whoever wears it?
+///
+/// The object half of [`has_trait`], extracted so the captain reads its
+/// equipment with exactly the same rule (decision §8.28 follow-up × §8.47):
+/// the `Trait` arm of `grantsTraits` (the three rifles' `range`), a fruit's
+/// `base.grantsTraits`, and a fruit's `awakening.grantsTraits` once it is
+/// awakened.
+pub fn attachments_grant_trait(
+    state: &GameState,
+    registry: &CardRegistry,
+    attached: &[String],
+    t: Trait,
+) -> Result<bool, EngineError> {
+    for obj_id in attached {
         let Some(obj_card) = state.cards.get(obj_id) else {
             continue;
         };
@@ -248,11 +268,23 @@ pub fn granted_attack_traits(
     registry: &CardRegistry,
     instance_id: &str,
 ) -> Result<Vec<AttackTrait>, EngineError> {
-    let mut out: Vec<AttackTrait> = Vec::new();
     let Some(card) = state.cards.get(instance_id) else {
-        return Ok(out);
+        return Ok(Vec::new());
     };
-    for obj_id in &card.attached_objects {
+    let attached = card.attached_objects.clone();
+    attachments_granted_attack_traits(state, registry, &attached)
+}
+
+/// [`granted_attack_traits`] over an explicit attachment list — the form the
+/// captain uses (decision §8.28 follow-up), since its equipment does not hang
+/// off a `CardInstance`.
+pub fn attachments_granted_attack_traits(
+    state: &GameState,
+    registry: &CardRegistry,
+    attached: &[String],
+) -> Result<Vec<AttackTrait>, EngineError> {
+    let mut out: Vec<AttackTrait> = Vec::new();
+    for obj_id in attached {
         let Some(obj_card) = state.cards.get(obj_id) else {
             continue;
         };
@@ -280,6 +312,63 @@ pub fn max_pv_of(
     };
     let printed = registry.get_card_def(&card.def_id)?.pv;
     Ok(card.max_pv(printed))
+}
+
+/// Decision §8.36/§8.38/§8.40 — the single "perd N PV permanent (Sable)" path
+/// for a **character**: the maximum drops for good (`pv_max_loss += loss`) and
+/// the current PV follows it down, so [`heal_unit`] can never climb back over
+/// the loss. A non-positive `loss`, a missing instance or an instance that has
+/// already left the board is a no-op.
+pub fn apply_permanent_pv_loss(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    instance_id: &str,
+    loss: i32,
+) -> Result<(), EngineError> {
+    if loss <= 0 {
+        return Ok(());
+    }
+    match state.cards.get_mut(instance_id) {
+        Some(card) if card.zone == Zone::Board => {
+            card.pv_max_loss = Some(card.pv_max_loss.unwrap_or(0) + loss);
+        }
+        _ => return Ok(()),
+    }
+    if let Some(max_pv) = max_pv_of(state, registry, instance_id)? {
+        let card = state.get_card_mut(instance_id)?;
+        if card.current_pv > max_pv {
+            card.current_pv = max_pv;
+        }
+    }
+    Ok(())
+}
+
+/// Decision §8.40 — the captain counterpart of [`apply_permanent_pv_loss`]:
+/// the same rule against `CaptainInstance::pv_max_loss`, with the maximum read
+/// from the **active** face's printed PV.
+pub fn apply_captain_permanent_pv_loss(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+    loss: i32,
+) -> Result<(), EngineError> {
+    if loss <= 0 {
+        return Ok(());
+    }
+    let cap_def_id = state.players.get(player_id).captain.def_id.clone();
+    let cap_def = registry.get_captain_def(&cap_def_id)?;
+    let cap = &mut state.players.get_mut(player_id).captain;
+    cap.pv_max_loss = Some(cap.pv_max_loss.unwrap_or(0) + loss);
+    let printed = if cap.flipped {
+        cap_def.verso.pv
+    } else {
+        cap_def.recto.pv
+    };
+    let max_pv = printed - cap.pv_max_loss.unwrap_or(0);
+    if cap.current_pv > max_pv {
+        cap.current_pv = max_pv;
+    }
+    Ok(())
 }
 
 /// Decision §8.5 — the single heal path: `new = min(current + amount, max_pv)`
@@ -696,10 +785,81 @@ pub fn has_free_object_slot(
 /// (a substring of the printed name: "Zoro", "Mr. 4", "Crocodile") or a tag
 /// ("bretteur", "tireur"). An empty restriction is JS-falsy and never checked.
 pub fn equip_restriction_ok(target_def: &CardDef, restriction: &str) -> bool {
+    restriction_matches(
+        &target_def.name,
+        target_def.tags.as_deref().unwrap_or(&[]),
+        restriction,
+    )
+}
+
+/// The name-or-tag half of [`equip_restriction_ok`], shared with the captain
+/// bearer (decision §8.28 follow-up): the printed restriction is satisfied by
+/// a substring of the unit's **name** ("Zoro", "Mr. 4", "Luffy") or by one of
+/// its **tags** ("bretteur", "tireur"). An empty restriction is JS-falsy and
+/// never checked.
+pub fn restriction_matches(name: &str, tags: &[String], restriction: &str) -> bool {
     if restriction.is_empty() {
         return true;
     }
-    target_def.name.contains(restriction) || target_def.has_tag(restriction)
+    name.contains(restriction) || tags.iter().any(|t| t == restriction)
+}
+
+/// Decision §8.28 (follow-up) — may this player's captain wear `obj_def`?
+///
+/// The three signature SR Devil Fruits are printed "Équipable sur Luffy",
+/// "… sur Crocodile", "… sur Akainu", and those three names exist in the game
+/// **only** as captains: `grep`ping the sets for a character called Luffy,
+/// Crocodile or Akainu comes back empty, and no set carries a matching tag, so
+/// under the character-only rule of §8.28 all three were unequippable —
+/// three permanently dead SR cards, one in each of the shipped decklists, and
+/// with them the whole `BW-011` Ground Death awakening (§8.38 × §8.48).
+///
+/// The natural reading of the printed line is therefore the literal one: the
+/// fruit is worn by the captain it names. The captain is in play on both faces
+/// (it has PV, it can be attacked, its recto passive runs), and nothing on the
+/// card conditions the equip on a flip, so no face requirement is invented.
+///
+/// A captain may wear **only** an object whose printed restriction names it:
+/// an unrestricted object is worn by characters, exactly as before, and the
+/// engine never invents captain equipment for the rest of the catalogue.
+pub fn captain_equip_restriction_ok(cap_def: &crate::types::CaptainDef, obj_def: &CardDef) -> bool {
+    let Some(restriction) = obj_def.restriction.as_deref().filter(|r| !r.is_empty()) else {
+        return false;
+    };
+    restriction_matches(
+        &cap_def.name,
+        cap_def.tags.as_deref().unwrap_or(&[]),
+        restriction,
+    )
+}
+
+/// Decision §8.28 (follow-up) — the captain's object-slot cap.
+///
+/// A character's cap comes from its own passive (`threeWeaponSlots`,
+/// `twoAccessorySlots`); a captain has no such passive and no printed slot
+/// line, so it keeps the default of one object per subtype.
+pub const CAPTAIN_MAX_OBJECT_SLOTS: usize = 1;
+
+/// Has the captain a free slot for an object of `obj_def`'s subtype?
+pub fn captain_has_free_object_slot(
+    state: &GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+    obj_def: &CardDef,
+) -> Result<bool, EngineError> {
+    let Some(subtype) = obj_def.subtype else {
+        return Ok(true);
+    };
+    let mut same = 0usize;
+    for id in &state.players.get(player_id).captain.attached_objects {
+        let Some(inst) = state.cards.get(id) else {
+            continue;
+        };
+        if registry.get_card_def(&inst.def_id)?.subtype == Some(subtype) {
+            same += 1;
+        }
+    }
+    Ok(same < CAPTAIN_MAX_OBJECT_SLOTS)
 }
 
 /// Decision §8.30 — clear everything an instance accumulated during a previous
@@ -921,7 +1081,14 @@ pub fn equip_object(
     player_id: PlayerId,
     object_instance_id: &str,
     target_instance_id: &str,
+    target_is_captain: bool,
 ) -> Result<(), EngineError> {
+    // Decision §8.28 (follow-up): "Équipable sur Luffy / Crocodile / Akainu"
+    // names a **captain**, so the captain is a legal bearer — see
+    // [`equip_object_on_captain`] for the rule and its bounds.
+    if target_is_captain {
+        return equip_object_on_captain(state, registry, player_id, object_instance_id);
+    }
     let Some(obj_card) = state.cards.get(object_instance_id) else {
         return Err(EngineError::illegal(format!(
             "Object not found: {object_instance_id}"
@@ -944,6 +1111,13 @@ pub fn equip_object(
             "Target not found: {target_instance_id}"
         )));
     };
+    // Decision §8.37 × §8.57: deliberately `owner`, not `controller()`. An
+    // object is a *permanent* attachment, so a body borrowed for one turn by
+    // `betrayal` can never be equipped — it would carry the object home. Every
+    // other borrowed-body path (attack, move, support action) is turn-scoped
+    // and does go through `controller()`; `build_valid_actions` applies the
+    // same ownership filter, so this refusal is unreachable from
+    // `get_valid_actions`.
     if target_card.owner != player_id {
         return Err(EngineError::illegal("Not your character"));
     }
@@ -1074,6 +1248,132 @@ pub fn equip_object(
     }
 
     // Recalculate passive buffs
+    recalculate_passive_buffs(state, registry, player_id)?;
+
+    Ok(())
+}
+
+/// Decision §8.28 (follow-up) — equip an object onto the player's own captain.
+///
+/// The three signature SR Devil Fruits (`MG-014` Gomu Gomu no Mi, `BW-011`
+/// Suna Suna no Mi, `MR-011` Magu Magu no Mi) are printed "Équipable sur
+/// Luffy / Crocodile / Akainu"; those names exist in the game only as
+/// captains, so under the character-only rule of §8.28 each shipped decklist
+/// carried one permanently dead SR card. The captain is the printed bearer and
+/// is treated as one here.
+///
+/// The rule is deliberately narrow, so nothing outside those printed lines
+/// changes: an object reaches the captain **only** through
+/// [`captain_equip_restriction_ok`], i.e. only when its own printed
+/// `restriction` names that captain by name or tag. Everything else is the
+/// character path's rule, read on the captain: the object must be an object
+/// card in the player's hand, the subtype cap is
+/// [`CAPTAIN_MAX_OBJECT_SLOTS`], the cost is paid, the log line is the same
+/// `"Equipe {obj} sur {captain}"`, a fruit runs
+/// [`crate::fruits::apply_fruit_base_effects`] and the passive buffs are
+/// recalculated. No face requirement is invented: the captain is in play on
+/// both faces.
+///
+/// The four signature-weapon wielder bonuses are character-keyed
+/// (`Zoro` / `Tashigi` / `Ben Beckman` / `Yasopp`) and no captain name matches
+/// one, so they are deliberately not repeated here.
+///
+/// Errors: `Object not found: {id}`, `Not your card`, `Object not in hand`,
+/// `Not an object card`,
+/// `{captainName} ne peut pas equiper {objName} (reserve a {restriction})`
+/// (also the message when the object prints no restriction at all),
+/// `Cannot afford {name} (cost {cost})`,
+/// `{captainName} already has max {subtype} equipped`.
+pub fn equip_object_on_captain(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+    object_instance_id: &str,
+) -> Result<(), EngineError> {
+    let Some(obj_card) = state.cards.get(object_instance_id) else {
+        return Err(EngineError::illegal(format!(
+            "Object not found: {object_instance_id}"
+        )));
+    };
+    if obj_card.owner != player_id {
+        return Err(EngineError::illegal("Not your card"));
+    }
+    if obj_card.zone != Zone::Hand {
+        return Err(EngineError::illegal("Object not in hand"));
+    }
+
+    let obj_def = registry.get_card_def(&obj_card.def_id)?.clone();
+    if obj_def.card_type != CardType::Object {
+        return Err(EngineError::illegal("Not an object card"));
+    }
+
+    let cap_def = registry
+        .get_captain_def(&state.players.get(player_id).captain.def_id)?
+        .clone();
+    if !captain_equip_restriction_ok(&cap_def, &obj_def) {
+        return Err(EngineError::illegal(format!(
+            "{} ne peut pas equiper {} (reserve a {})",
+            cap_def.name,
+            obj_def.name,
+            obj_def.restriction.as_deref().unwrap_or("")
+        )));
+    }
+
+    if !state.can_afford(player_id, obj_def.cost) {
+        return Err(EngineError::CannotAfford {
+            what: obj_def.name.clone(),
+            cost: obj_def.cost,
+            has: state.players.get(player_id).volonte,
+        });
+    }
+
+    if !captain_has_free_object_slot(state, registry, player_id, &obj_def)? {
+        // Only a typed object can fill a slot, so the fallback label is
+        // unreachable — it is there so the error path cannot panic.
+        let subtype = obj_def.subtype.map_or("object", subtype_str);
+        return Err(EngineError::illegal(format!(
+            "{} already has max {subtype} equipped",
+            cap_def.name
+        )));
+    }
+
+    state.spend_volonte(player_id, obj_def.cost)?;
+
+    state
+        .players
+        .get_mut(player_id)
+        .hand
+        .retain(|id| id != object_instance_id);
+    let captain_slot = state.players.get(player_id).captain.slot;
+    {
+        let obj = state.get_card_mut(object_instance_id)?;
+        obj.zone = Zone::Board;
+        // The object stands where its bearer stands — `None` while the captain
+        // is still recto (off-board, §4.11), and `flip_captain` writes the slot
+        // through [`move_attached_objects`] when the captain arrives.
+        obj.slot = captain_slot;
+    }
+    state
+        .players
+        .get_mut(player_id)
+        .captain
+        .attached_objects
+        .push(object_instance_id.to_string());
+
+    state.add_log(
+        player_id,
+        format!("Equipe {} sur {}", obj_def.name, cap_def.name),
+    );
+
+    if obj_def.subtype == Some(ObjectSubtype::Fruit) && obj_def.fruit_effects.is_some() {
+        crate::fruits::apply_fruit_base_effects_on_captain(
+            state,
+            registry,
+            object_instance_id,
+            player_id,
+        )?;
+    }
+
     recalculate_passive_buffs(state, registry, player_id)?;
 
     Ok(())
@@ -1274,11 +1574,7 @@ pub fn move_character(
     }
     state.get_card_mut(instance_id)?.slot = Some(target_slot);
     // Decision §8.29: the equipment travels with its bearer.
-    for obj_id in &attached {
-        if let Some(obj) = state.cards.get_mut(obj_id) {
-            obj.slot = Some(target_slot);
-        }
-    }
+    move_attached_objects(state, &attached, target_slot);
 
     state.add_log(
         player_id,
@@ -1291,6 +1587,22 @@ pub fn move_character(
     apply_enemy_debuff_auras(state, registry)?;
 
     Ok(())
+}
+
+/// Decision §8.29 — "the equipment travels with its bearer": every object
+/// attached to a character that changes cell follows it, so the serialised
+/// `slot` of an attachment always names the cell its bearer is standing in.
+///
+/// Every path that moves a **bearer** between cells goes through this:
+/// [`move_character`] (the free move), `betrayal`'s take-over and its loan
+/// return (§8.37) and the Impact pushback (§8.38). `attached` is the bearer's
+/// `attached_objects` list, cloned before the move.
+pub fn move_attached_objects(state: &mut GameState, attached: &[String], target_slot: Slot) {
+    for obj_id in attached {
+        if let Some(obj) = state.cards.get_mut(obj_id) {
+            obj.slot = Some(target_slot);
+        }
+    }
 }
 
 /// Decision §8.29 — may this instance use the free move? `tapped` marks a unit
@@ -1354,7 +1666,15 @@ pub fn get_valid_targets(
         return Ok(ValidTargets::default());
     };
 
-    let opponent_id = attacker.owner.opponent();
+    // Decision §8.37 (`betrayal`): a borrowed body fights for whoever
+    // *controls* it, so "the enemy" is the controller's opponent — its former
+    // allies. Reading `owner` here would offer the borrower's own units (and
+    // the borrowed body itself) as targets and hide the side it was lent
+    // against; `controller()` is `owner` for every card that is not on loan,
+    // so this is the same set for everything else. Every derived scope below
+    // (front-row protection, stealth filtering, the captain clause) follows
+    // this id.
+    let opponent_id = attacker.controller().opponent();
 
     // Check range from the *instance*'s traits (own, fruit-granted and
     // equipment-granted — decision §8.9/§8.47, this is what makes the three
@@ -1658,6 +1978,15 @@ mod tests {
         CardRegistry::from_sets([cards], [captain_def()])
     }
 
+    /// [`registry_with`] with the captain renamed — the three signature SR
+    /// fruits are printed "Équipable sur {captain name}" (decision §8.28
+    /// follow-up), so the name is what the restriction matches.
+    fn registry_with_captain_named(cards: Vec<CardDef>, cap_name: &str) -> CardRegistry {
+        let mut cap = captain_def();
+        cap.name = cap_name.to_string();
+        CardRegistry::from_sets([cards], [cap])
+    }
+
     // --- match_ship_bonus (the JS regexes) ---
 
     #[test]
@@ -1916,7 +2245,7 @@ mod tests {
 
         let z = put(&mut state, &reg, "MG-002", P1, Zone::Board, Some(Slot::V1));
         let w1 = put(&mut state, &reg, "MG-009", P1, Zone::Hand, None);
-        equip_object(&mut state, &reg, P1, &w1, &z).unwrap();
+        equip_object(&mut state, &reg, P1, &w1, &z, false).unwrap();
 
         let zc = state.card(&z).unwrap();
         assert_eq!(zc.attached_objects, vec![w1.clone()]);
@@ -1935,10 +2264,10 @@ mod tests {
         // A plain character only has one weapon slot.
         let p = put(&mut state, &reg, "MG-005", P1, Zone::Board, Some(Slot::V2));
         let w2 = put(&mut state, &reg, "MG-010", P1, Zone::Hand, None);
-        equip_object(&mut state, &reg, P1, &w2, &p).unwrap();
+        equip_object(&mut state, &reg, P1, &w2, &p, false).unwrap();
         let w3 = put(&mut state, &reg, "MG-010", P1, Zone::Hand, None);
         assert_eq!(
-            equip_object(&mut state, &reg, P1, &w3, &p),
+            equip_object(&mut state, &reg, P1, &w3, &p, false),
             Err(EngineError::illegal(
                 "Char MG-005 already has max weapon equipped"
             ))
@@ -1959,12 +2288,12 @@ mod tests {
         let clima = put(&mut state, &reg, "MG-012", P1, Zone::Hand, None);
         // Only Nami on board: the full cost applies and 1 Volonte is not enough.
         assert!(matches!(
-            equip_object(&mut state, &reg, P1, &clima, &nami),
+            equip_object(&mut state, &reg, P1, &clima, &nami, false),
             Err(EngineError::CannotAfford { cost: 3, .. })
         ));
 
         put(&mut state, &reg, "MG-004", P1, Zone::Board, Some(Slot::V2));
-        equip_object(&mut state, &reg, P1, &clima, &nami).unwrap();
+        equip_object(&mut state, &reg, P1, &clima, &nami, false).unwrap();
         assert_eq!(state.players.get(P1).volonte, 1);
     }
 
@@ -2106,27 +2435,27 @@ mod tests {
 
         // equipObject
         assert_eq!(
-            msg(equip_object(&mut state, &reg, P1, "ghost", &board_ch).unwrap_err()),
+            msg(equip_object(&mut state, &reg, P1, "ghost", &board_ch, false).unwrap_err()),
             "Object not found: ghost"
         );
         assert_eq!(
-            msg(equip_object(&mut state, &reg, P2, &ob, &board_ch).unwrap_err()),
+            msg(equip_object(&mut state, &reg, P2, &ob, &board_ch, false).unwrap_err()),
             "Not your card"
         );
         assert_eq!(
-            msg(equip_object(&mut state, &reg, P1, &board_ch, &board_ch).unwrap_err()),
+            msg(equip_object(&mut state, &reg, P1, &board_ch, &board_ch, false).unwrap_err()),
             "Object not in hand"
         );
         assert_eq!(
-            msg(equip_object(&mut state, &reg, P1, &ch, &board_ch).unwrap_err()),
+            msg(equip_object(&mut state, &reg, P1, &ch, &board_ch, false).unwrap_err()),
             "Not an object card"
         );
         assert_eq!(
-            msg(equip_object(&mut state, &reg, P1, &ob, "ghost").unwrap_err()),
+            msg(equip_object(&mut state, &reg, P1, &ob, "ghost", false).unwrap_err()),
             "Target not found: ghost"
         );
         assert_eq!(
-            msg(equip_object(&mut state, &reg, P1, &ob, &ch).unwrap_err()),
+            msg(equip_object(&mut state, &reg, P1, &ob, &ch, false).unwrap_err()),
             "Target not on board"
         );
 
@@ -2703,12 +3032,12 @@ mod tests {
         let nm = put(&mut state, &reg, "NAMED", P1, Zone::Hand, None);
 
         // Matched by tag …
-        equip_object(&mut state, &reg, P1, &w1, &z).unwrap();
+        equip_object(&mut state, &reg, P1, &w1, &z, false).unwrap();
         // … and by name.
-        equip_object(&mut state, &reg, P1, &nm, &z).unwrap();
+        equip_object(&mut state, &reg, P1, &nm, &z, false).unwrap();
         // Nami is neither a "bretteur" nor named Zoro.
         assert_eq!(
-            equip_object(&mut state, &reg, P1, &w2, &n),
+            equip_object(&mut state, &reg, P1, &w2, &n, false),
             Err(EngineError::illegal(
                 "Nami ne peut pas equiper Obj MG-009 (reserve a bretteur)"
             ))
@@ -2718,7 +3047,7 @@ mod tests {
         let sid = put(&mut state, &reg, "SHIP", P1, Zone::Board, None);
         state.players.get_mut(P1).active_ship = Some(sid.clone());
         assert_eq!(
-            equip_object(&mut state, &reg, P1, &w2, &sid),
+            equip_object(&mut state, &reg, P1, &w2, &sid, false),
             Err(EngineError::illegal("Target is not a character"))
         );
 
@@ -2727,7 +3056,7 @@ mod tests {
         assert!(
             !actions.iter().any(|a| matches!(
                 a,
-                GameAction::EquipObject { object_instance_id, target_instance_id }
+                GameAction::EquipObject { object_instance_id, target_instance_id, .. }
                     if *object_instance_id == w2 && *target_instance_id == n
             )),
             "getValidActions offered a restricted equip"
@@ -2739,7 +3068,7 @@ mod tests {
         // …and never a full weapon slot either.
         assert!(!actions.iter().any(|a| matches!(
             a,
-            GameAction::EquipObject { object_instance_id, target_instance_id }
+            GameAction::EquipObject { object_instance_id, target_instance_id, .. }
                 if *object_instance_id == w2 && *target_instance_id == z
         )));
     }
@@ -2944,5 +3273,126 @@ mod tests {
             move_character(&mut state, &reg, P1, &token_id, Slot::V2),
             Err(EngineError::SlotOccupied(Slot::V2))
         );
+    }
+
+    /// Decision §8.28 (follow-up) — "Équipable sur Luffy / Crocodile / Akainu"
+    /// names a **captain**: no set ships a character carrying one of those
+    /// names, so under the character-only rule all three SR fruits were
+    /// unequippable and every shipped decklist carried a dead card.
+    ///
+    /// The captain is the printed bearer; the rule stops exactly there, so an
+    /// object that prints no restriction (or one naming somebody else) still
+    /// cannot be worn by a captain.
+    #[test]
+    fn the_captain_wears_the_fruit_printed_for_it() {
+        let mut fruit = object("MG-014", 3, ObjectSubtype::Fruit);
+        fruit.name = "Gomu Gomu no Mi".into();
+        fruit.restriction = Some("Luffy".into());
+        fruit.fruit_effects = Some(crate::types::FruitEffects {
+            base: crate::types::FruitBaseEffects {
+                grants_traits: Some(vec![Trait::Cursed]),
+                passive_description: Some("Immunite Impact.".into()),
+                atk_bonus: Some(2),
+                def_bonus: None,
+            },
+            awakening: None,
+        });
+        let plain = object("PLAIN", 1, ObjectSubtype::Weapon);
+        let mut zoro = character("MG-002", 3, 3, 2, 4);
+        zoro.name = "Roronoa Zoro".into();
+        let reg = registry_with_captain_named(vec![fruit, plain, zoro], "Monkey D. Luffy");
+        let mut state = blank_state();
+
+        let z = put(&mut state, &reg, "MG-002", P1, Zone::Board, Some(Slot::V1));
+        let f1 = put(&mut state, &reg, "MG-014", P1, Zone::Hand, None);
+        let f2 = put(&mut state, &reg, "MG-014", P1, Zone::Hand, None);
+        let pl = put(&mut state, &reg, "PLAIN", P1, Zone::Hand, None);
+        let cap_id = crate::combat::captain_attacker_id(P1);
+
+        // A character does not satisfy "Équipable sur Luffy" …
+        assert_eq!(
+            equip_object(&mut state, &reg, P1, &f1, &z, false),
+            Err(EngineError::illegal(
+                "Roronoa Zoro ne peut pas equiper Gomu Gomu no Mi (reserve a Luffy)"
+            ))
+        );
+        // … the captain does.
+        equip_object(&mut state, &reg, P1, &f1, &cap_id, true).unwrap();
+        assert_eq!(
+            state.players.get(P1).captain.attached_objects,
+            vec![f1.clone()]
+        );
+        assert_eq!(state.players.get(P1).volonte, 7);
+        assert_eq!(state.card(&f1).unwrap().zone, Zone::Board);
+        // The captain is still recto (off-board), so its equipment has no slot.
+        assert_eq!(state.card(&f1).unwrap().slot, None);
+        // The fruit's base bonus and its granted trait are the captain's now.
+        assert_eq!(
+            state
+                .players
+                .get(P1)
+                .captain
+                .modifiers
+                .iter()
+                .filter(|m| m.stat == ModifierStat::Atk)
+                .map(|m| m.amount)
+                .sum::<i32>(),
+            2
+        );
+        assert!(crate::captain::captain_has_trait_now(&state, &reg, P1, Trait::Cursed).unwrap());
+        assert_eq!(
+            state.log[state.log.len() - 2].message,
+            "Equipe Gomu Gomu no Mi sur Monkey D. Luffy"
+        );
+        assert_eq!(
+            state.log[state.log.len() - 1].message,
+            "Monkey D. Luffy mange le Gomu Gomu no Mi ! Immunite Impact."
+        );
+
+        // One object per subtype on the captain, like a character.
+        assert_eq!(
+            equip_object(&mut state, &reg, P1, &f2, &cap_id, true),
+            Err(EngineError::illegal(
+                "Monkey D. Luffy already has max fruit equipped"
+            ))
+        );
+        // An object printing no restriction is never a captain's to wear.
+        assert_eq!(
+            equip_object(&mut state, &reg, P1, &pl, &cap_id, true),
+            Err(EngineError::illegal(
+                "Monkey D. Luffy ne peut pas equiper Obj PLAIN (reserve a )"
+            ))
+        );
+
+        // The enumerator offers exactly what the executor accepts (§8.57).
+        let actions = crate::actions::get_valid_actions(&state, &reg, P1).unwrap();
+        assert!(!actions.iter().any(|a| matches!(
+            a,
+            GameAction::EquipObject {
+                target_is_captain: Some(true),
+                ..
+            }
+        )));
+        let mut fresh = blank_state();
+        let f = put(&mut fresh, &reg, "MG-014", P1, Zone::Hand, None);
+        let offered = crate::actions::get_valid_actions(&fresh, &reg, P1).unwrap();
+        assert!(offered.contains(&GameAction::EquipObject {
+            object_instance_id: f.clone(),
+            target_instance_id: cap_id.clone(),
+            target_is_captain: Some(true),
+        }));
+        let p = put(&mut fresh, &reg, "PLAIN", P1, Zone::Hand, None);
+        let offered = crate::actions::get_valid_actions(&fresh, &reg, P1).unwrap();
+        assert!(!offered.contains(&GameAction::EquipObject {
+            object_instance_id: p,
+            target_instance_id: cap_id.clone(),
+            target_is_captain: Some(true),
+        }));
+
+        // The equipment follows the captain onto the board when it flips.
+        let mut ctx = crate::context::EngineContext::seeded(1);
+        crate::captain::flip_captain(&mut fresh, &reg, &mut ctx, P1, Slot::V2).unwrap();
+        equip_object(&mut fresh, &reg, P1, &f, &cap_id, true).unwrap();
+        assert_eq!(fresh.card(&f).unwrap().slot, Some(Slot::V2));
     }
 }

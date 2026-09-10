@@ -457,6 +457,12 @@ pub fn cards() -> Vec<CardDef> {
                         pushback: None,
                         ignore_shield: None,
                         strip_stealth: None,
+                        // Decision §8.38 × §8.48 / §8.54(a) — the printed
+                        // clause, structured: "La cible perd 3 PV permanent
+                        // et ne peut plus être soignée." The `sand` element
+                        // supplies the flavour; the explicit 3 is the total.
+                        permanent_pv_loss: Some(3),
+                        no_heal: Some(true),
                     }),
                 }),
             }),
@@ -505,6 +511,8 @@ pub fn cards() -> Vec<CardDef> {
                         pushback: None,
                         ignore_shield: Some(true),
                         strip_stealth: None,
+                        permanent_pv_loss: None,
+                        no_heal: None,
                     }),
                 }),
             }),
@@ -861,6 +869,10 @@ mod tests {
             sa.description,
             "La cible perd 3 PV permanent et ne peut plus être soignée."
         );
+        // Decision §8.38 × §8.48 / §8.54(a) — the printed clause is now
+        // structured, so combat can actually honour it.
+        assert_eq!(sa.permanent_pv_loss, Some(3));
+        assert_eq!(sa.no_heal, Some(true));
     }
 
     /// Supa Supa no Mi (BW-012) — `atkBonus: 0` is *present* on the awakening

@@ -779,6 +779,17 @@ pub struct FruitAwakeningSpecialAttack {
     pub ignore_shield: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strip_stealth: Option<bool>,
+    /// Decision §8.38 × §8.48 — "La cible perd N PV permanent": the same
+    /// printed clause `SpecialAttack::permanent_pv_loss` carries, and §8.38
+    /// gave it meaning, so the awakening shape carries it too (`BW-011`'s
+    /// Ground Death). §8.48 keeps the two shapes *separate*; it never said
+    /// this one may not grow the fields its own card text prints (§8.54(a)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permanent_pv_loss: Option<i32>,
+    /// Decision §8.38 × §8.48 — "…et ne peut plus être soignée" (Ground
+    /// Death), the awakening counterpart of `SpecialAttack::no_heal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_heal: Option<bool>,
 }
 
 /// TS `CardDef.fruitEffects.awakening`.
@@ -1315,6 +1326,13 @@ pub enum GameAction {
     EquipObject {
         object_instance_id: String,
         target_instance_id: String,
+        /// Decision §8.28 (follow-up) — the bearer is the player's own
+        /// **captain**, addressed like every other captain target: the
+        /// synthetic `` `captain_{playerId}` `` id in `target_instance_id`
+        /// plus this flag. Absent (`None`) is the character equip the TS
+        /// engine knew, so the wire is unchanged for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_is_captain: Option<bool>,
     },
     #[serde(rename = "deployShip")]
     DeployShip { instance_id: String },

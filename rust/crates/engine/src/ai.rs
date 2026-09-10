@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions::get_valid_actions;
 use crate::board::{get_board_characters, get_effective_atk, get_effective_def, is_front_slot};
+use crate::combat::CAPTAIN_ATTACKER_PREFIX;
 use crate::context::EngineContext;
 use crate::error::EngineResult;
 use crate::execute::execute_action;
@@ -459,8 +460,16 @@ pub fn score_attack(
                 if let Some(target) = state.cards.get(target_id) {
                     let target_current_pv = target.current_pv;
                     let attacker_atk = match attacker_id {
-                        Some(id) => get_effective_atk(state, registry, id)?,
-                        None => captain_effective_atk(state, registry, player_id)?,
+                        // Decision §8.28 (follow-up) × §8.19: a fruit special
+                        // declared by the *captain* carries the synthetic
+                        // `captain_{playerId}` attacker id, which is never a
+                        // key of `state.cards` — its ATK comes from the active
+                        // face, like every other captain swing, so the AI can
+                        // still see lethal with it.
+                        Some(id) if !id.starts_with(CAPTAIN_ATTACKER_PREFIX) => {
+                            get_effective_atk(state, registry, id)?
+                        }
+                        _ => captain_effective_atk(state, registry, player_id)?,
                     };
                     let target_def_val = get_effective_def(state, registry, target_id)?;
                     let damage = (attacker_atk - target_def_val).max(0);
@@ -1136,6 +1145,7 @@ mod tests {
         let eq = GameAction::EquipObject {
             object_instance_id: sword,
             target_instance_id: fighter,
+            target_is_captain: None,
         };
         assert_eq!(score_equip_object(&state, &reg, &eq).unwrap(), 17.0);
     }
@@ -1151,6 +1161,7 @@ mod tests {
         let equip = GameAction::EquipObject {
             object_instance_id: "nowhere".into(),
             target_instance_id: "nowhere-either".into(),
+            target_is_captain: None,
         };
         assert_eq!(score_action(&state, &reg, p, &equip).unwrap(), 0.0);
 
@@ -1644,6 +1655,7 @@ mod tests {
                 &GameAction::EquipObject {
                     object_instance_id: ghost.clone(),
                     target_instance_id: ghost.clone(),
+                    target_is_captain: None,
                 }
             )
             .unwrap(),
@@ -1671,6 +1683,7 @@ mod tests {
                 &GameAction::EquipObject {
                     object_instance_id: "nowhere".into(),
                     target_instance_id: ghost.clone(),
+                    target_is_captain: None,
                 }
             )
             .unwrap(),

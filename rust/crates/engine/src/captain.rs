@@ -54,8 +54,9 @@ pub fn captain_cannot_act(effects: &[StatusEffect]) -> bool {
 /// Is an enemy Cursed unit in play? (`freeIfEnemyCursed`, item 33.)
 ///
 /// Any enemy board character carrying [`Trait::Cursed`] (equipment included,
-/// via [`has_trait`]) or an enemy captain whose **active** face is Cursed —
-/// the verso `traits` once flipped, the card-level `traits` while recto.
+/// via [`has_trait`]) or an enemy captain whose **active** traits are Cursed —
+/// [`captain_traits`], i.e. the card-level list on both faces plus the verso's
+/// own once flipped (decision §8.40).
 fn enemy_cursed_in_play(
     state: &GameState,
     registry: &CardRegistry,
@@ -72,14 +73,14 @@ fn enemy_cursed_in_play(
         }
     }
 
-    let opp_cap = &state.players.get(opponent_id).captain;
-    let opp_def = registry.get_captain_def(&opp_cap.def_id)?;
-    let face_traits = if opp_cap.flipped {
-        opp_def.verso.traits.as_ref()
-    } else {
-        opp_def.traits.as_ref()
-    };
-    Ok(face_traits.is_some_and(|ts| ts.contains(&Trait::Cursed)))
+    // Decision §8.40: one definition of "the captain's active traits" —
+    // `captain_traits(def, flipped) = def.traits union (flipped ? verso : [])`.
+    // The exclusive if/else this used to carry made a card-level `cursed`
+    // invisible the moment the captain flipped, so `freeIfEnemyCursed` and the
+    // Water element disagreed about the same face. Decision §8.28 (follow-up)
+    // adds the equipment: a captain wearing one of the three signature fruits
+    // is `cursed` by it, exactly as a character wearing it is.
+    captain_has_trait_now(state, registry, opponent_id, Trait::Cursed)
 }
 
 /// The single free-flip predicate shared by [`can_flip_captain`] and
@@ -226,6 +227,16 @@ pub fn flip_captain(
         cap.slot = Some(slot);
         cap.deployed_turn = Some(i64::from(turn_number));
     }
+    // Decision §8.28 (follow-up) × §8.29: the equipment stands where its
+    // bearer stands, so a captain equipped while still recto (off-board, so
+    // `slot == None`) brings its objects into the slot it flips into.
+    let attached = state
+        .players
+        .get(player_id)
+        .captain
+        .attached_objects
+        .clone();
+    crate::board::move_attached_objects(state, &attached, slot);
 
     state.add_log(
         player_id,
@@ -393,7 +404,7 @@ pub fn resolve_entry_effect(
                     if let Some(tid) = target_id {
                         let def_id = state.get_card(&tid)?.def_id.clone();
                         let cursed = registry.get_card_def(&def_id)?.has_trait(Trait::Cursed);
-                        let mut dmg = match cursed_bonus {
+                        let dmg = match cursed_bonus {
                             // Decision §8.14: `cursedBonus` stays a *replacement*
                             // total ("N degats, M contre Maudit" — Akainu's entry
                             // reads 4 -> 6, not 4 + 6), but the JS-falsy-zero
@@ -402,10 +413,17 @@ pub fn resolve_entry_effect(
                             Some(bonus) if cursed => *bonus,
                             _ => *amount,
                         };
-                        if sand.unwrap_or(false) {
-                            dmg += 1; // permanent PV loss approximated
-                        }
                         state.get_card_mut(&tid)?.current_pv -= dmg;
+                        // Decision §8.36/§8.40 — Crocodile's entry effect is
+                        // `{ damageEnemies, amount: 4, single, sand: true }`;
+                        // `sand` is "-1 PV **permanent**", the same rule the
+                        // Sand element and `EventEffect::DamageEnemies` apply,
+                        // not one extra point of ordinary damage the next heal
+                        // gives back. The log keeps reporting the damage only,
+                        // so the printed 4 stays 4.
+                        if sand.unwrap_or(false) {
+                            crate::board::apply_permanent_pv_loss(state, registry, &tid, 1)?;
+                        }
                         let td_def_id = state.get_card(&tid)?.def_id.clone();
                         let td_name = registry.get_card_def(&td_def_id)?.name.clone();
                         state.add_log(
@@ -428,6 +446,17 @@ pub fn resolve_entry_effect(
                         }
                     } else {
                         state.players.get_mut(opponent_id).captain.current_pv -= *amount;
+                        // Decision §8.40 gave the captain a max-PV model, so
+                        // `sand` is the same permanent loss on this fallback
+                        // as it is on the body branch above.
+                        if sand.unwrap_or(false) {
+                            crate::board::apply_captain_permanent_pv_loss(
+                                state,
+                                registry,
+                                opponent_id,
+                                1,
+                            )?;
+                        }
                         state.add_log(
                             player_id,
                             format!("Effet d'entree (Gear 2) : {amount} degats au Capitaine !"),
@@ -601,16 +630,30 @@ pub fn declare_captain_base_attack(
 
     // Captain summoning sickness
     if captain.deployed_turn == Some(i64::from(state.turn_number)) {
-        // Verso captain just flipped — has mal de terre unless Rush
-        let has_rush = def
-            .verso
-            .traits
-            .as_ref()
-            .is_some_and(|ts| ts.contains(&Trait::Rush));
-        if !has_rush {
+        // Verso captain just flipped — has mal de terre unless Rush.
+        // Decision §8.40: every captain trait read goes through the union
+        // helper, `rush` included — a card-level `traits: ["rush"]` belongs to
+        // the captain on both faces, so reading `verso.traits` alone would let
+        // the special attack (which already uses the union) fire on the flip
+        // turn while the base attack refused. Inert on the shipped catalogue:
+        // no captain prints a card-level `rush`.
+        if !captain_has_trait_now(state, registry, player_id, Trait::Rush)? {
             return Err(EngineError::illegal("Captain has summoning sickness"));
         }
     }
+
+    // Decision §8.38: the taunt binds every attacker, the captain included.
+    // No shipped effect can taunt a captain (`resolve_support_special`, the
+    // only writer of the status, targets a card instance), so this is the
+    // rule stated once and for all rather than a live clause.
+    crate::combat::enforce_taunt(
+        state,
+        registry,
+        &crate::combat::captain_attacker_id(player_id),
+        target_instance_id,
+        target_is_captain,
+        false,
+    )?;
 
     // Calculate ATK — the printed power of *this* attack plus the captain's
     // ATK modifiers (item 35; every character attack already reads `atk`).
@@ -633,7 +676,7 @@ pub fn declare_captain_base_attack(
             state,
             &crate::combat::captain_attacker_id(player_id),
         );
-    let face_piercing = face_has_trait(def, true, Trait::Piercing);
+    let face_piercing = captain_has_trait_now(state, registry, player_id, Trait::Piercing)?;
 
     let attack_traits: Vec<AttackTrait> = base_action.attack_traits.clone().unwrap_or_default();
 
@@ -731,10 +774,29 @@ pub fn captain_has_trait(def: &crate::types::CaptainDef, flipped: bool, t: Trait
     captain_traits(def, flipped).contains(&t)
 }
 
-/// Does the captain's active face carry `t`? Decision §8.40: one helper for
-/// both faces — the card-level traits plus the verso's when flipped.
-fn face_has_trait(def: &crate::types::CaptainDef, flipped: bool, t: Trait) -> bool {
-    captain_has_trait(def, flipped, t)
+/// Decision §8.28 (follow-up) × §8.40 — the captain's *live* traits: its
+/// printed [`captain_traits`] **plus** the traits its equipment grants.
+///
+/// This is [`crate::board::has_trait`] for a captain, and it exists for the
+/// same reason: once the captain can wear the fruit printed for it
+/// ("Équipable sur Luffy / Crocodile / Akainu"), that fruit's `grantsTraits` —
+/// `logia` and `cursed` on `BW-011` / `MR-011`, `cursed` on `MG-014`, plus the
+/// awakening list once awakened — belong to the captain exactly as they belong
+/// to a character. Every reader of a captain trait (Logia intangibility,
+/// Cursed for the Water element, Piercing, Rush, Conquérant) goes through
+/// here; with no attachment it is [`captain_has_trait`] unchanged.
+pub fn captain_has_trait_now(
+    state: &GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+    t: Trait,
+) -> Result<bool, EngineError> {
+    let captain = &state.players.get(player_id).captain;
+    let def = registry.get_captain_def(&captain.def_id)?;
+    if captain_has_trait(def, captain.flipped, t) {
+        return Ok(true);
+    }
+    crate::board::attachments_grant_trait(state, registry, &captain.attached_objects, t)
 }
 
 /// The DEF a captain attack is computed against — the mirror of the private
@@ -781,9 +843,11 @@ fn captain_target_def(
 /// `sleep`, `cannotBeDodged`, `pushback`, `stripStealth` and `oncePerGame`
 /// (recorded under the attack name in `captain.used_once_abilities`).
 ///
-/// `permanentPvLoss` (Crocodile's Desert Girasol, −2 PV) is folded into the
-/// damage, the same approximation the `sand` entry effect already uses in this
-/// module — the engine has no max-PV model.
+/// `permanentPvLoss` (Crocodile's Desert Girasol, −2 PV) rides on
+/// [`PendingAttack::permanent_pv_loss`] (decision §8.38) and is applied by
+/// `resolve_attack` once the blow lands: the maximum PV drops for good and the
+/// current PV follows it down. It is no longer folded into the raw damage,
+/// where a counter could have reduced it away.
 ///
 /// Errors: as [`declare_captain_base_attack`], plus
 /// `Captain special already used`, `Already used this ability (1x/game)` and
@@ -818,13 +882,18 @@ pub fn declare_captain_special_attack(
 /// [`declare_captain_special_attack`] and costs `surcharge.cost`. Inert on the
 /// shipped catalogue (every face has `surcharge: None`).
 ///
+/// The active face is always the verso: the surcharge is an attack and the
+/// recto captain cannot attack (Rulebook v3.1 §2.1, decision §8.34), so a
+/// recto captain is refused before its face is read.
+///
 /// The one-per-turn limit falls out of the shared per-turn flags (`tapped` /
 /// `usedSpecialAttack`, cleared by `reset_turn_flags`); the
 /// `surcharge_{name}` key in `captain.used_once_abilities` — that list is never
 /// cleared — guards a `oncePerGame` surcharge.
 ///
 /// Errors: as [`declare_captain_special_attack`], plus
-/// `Captain face has no surcharge`.
+/// `Captain not flipped (verso required)` and `Captain face has no
+/// surcharge`.
 pub fn use_captain_surcharge(
     state: &mut GameState,
     registry: &CardRegistry,
@@ -833,13 +902,18 @@ pub fn use_captain_surcharge(
     target_is_captain: bool,
 ) -> Result<(), EngineError> {
     let captain = &state.players.get(player_id).captain;
+    // Decision §8.34: the surcharge resolves through the captain *special
+    // attack* path, and "Le Capitaine recto ne peut pas attaquer" (Rulebook
+    // v3.1 §2.1, quoted verbatim in `captains.ts`). The active face is
+    // therefore necessarily the verso: a recto captain is refused here with
+    // the same message the shared body uses, instead of reading a
+    // `recto.surcharge` that could never be played (that branch was dead code
+    // — the shared body opened with this very check).
+    if !captain.flipped {
+        return Err(EngineError::illegal("Captain not flipped (verso required)"));
+    }
     let def = registry.get_captain_def(&captain.def_id)?;
-    let surcharge = if captain.flipped {
-        def.verso.surcharge.clone()
-    } else {
-        def.recto.surcharge.clone()
-    };
-    let Some(surcharge) = surcharge else {
+    let Some(surcharge) = def.verso.surcharge.clone() else {
         return Err(EngineError::illegal("Captain face has no surcharge"));
     };
     let once_key = surcharge
@@ -887,7 +961,7 @@ fn declare_captain_spec_attack(
 
     // Captain summoning sickness — same rule as the base action.
     if captain.deployed_turn == Some(i64::from(state.turn_number))
-        && !face_has_trait(def, true, Trait::Rush)
+        && !captain_has_trait_now(state, registry, player_id, Trait::Rush)?
     {
         return Err(EngineError::illegal("Captain has summoning sickness"));
     }
@@ -904,8 +978,19 @@ fn declare_captain_spec_attack(
         )));
     }
 
+    // Decision §8.38 — the taunt binds the captain's special too (see
+    // `declare_captain_base_attack`: inert while nothing can taunt a captain).
+    crate::combat::enforce_taunt(
+        state,
+        registry,
+        &crate::combat::captain_attacker_id(player_id),
+        target_instance_id,
+        target_is_captain,
+        true,
+    )?;
+
     let cap_name = def.name.clone();
-    let face_piercing = face_has_trait(def, true, Trait::Piercing);
+    let face_piercing = captain_has_trait_now(state, registry, player_id, Trait::Piercing)?;
     let has_natural_haki = def
         .verso
         .natural_haki
@@ -1328,6 +1413,86 @@ mod tests {
     }
 
     #[test]
+    fn a_card_level_cursed_captain_stays_cursed_once_it_flips() {
+        // Decision §8.40: there is one definition of "the captain's active
+        // traits" — `captain_traits` — and `freeIfEnemyCursed` uses it. The
+        // exclusive if/else it used to carry made a card-level `cursed`
+        // invisible the moment the enemy captain flipped, so the free-flip
+        // clause and the Water element disagreed about the same face.
+        let mut akainu = crate::cards::captains::captain_akainu();
+        // A hypothetical opponent whose `cursed` lives on the card, not on the
+        // verso — the shape `captain_traits` exists for.
+        let mut cursed_cap = crate::cards::captains::captain_shanks();
+        cursed_cap.traits = Some(vec![Trait::Cursed]);
+        cursed_cap.verso.traits = Some(vec![Trait::Piercing]);
+        akainu.id = "CAP-A".to_string();
+        cursed_cap.id = "CAP-C".to_string();
+        let reg = CardRegistry::from_sets([vec![]], [akainu, cursed_cap]);
+        let mut state = blank_state("CAP-A", "CAP-C");
+
+        // Recto: the card-level trait already counts.
+        assert_eq!(
+            free_flip_reason(&state, &reg, P1).unwrap(),
+            Some(FreeFlipReason::EnemyCursed)
+        );
+        // Flipped: it still does — the verso *adds* traits, it never replaces
+        // the card's own.
+        state.players.get_mut(P2).captain.flipped = true;
+        assert!(captain_has_trait(
+            reg.get_captain_def("CAP-C").unwrap(),
+            true,
+            Trait::Cursed
+        ));
+        assert!(free_flip_agrees(
+            &mut state,
+            &reg,
+            FreeFlipReason::EnemyCursed
+        ));
+    }
+
+    #[test]
+    fn a_recto_captain_can_never_play_its_surcharge() {
+        // Decision §8.34(b) reads "the active face's surcharge", and the
+        // active face of an *attacking* captain is always the verso: "Le
+        // Capitaine recto ne peut pas attaquer" (Rulebook v3.1 §2.1). The
+        // recto branch was dead code — the shared body opened with this very
+        // refusal — so the rule is stated where the action starts.
+        let mut cap = crate::cards::captains::captain_shanks();
+        cap.id = "CAP-S2".to_string();
+        cap.recto.surcharge = Some(SpecialAttack {
+            name: "Surcharge recto".to_string(),
+            cost: 1,
+            atk_bonus: 2,
+            ..SpecialAttack::default()
+        });
+        cap.verso.surcharge = Some(SpecialAttack {
+            name: "Surcharge verso".to_string(),
+            cost: 1,
+            atk_bonus: 2,
+            ..SpecialAttack::default()
+        });
+        let reg = CardRegistry::from_sets([vec![character("X", 1, 0, 5)]], [cap]);
+        let mut state = blank_state("CAP-S2", "CAP-S2");
+        let target = put(&mut state, &reg, "X", P2, Slot::V1);
+        state.players.get_mut(P1).volonte = 5;
+
+        assert_eq!(
+            use_captain_surcharge(&mut state, &reg, P1, &target, false).unwrap_err(),
+            EngineError::illegal("Captain not flipped (verso required)")
+        );
+        assert!(state.pending_attack.is_none());
+        assert_eq!(state.players.get(P1).volonte, 5, "and it costs nothing");
+
+        // Flipped, the verso surcharge is the one that plays.
+        state.players.get_mut(P1).captain.flipped = true;
+        state.players.get_mut(P1).captain.slot = Some(Slot::A3);
+        state.players.get_mut(P1).captain.deployed_turn = None;
+        use_captain_surcharge(&mut state, &reg, P1, &target, false).unwrap();
+        assert!(state.pending_attack.is_some());
+        assert_eq!(state.players.get(P1).volonte, 4);
+    }
+
+    #[test]
     fn crocodile_flips_free_with_three_allies() {
         let mut reg = CardRegistry::from_sets([vec![character("X", 1, 0, 5)]], []);
         reg.register_captain(crate::cards::captains::captain_crocodile());
@@ -1575,8 +1740,13 @@ mod tests {
         assert!(msgs.contains(&"Char STRONG est KO !"));
     }
 
+    /// Decision §8.36/§8.40 — this test used to assert `sand` added one point
+    /// of ordinary damage ("permanent PV loss approximated"). It encoded the
+    /// bug: `sand` is "-1 PV **permanent**", i.e. `pv_max_loss += 1` with the
+    /// current PV following the maximum down, exactly as the Sand element,
+    /// `EventEffect::DamageEnemies { sand }` and the captain arm already do.
     #[test]
-    fn damage_single_cursed_bonus_replaces_amount_and_sand_adds_one() {
+    fn damage_single_cursed_bonus_replaces_amount_and_sand_is_a_permanent_loss() {
         let cap = captain_def("C1", FlipCondition::default(), EntryEffect::GrantSelfRush);
         let mut cursed = character("CU", 1, 0, 20);
         cursed.traits = Some(vec![Trait::Cursed]);
@@ -1589,11 +1759,38 @@ mod tests {
             amount: 9,
             target: EntryDamageTarget::Single,
             cursed_bonus: Some(3), // replaces, does not add
-            sand: Some(true),      // +1
+            sand: Some(true),      // -1 PV permanent, not +1 damage
         };
         resolve_entry_effect(&mut state, &reg, &mut ctx, P1, &effect).unwrap();
-        assert_eq!(state.cards[&c].current_pv, 20 - 4);
-        assert_eq!(last_log(&state), "Effet d'entree : 4 degats a Char CU !");
+        // 3 damage (the replacement total), then the maximum drops to 19 —
+        // 17 is already below it, so nothing is clamped.
+        assert_eq!(state.cards[&c].current_pv, 20 - 3);
+        assert_eq!(state.cards[&c].pv_max_loss, Some(1));
+        assert_eq!(last_log(&state), "Effet d'entree : 3 degats a Char CU !");
+    }
+
+    /// The other half of the same rule: an **undamaged** target loses one
+    /// point of current PV too, because the current PV follows the maximum.
+    #[test]
+    fn entry_sand_pulls_a_full_pv_target_down_with_its_maximum() {
+        let cap = captain_def("C1", FlipCondition::default(), EntryEffect::GrantSelfRush);
+        let mut reg = CardRegistry::from_sets([vec![character("PL", 1, 0, 20)]], []);
+        reg.register_captain(cap);
+        let mut state = blank_state("C1", "C1");
+        let mut ctx = EngineContext::seeded(1);
+        let c = put(&mut state, &reg, "PL", P2, Slot::V1);
+        let effect = EntryEffect::DamageEnemies {
+            amount: 0,
+            target: EntryDamageTarget::Single,
+            cursed_bonus: None,
+            sand: Some(true),
+        };
+        resolve_entry_effect(&mut state, &reg, &mut ctx, P1, &effect).unwrap();
+        assert_eq!(state.cards[&c].pv_max_loss, Some(1));
+        assert_eq!(state.cards[&c].current_pv, 19);
+        // And the loss is irrecoverable: a heal cannot climb back over it.
+        crate::board::heal_unit(&mut state, &reg, &c, 5).unwrap();
+        assert_eq!(state.cards[&c].current_pv, 19);
     }
 
     /// Decision §8.14 — `cursedBonus` stays a replacement total, but a
@@ -1656,10 +1853,13 @@ mod tests {
             amount: 3,
             target: EntryDamageTarget::Single,
             cursed_bonus: Some(8),
-            sand: Some(true), // ignored on the captain branch
+            // `cursedBonus` stays ignored on the captain branch; `sand` is
+            // *not* (§8.36/§8.40 — the captain has a max-PV model now).
+            sand: Some(true),
         };
         resolve_entry_effect(&mut state, &reg, &mut ctx, P1, &effect).unwrap();
         assert_eq!(state.players.get(P2).captain.current_pv, 17);
+        assert_eq!(state.players.get(P2).captain.pv_max_loss, Some(1));
         assert_eq!(
             last_log(&state),
             "Effet d'entree (Gear 2) : 3 degats au Capitaine !"
@@ -1818,6 +2018,40 @@ mod tests {
             declare_captain_base_attack(&mut state, &reg, P1, &t, false),
             Err(EngineError::illegal("Captain has summoning sickness"))
         );
+    }
+
+    /// Decision §8.40 — `rush` is read through the trait **union** on every
+    /// path, so a card-level `traits: ["rush"]` (no `verso.traits` entry) lets
+    /// the captain act on the flip turn through the base attack and the
+    /// special alike, and the enumerator offers both.
+    #[test]
+    fn a_card_level_rush_clears_the_captains_summoning_sickness_on_every_path() {
+        let mut cap = captain_def("C1", FlipCondition::default(), EntryEffect::GrantSelfRush);
+        cap.traits = Some(vec![Trait::Rush]);
+        cap.verso.traits = None;
+        let mut reg = CardRegistry::from_sets([vec![character("X", 1, 2, 5)]], []);
+        reg.register_captain(cap);
+        let mut state = blank_state("C1", "C1");
+        let t = put(&mut state, &reg, "X", P2, Slot::V1);
+        {
+            let c = &mut state.players.get_mut(P1).captain;
+            c.flipped = true;
+            c.slot = Some(Slot::V2);
+            c.deployed_turn = Some(i64::from(state.turn_number));
+        }
+
+        // The enumerator offers the captain attack on the flip turn…
+        let actions =
+            crate::actions::get_valid_actions(&state, &reg, P1).expect("enumeration works");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, crate::types::GameAction::CaptainAttack { .. }))
+        );
+        // …and the base attack accepts it (it used to read `verso.traits`
+        // alone and refuse with "Captain has summoning sickness").
+        declare_captain_base_attack(&mut state, &reg, P1, &t, false).unwrap();
+        assert!(state.pending_attack.is_some());
     }
 
     #[test]
@@ -2097,7 +2331,9 @@ mod tests {
         state.players.get_mut(P1).volonte = 3;
         assert_eq!(
             declare_captain_special_attack(&mut state, &reg, P1, &t, false),
-            Err(EngineError::illegal("Cannot afford captain special (cost 4)"))
+            Err(EngineError::illegal(
+                "Cannot afford captain special (cost 4)"
+            ))
         );
         assert_eq!(state.players.get(P1).volonte, 3);
         assert!(state.pending_attack.is_none());
@@ -2263,10 +2499,7 @@ mod tests {
             json!({"type": "captainAttack", "targetInstanceId": "t", "targetIsCaptain": false, "isSpecial": true})
         );
         assert_eq!(v["type"], json!(special.type_name()));
-        assert_eq!(
-            serde_json::from_value::<GameAction>(v).unwrap(),
-            special
-        );
+        assert_eq!(serde_json::from_value::<GameAction>(v).unwrap(), special);
 
         let surcharge = GameAction::UseSurcharge {
             target_instance_id: "t".into(),
@@ -2277,9 +2510,6 @@ mod tests {
         assert_eq!(v, json!({"type": "useSurcharge", "targetInstanceId": "t"}));
         assert_eq!(v["type"], json!("useSurcharge"));
         assert_eq!(surcharge.type_name(), "useSurcharge");
-        assert_eq!(
-            serde_json::from_value::<GameAction>(v).unwrap(),
-            surcharge
-        );
+        assert_eq!(serde_json::from_value::<GameAction>(v).unwrap(), surcharge);
     }
 }

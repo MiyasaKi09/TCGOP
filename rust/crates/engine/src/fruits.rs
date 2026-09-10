@@ -38,6 +38,42 @@ fn find_bearer<'a>(
     })
 }
 
+/// Who is wearing `fruit_instance_id` — decision §8.28 (follow-up) added the
+/// second possibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FruitBearer {
+    /// A board character, the only bearer the TypeScript engine knew.
+    Character(String),
+    /// The player's own captain, the printed bearer of the three signature SR
+    /// fruits ("Équipable sur Luffy / Crocodile / Akainu").
+    Captain(PlayerId),
+}
+
+/// [`find_bearer`] widened to the captain (decision §8.28 follow-up).
+///
+/// The character scan comes first and is unchanged, so nothing about the
+/// existing bearers moves; a fruit can only ever be attached to one unit.
+pub fn find_fruit_bearer(
+    state: &GameState,
+    player_id: PlayerId,
+    fruit_instance_id: &str,
+) -> Option<FruitBearer> {
+    if let Some(c) = find_bearer(state, player_id, fruit_instance_id) {
+        return Some(FruitBearer::Character(c.instance_id.clone()));
+    }
+    if state
+        .players
+        .get(player_id)
+        .captain
+        .attached_objects
+        .iter()
+        .any(|id| id == fruit_instance_id)
+    {
+        return Some(FruitBearer::Captain(player_id));
+    }
+    None
+}
+
 /// TS `applyFruitBaseEffects(state, fruitInstanceId, bearerInstanceId)`
 /// — `src/engine/fruits.ts:12`.
 ///
@@ -121,6 +157,76 @@ pub fn apply_fruit_base_effects(
     Ok(())
 }
 
+/// Decision §8.28 (follow-up) — [`apply_fruit_base_effects`] for a **captain**
+/// bearer.
+///
+/// The same two modifiers with the same ids and the same source, pushed onto
+/// `captain.modifiers` (which `recalculate_passive_buffs` never strips — it
+/// only rebuilds the `passive_` / `captain_` / `synergy_` modifiers of board
+/// characters), and the same log line with the captain's name. The granted
+/// traits are read from the attachment itself by
+/// [`crate::captain::captain_has_trait_now`], exactly as
+/// [`crate::board::has_trait`] reads a character's.
+pub fn apply_fruit_base_effects_on_captain(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    fruit_instance_id: &str,
+    player_id: PlayerId,
+) -> Result<(), EngineError> {
+    let Some(fruit_card) = state.cards.get(fruit_instance_id) else {
+        return Ok(());
+    };
+    let fruit_def_id = fruit_card.def_id.clone();
+    let fruit_def = registry.get_card_def(&fruit_def_id)?;
+    let Some(fruit_effects) = fruit_def.fruit_effects.as_ref() else {
+        return Ok(());
+    };
+    let base = &fruit_effects.base;
+    // A zero bonus pushes no modifier (a real "no bonus"), like the character
+    // path; item 3 keeps the two bonuses independent of `grantsTraits`.
+    let atk_bonus = base.atk_bonus.unwrap_or(0);
+    let def_bonus = base.def_bonus.unwrap_or(0);
+    let passive_description = base.passive_description.clone().unwrap_or_default();
+    let fruit_name = fruit_def.name.clone();
+    let fruit_source = format!("fruit_{}", fruit_def.id);
+
+    let bearer_name = registry
+        .get_captain_def(&state.players.get(player_id).captain.def_id)?
+        .name
+        .clone();
+
+    {
+        let cap = &mut state.players.get_mut(player_id).captain;
+        if atk_bonus != 0 {
+            cap.modifiers.push(Modifier {
+                id: format!("fruit_atk_{fruit_instance_id}"),
+                stat: ModifierStat::Atk,
+                amount: atk_bonus,
+                source: fruit_source.clone(),
+                duration: ModifierDuration::Permanent,
+                turns_remaining: None,
+            });
+        }
+        if def_bonus != 0 {
+            cap.modifiers.push(Modifier {
+                id: format!("fruit_def_{fruit_instance_id}"),
+                stat: ModifierStat::Def,
+                amount: def_bonus,
+                source: fruit_source,
+                duration: ModifierDuration::Permanent,
+                turns_remaining: None,
+            });
+        }
+    }
+
+    state.add_log(
+        player_id,
+        format!("{bearer_name} mange le {fruit_name} ! {passive_description}"),
+    );
+
+    Ok(())
+}
+
 /// TS `canAwakenFruit(state, playerId, fruitInstanceId)`
 /// — `src/engine/fruits.ts:65`.
 ///
@@ -156,15 +262,24 @@ pub fn can_awaken_fruit(
         return Ok(false);
     };
 
-    // Check bearer is the legitimate one
-    let Some(bearer) = find_bearer(state, player_id, fruit_instance_id) else {
-        return Ok(false);
+    // Check bearer is the legitimate one. Decision §8.28 (follow-up): the
+    // bearer may be the captain — `porteurLegitime` is "Luffy" / "Crocodile" /
+    // "Akainu" on the three signature fruits, i.e. exactly the captains that
+    // now wear them, and the check is the same `includes` on the bearer's
+    // printed name.
+    let bearer_name = match find_fruit_bearer(state, player_id, fruit_instance_id) {
+        Some(FruitBearer::Character(id)) => registry
+            .get_card_def(&state.get_card(&id)?.def_id)?
+            .name
+            .clone(),
+        Some(FruitBearer::Captain(pid)) => registry
+            .get_captain_def(&state.players.get(pid).captain.def_id)?
+            .name
+            .clone(),
+        None => return Ok(false),
     };
-
-    let bearer_def = registry.get_card_def(&bearer.def_id)?;
     // JS truthiness on the string: an empty `porteurLegitime` skips the check.
-    if !awakening.porteur_legitime.is_empty()
-        && !bearer_def.name.contains(&awakening.porteur_legitime)
+    if !awakening.porteur_legitime.is_empty() && !bearer_name.contains(&awakening.porteur_legitime)
     {
         return Ok(false);
     }
@@ -219,12 +334,20 @@ pub fn awaken_fruit(
     let fruit_name = fruit_def.name.clone();
     let awaken_source = format!("fruit_awaken_{}", fruit_def.id);
 
-    // Find bearer
-    let Some(bearer) = find_bearer(state, player_id, fruit_instance_id) else {
+    // Find bearer — decision §8.28 (follow-up): a captain is one.
+    let Some(bearer) = find_fruit_bearer(state, player_id, fruit_instance_id) else {
         return Err(EngineError::illegal("No bearer found"));
     };
-    let bearer_instance_id = bearer.instance_id.clone();
-    let bearer_name = registry.get_card_def(&bearer.def_id)?.name.clone();
+    let bearer_name = match &bearer {
+        FruitBearer::Character(id) => registry
+            .get_card_def(&state.get_card(id)?.def_id)?
+            .name
+            .clone(),
+        FruitBearer::Captain(pid) => registry
+            .get_captain_def(&state.players.get(*pid).captain.def_id)?
+            .name
+            .clone(),
+    };
 
     state.spend_volonte(player_id, vol_cost)?;
 
@@ -233,27 +356,34 @@ pub fn awaken_fruit(
         fruit.is_awakened = Some(true);
     }
 
-    // Apply awakening bonuses
-    if let Some(b) = state.cards.get_mut(&bearer_instance_id) {
-        if atk_bonus != 0 {
-            b.modifiers.push(Modifier {
-                id: format!("fruit_awaken_atk_{fruit_instance_id}"),
-                stat: ModifierStat::Atk,
-                amount: atk_bonus,
-                source: awaken_source.clone(),
-                duration: ModifierDuration::Permanent,
-                turns_remaining: None,
-            });
-        }
-        if def_bonus != 0 {
-            b.modifiers.push(Modifier {
-                id: format!("fruit_awaken_def_{fruit_instance_id}"),
-                stat: ModifierStat::Def,
-                amount: def_bonus,
-                source: awaken_source,
-                duration: ModifierDuration::Permanent,
-                turns_remaining: None,
-            });
+    // Apply awakening bonuses — the same two modifiers, on whichever unit
+    // wears the fruit.
+    {
+        let mods: Option<&mut Vec<Modifier>> = match &bearer {
+            FruitBearer::Character(id) => state.cards.get_mut(id).map(|b| &mut b.modifiers),
+            FruitBearer::Captain(pid) => Some(&mut state.players.get_mut(*pid).captain.modifiers),
+        };
+        if let Some(mods) = mods {
+            if atk_bonus != 0 {
+                mods.push(Modifier {
+                    id: format!("fruit_awaken_atk_{fruit_instance_id}"),
+                    stat: ModifierStat::Atk,
+                    amount: atk_bonus,
+                    source: awaken_source.clone(),
+                    duration: ModifierDuration::Permanent,
+                    turns_remaining: None,
+                });
+            }
+            if def_bonus != 0 {
+                mods.push(Modifier {
+                    id: format!("fruit_awaken_def_{fruit_instance_id}"),
+                    stat: ModifierStat::Def,
+                    amount: def_bonus,
+                    source: awaken_source,
+                    duration: ModifierDuration::Permanent,
+                    turns_remaining: None,
+                });
+            }
         }
     }
 

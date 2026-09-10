@@ -34,7 +34,6 @@ use crate::board::{
     get_adjacent_slots, get_board_characters, get_effective_atk, get_effective_def,
     granted_attack_traits, has_summoning_sickness, has_trait, heal_unit, remove_from_board,
 };
-use crate::captain::captain_has_trait;
 use crate::context::EngineContext;
 use crate::error::EngineError;
 use crate::passives::apply_on_ko_effects;
@@ -159,14 +158,15 @@ fn pending_is_piercing(
             "player1" => PlayerId::Player1,
             _ => PlayerId::Player2,
         };
-        let cap = &state.players.get(owner).captain;
-        let cap_def = registry.get_captain_def(&cap.def_id)?;
-        return Ok(captain_has_trait(cap_def, cap.flipped, Trait::Piercing));
+        // Decision §8.28 (follow-up): the captain's equipment counts too.
+        return crate::captain::captain_has_trait_now(state, registry, owner, Trait::Piercing);
     }
     let Some(card) = state.cards.get(&pending.attacker_id) else {
         return Ok(false);
     };
-    Ok(registry.get_card_def(&card.def_id)?.has_trait(Trait::Piercing))
+    Ok(registry
+        .get_card_def(&card.def_id)?
+        .has_trait(Trait::Piercing))
 }
 
 // ============================================================
@@ -346,16 +346,132 @@ fn trigger_attacker_trap(
     );
     if state.get_card(attacker_instance_id)?.current_pv <= 0 {
         let ko_def_id = state.get_card(attacker_instance_id)?.def_id.clone();
-        state.add_log(owner, format!("{def_name} est KO par le piege !"));
-        // Decision §8.12: a trap KO is a KO like any other — the +2 Volonte
-        // goes to the player who lost the unit (Rulebook v3.1 §4) and the
-        // on-KO triggers fire, with the trapper's side as the killer.
-        state.grant_ko_bonus(owner);
+        // Decision §8.12 × §8.37: a trap KO is a KO like any other — the +2
+        // Volonte goes to the player who *lost* the unit (Rulebook v3.1 §4)
+        // and the on-KO triggers fire on that side. `owner` above is the
+        // *controller* (who declared the attack, §8.37); the body itself may
+        // be on loan through `BW-024` Trahison, and §8.37 pins `CardInstance.
+        // owner` as never changing, so KO bonuses and on-KO triggers keep
+        // pointing at the original owner — exactly like the Epines recoil and
+        // `apply_character_damage`, which both read `.owner`.
+        let ko_owner = state.get_card(attacker_instance_id)?.owner;
+        state.add_log(ko_owner, format!("{def_name} est KO par le piege !"));
+        state.grant_ko_bonus(ko_owner);
         remove_from_board(state, registry, attacker_instance_id)?;
-        apply_on_ko_effects(state, registry, ctx, owner, owner.opponent(), &ko_def_id)?;
+        apply_on_ko_effects(
+            state,
+            registry,
+            ctx,
+            ko_owner,
+            ko_owner.opponent(),
+            &ko_def_id,
+        )?;
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Decision §8.38/§8.57 — the enemy-facing half of a support special
+/// (`taunt` / `immobilize` / `sleep` / `stripStealth`): effects that are
+/// printed against an opponent's unit.
+///
+/// Shared by the enumerator ([`crate::actions::build_valid_actions`]) and the
+/// executor ([`resolve_support_special`]) so both split the two audiences the
+/// same way.
+pub fn support_hits_enemy(spec: &SpecialAttack) -> bool {
+    spec.taunt.unwrap_or(false)
+        || spec.immobilize.unwrap_or(false)
+        || spec.sleep.unwrap_or(false)
+        || spec.strip_stealth.unwrap_or(false)
+}
+
+/// Decision §8.38/§8.57 — the ally-facing half of a support special
+/// (`healAmount` / `buffAllyAtk` / `cleanse`): "Un allié gagne +2 ATK et perd
+/// gelé/immobilisé" (`RH-009` Stimulant).
+pub fn support_helps_ally(spec: &SpecialAttack) -> bool {
+    spec.heal_amount.is_some_and(|n| n != 0)
+        || spec.buff_ally_atk.is_some_and(|n| n != 0)
+        || spec.cleanse.unwrap_or(false)
+}
+
+/// Decision §8.38 — enforce the `taunt` status ("Un ennemi doit cibler X à son
+/// prochain tour": `RH-004` Provocation, `BW-005` Peinture de la Colère) at the
+/// **executor**, not only in the enumerator.
+///
+/// While a `Taunt` status lives on the attacker and the instance that taunted
+/// it is still a legal target, that unit is the only thing the attacker may
+/// declare against — a taunter that died, went Furtif or slipped out of range
+/// releases it, which is exactly the binding
+/// [`crate::board::get_valid_targets`] computes. Every declaration path (base,
+/// special, awakened-fruit and both captain attacks) runs this, so a
+/// hand-built `GameAction` cannot walk around the printed rule.
+///
+/// A captain attacker carries its statuses on [`crate::state::CaptainInstance`]
+/// and has no board slot of its own; no shipped effect can taunt one (the only
+/// `Taunt` writer, `resolve_support_special`, targets a card instance), so its
+/// binding is the plain "the taunter is still an enemy on the board" test.
+///
+/// Errors: `{name} doit cibler {taunter} (Provocation)`.
+pub(crate) fn enforce_taunt(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+    for_special: bool,
+) -> Result<(), EngineError> {
+    let bound = match state.cards.get(attacker_instance_id) {
+        Some(attacker) => {
+            if !attacker.has_status(StatusEffectType::Taunt) {
+                return Ok(());
+            }
+            let legal = crate::board::get_valid_targets(
+                state,
+                registry,
+                attacker_instance_id,
+                for_special,
+            )?;
+            attacker
+                .status_effects
+                .iter()
+                .filter(|e| e.effect_type == StatusEffectType::Taunt)
+                .map(|e| e.source.clone())
+                .find(|src| legal.character_targets.contains(src))
+        }
+        None => {
+            // The synthetic `captain_<player>` attacker id.
+            let owner = get_attacker_owner(state, attacker_instance_id)?;
+            let captain = &state.players.get(owner).captain;
+            captain
+                .status_effects
+                .iter()
+                .filter(|e| e.effect_type == StatusEffectType::Taunt)
+                .map(|e| e.source.clone())
+                .find(|src| {
+                    state
+                        .cards
+                        .get(src)
+                        .is_some_and(|c| c.zone == Zone::Board && c.controller() != owner)
+                })
+        }
+    };
+    let Some(src) = bound else {
+        return Ok(());
+    };
+    if !target_is_captain && target_instance_id == src {
+        return Ok(());
+    }
+    let attacker_name = match state.cards.get(attacker_instance_id) {
+        Some(c) => registry.get_card_def(&c.def_id)?.name.clone(),
+        None => "Le Capitaine".to_string(),
+    };
+    let taunter_name = match state.cards.get(&src) {
+        Some(c) => registry.get_card_def(&c.def_id)?.name.clone(),
+        None => src.clone(),
+    };
+    Err(EngineError::illegal(format!(
+        "{attacker_name} doit cibler {taunter_name} (Provocation)"
+    )))
 }
 
 /// TS `declareBaseAttack(state, attackerInstanceId, targetInstanceId, targetIsCaptain)`
@@ -369,7 +485,8 @@ fn trigger_attacker_trap(
 /// logs `"{name} attaque {target} (ATK {atk} vs DEF {def} = {raw} degats)"`.
 ///
 /// Errors: `Attacker not found`, `Attacker is tapped`, `Base action already used`,
-/// `Character has summoning sickness`, `Character has 0 ATK — cannot attack`.
+/// `Character has summoning sickness`, `Character has 0 ATK — cannot attack`,
+/// `{name} doit cibler {taunter} (Provocation)` (decision §8.38).
 ///
 /// Like the TS original this is **all-or-nothing**: the TS function threads a
 /// new immutable state through every step and only returns it once the last
@@ -432,6 +549,17 @@ fn declare_base_attack_inner(
     if get_effective_atk(state, registry, attacker_instance_id)? <= 0 {
         return Err(EngineError::illegal("Character has 0 ATK — cannot attack"));
     }
+
+    // Decision §8.38: the printed taunt binds the executor too, and it is
+    // checked before the trap so a refused declaration cannot eat it (§8.12).
+    enforce_taunt(
+        state,
+        registry,
+        attacker_instance_id,
+        target_instance_id,
+        target_is_captain,
+        false,
+    )?;
 
     // Trigger trap on attacker if present
     if trigger_attacker_trap(state, registry, ctx, attacker_instance_id, owner, &def_name)? {
@@ -562,7 +690,10 @@ fn declare_base_attack_inner(
 ///
 /// Errors: `Attacker not found`, `Special already used`,
 /// `Character has summoning sickness`, `Character has no special attack`,
-/// `Already used this ability (1x/game)`, `Cannot afford special (cost {n})`.
+/// `Already used this ability (1x/game)`, `Cannot afford special (cost {n})`,
+/// `{name} doit cibler {taunter} (Provocation)` (decision §8.38) and, for a
+/// support special, the two wrong-side refusals of
+/// [`resolve_support_special`].
 ///
 /// Like the TS original this is **all-or-nothing**: the TS function threads a
 /// new immutable state through every step and only returns it once the last
@@ -640,6 +771,24 @@ fn declare_special_attack_inner(
         )));
     }
 
+    // Decision §8.38: a taunted unit may only declare against its taunter.
+    // A self-transformation targets itself and an ally-facing support special
+    // is not an attack at all, so neither is bound; an enemy-facing support
+    // special is (the enumerator picks its target from `get_valid_targets`
+    // too). Checked before the trap so a refused declaration cannot eat it
+    // (§8.12).
+    if spec.transform.is_none() && (!spec.is_support.unwrap_or(false) || support_hits_enemy(&spec))
+    {
+        enforce_taunt(
+            state,
+            registry,
+            attacker_instance_id,
+            target_instance_id,
+            target_is_captain,
+            true,
+        )?;
+    }
+
     // Decision §8.12: the trap fires only once the declaration is legal.
     // Firing it before the checks let a refused declaration eat the trap —
     // and the transactional wrapper then rolled the consumption back, so the
@@ -681,6 +830,14 @@ fn declare_special_attack_inner(
                 duration: ModifierDuration::Permanent,
                 turns_remaining: None,
             });
+            // Decision §8.39: the transformed body has the printed PV of its
+            // new form, so the *cap* has to follow it — `pv_max_loss` is the
+            // permanent max-PV loss of the old form and is cleared, exactly as
+            // the decision's "`current_pv = t.pv` (and the printed-PV cap
+            // follows via `pv_max_loss = 0`)" says. Leaving it behind let a
+            // Chopper who had already taken a point of Sand sit at 6 PV with a
+            // maximum of 3, so the next permanent loss clamped him from 6 to 2.
+            c.pv_max_loss = None;
             c.current_pv = t.pv;
             // Rush for the duration: the same `-1` sentinel `grantSelfRush`
             // writes, so the transformed unit may act at once.
@@ -730,6 +887,28 @@ fn declare_special_attack_inner(
     )?;
 
     state.spend_volonte(owner, spec.cost)?;
+
+    // Decision §8.38 — `healAmount` is its own clause, not a sub-clause of
+    // `isSupport`: a special that prints a heal heals, whether or not it also
+    // attacks. A support special heals the ally it targets; an *attacking*
+    // special has no ally in its target set (its target is an enemy), so the
+    // only ally it involves is the attacker itself — the natural reading of a
+    // "frappe et récupère N PV" special. The heal goes through the single
+    // §8.5 path (never lowers PV, honours `noHeal` / `desiccation` and the
+    // permanent max-PV cap) and is applied right after the cost, so the clause
+    // resolves identically in both carriers. Latent on the shipped catalogue:
+    // the two `healAmount` carriers are `baseAction`s with `isSupport: true`.
+    let self_heal = spec.heal_amount.unwrap_or(0);
+    if self_heal != 0 {
+        let healed = heal_unit(state, registry, attacker_instance_id, self_heal)?;
+        state.add_log(
+            owner,
+            format!(
+                "{def_name} utilise {} : +{healed} PV a {def_name}",
+                spec.name
+            ),
+        );
+    }
 
     let total_atk = base_atk + spec.atk_bonus + cond_bonus;
 
@@ -844,8 +1023,15 @@ fn declare_special_attack_inner(
 /// data, never description parsing). `immuneControl` still absorbs the two
 /// control effects, exactly as it does on a landed attack.
 ///
+/// The two audiences are kept apart here and not only in the enumerator: the
+/// enemy-facing fields (`taunt` / `immobilize` / `sleep` / `stripStealth`)
+/// demand a unit the caster does not control, the ally-facing ones
+/// (`healAmount` / `buffAllyAtk` / `cleanse`) one it does.
+///
 /// Errors: `Support special needs a target` when a field that needs one is
-/// present and `targetInstanceId` is not a character on the board.
+/// present and `targetInstanceId` is not a character on the board;
+/// `Support special: cet effet vise un ennemi` / `... un allie` when the
+/// target is on the wrong side.
 #[allow(clippy::too_many_arguments)]
 fn resolve_support_special(
     state: &mut GameState,
@@ -873,6 +1059,35 @@ fn resolve_support_special(
         .is_some_and(|c| c.zone == Zone::Board);
     if needs_target && !target_on_board {
         return Err(EngineError::illegal("Support special needs a target"));
+    }
+
+    // Decision §8.38 — the audience split is part of the printed rule, so the
+    // executor enforces it and not just the enumerator: "Un allié gagne +2 ATK
+    // et perd gelé/immobilisé" (`RH-009` Stimulant) may not buff and cleanse
+    // an enemy, and "Un ennemi doit cibler X" (`RH-004` Provocation, `BW-005`
+    // Peinture de la Colère) may not be aimed at one of your own units. A body
+    // on loan (§8.37) counts for whoever *controls* it this turn, exactly as
+    // it does everywhere else.
+    if needs_target {
+        let target_side = state
+            .cards
+            .get(target_instance_id)
+            .map(|c| c.controller())
+            .unwrap_or(owner);
+        // Same precedence as `build_valid_actions`: a special that carries
+        // both audiences (none shipped does) is enumerated against the enemy,
+        // so that is the side the executor demands.
+        if support_hits_enemy(spec) {
+            if target_side == owner {
+                return Err(EngineError::illegal(
+                    "Support special: cet effet vise un ennemi",
+                ));
+            }
+        } else if support_helps_ally(spec) && target_side != owner {
+            return Err(EngineError::illegal(
+                "Support special: cet effet vise un allie",
+            ));
+        }
     }
 
     state.spend_volonte(owner, spec.cost)?;
@@ -1026,7 +1241,8 @@ fn resolve_support_special(
 /// Errors: `Attacker not found`, `Character has summoning sickness`,
 /// `Fruit not awakened`, `Fruit has no awakening special attack`,
 /// `Already used this fruit ability (1x/game)`,
-/// `Cannot afford fruit special (cost {n})`.
+/// `Cannot afford fruit special (cost {n})`,
+/// `{name} doit cibler {taunter} (Provocation)` (decision §8.38).
 ///
 /// Like the TS original this is **all-or-nothing**: the TS function threads a
 /// new immutable state through every step and only returns it once the last
@@ -1042,6 +1258,24 @@ pub fn declare_fruit_special_attack(
     target_is_captain: bool,
 ) -> Result<(), EngineError> {
     transactional(state, |state| {
+        // Decision §8.28 (follow-up): the three signature SR fruits are worn by
+        // a captain, so the awakened special can be declared *by* a captain —
+        // addressed by the same synthetic `captain_{playerId}` id every other
+        // captain attack uses.
+        if let Some(rest) = attacker_instance_id.strip_prefix(CAPTAIN_ATTACKER_PREFIX) {
+            let owner = match rest {
+                "player1" => PlayerId::Player1,
+                _ => PlayerId::Player2,
+            };
+            return declare_captain_fruit_special_attack_inner(
+                state,
+                registry,
+                owner,
+                fruit_instance_id,
+                target_instance_id,
+                target_is_captain,
+            );
+        }
         declare_fruit_special_attack_inner(
             state,
             registry,
@@ -1051,6 +1285,213 @@ pub fn declare_fruit_special_attack(
             target_is_captain,
         )
     })
+}
+
+/// Decision §8.28 (follow-up) — the awakened-fruit special declared by a
+/// **captain**, the printed bearer of `MG-014` / `BW-011` / `MR-011`.
+///
+/// It is a captain attack that happens to be driven by a
+/// [`FruitAwakeningSpecialAttack`](crate::types::FruitAwakeningSpecialAttack),
+/// so it follows [`crate::captain::declare_captain_special_attack`] wherever
+/// the two could differ — the verso stat plus the captain's ATK modifiers (the
+/// fruit's own `fruit_atk_*` / `fruit_awaken_atk_*` modifiers live there, so
+/// they are already in), the captain's flip / tap / one-action-per-turn /
+/// frozen / summoning-sickness gates, the captain's `usedOnceAbilities` for
+/// `oncePerGame`, the player-wide `hakiThisTurn` (the character fruit path
+/// keeps the TS quirk of omitting it; a captain attack has never omitted it)
+/// and the `"Capitaine {name} utilise …"` log line.
+///
+/// Everything the *fruit* contributes is read exactly as
+/// [`declare_fruit_special_attack_inner`] reads it: `atkBonus`, `element`,
+/// `attackTraits` (plus the §8.47 equipment-granted ones), `ignoreDef`,
+/// `ignoreShield`, `immobilize`, `sleep`, `pushback`, `stripStealth` and the
+/// §8.38 × §8.48 pair `permanentPvLoss` / `noHeal` (`BW-011`'s Ground Death).
+///
+/// Errors: `Captain not flipped (verso required)`, `Captain is tapped`,
+/// `Captain special already used`, `Captain cannot act (frozen, immobilized or
+/// asleep)`, `Captain has summoning sickness`, `Captain is not wearing this
+/// fruit`, `Fruit not awakened`, `Fruit has no awakening special attack`,
+/// `Already used this fruit ability (1x/game)`,
+/// `Cannot afford fruit special (cost {n})`.
+fn declare_captain_fruit_special_attack_inner(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    owner: PlayerId,
+    fruit_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+) -> Result<(), EngineError> {
+    {
+        let captain = &state.players.get(owner).captain;
+        if !captain.flipped {
+            return Err(EngineError::illegal("Captain not flipped (verso required)"));
+        }
+        if captain.tapped {
+            return Err(EngineError::illegal("Captain is tapped"));
+        }
+        if captain.used_special_attack {
+            return Err(EngineError::illegal("Captain special already used"));
+        }
+        if crate::captain::captain_cannot_act(&captain.status_effects) {
+            return Err(EngineError::illegal(
+                "Captain cannot act (frozen, immobilized or asleep)",
+            ));
+        }
+        if !captain
+            .attached_objects
+            .iter()
+            .any(|id| id == fruit_instance_id)
+        {
+            return Err(EngineError::illegal("Captain is not wearing this fruit"));
+        }
+    }
+
+    let cap_def = registry
+        .get_captain_def(&state.players.get(owner).captain.def_id)?
+        .clone();
+    if state.players.get(owner).captain.deployed_turn == Some(i64::from(state.turn_number))
+        && !crate::captain::captain_has_trait_now(state, registry, owner, Trait::Rush)?
+    {
+        return Err(EngineError::illegal("Captain has summoning sickness"));
+    }
+
+    if !state
+        .cards
+        .get(fruit_instance_id)
+        .is_some_and(|c| c.is_awakened.unwrap_or(false))
+    {
+        return Err(EngineError::illegal("Fruit not awakened"));
+    }
+    let fruit_def = registry.get_card_def(&state.get_card(fruit_instance_id)?.def_id)?;
+    let Some(spec) = fruit_def
+        .fruit_effects
+        .as_ref()
+        .and_then(|f| f.awakening.as_ref())
+        .and_then(|a| a.special_attack.clone())
+    else {
+        return Err(EngineError::illegal(
+            "Fruit has no awakening special attack",
+        ));
+    };
+
+    if spec.once_per_game.unwrap_or(false) && state.players.get(owner).captain.used_once(&spec.name)
+    {
+        return Err(EngineError::illegal(
+            "Already used this fruit ability (1x/game)",
+        ));
+    }
+    if !state.can_afford(owner, spec.cost) {
+        return Err(EngineError::illegal(format!(
+            "Cannot afford fruit special (cost {})",
+            spec.cost
+        )));
+    }
+
+    // Decision §8.38: every declaration path is bound by a taunt (inert while
+    // nothing in the catalogue can taunt a captain).
+    enforce_taunt(
+        state,
+        registry,
+        &captain_attacker_id(owner),
+        target_instance_id,
+        target_is_captain,
+        true,
+    )?;
+
+    state.spend_volonte(owner, spec.cost)?;
+
+    let cap_name = cap_def.name.clone();
+    let mut base_atk = cap_def.verso.atk;
+    for m in &state.players.get(owner).captain.modifiers {
+        if m.stat == ModifierStat::Atk {
+            base_atk += m.amount;
+        }
+    }
+    let total_atk = base_atk + spec.atk_bonus;
+
+    let mut attack_traits: Vec<AttackTrait> = spec.attack_traits.clone().unwrap_or_default();
+    // Decision §8.47 — the `AttackTrait` arm of the bearer's equipment.
+    let attached = state.players.get(owner).captain.attached_objects.clone();
+    for at in crate::board::attachments_granted_attack_traits(state, registry, &attached)? {
+        if !attack_traits.contains(&at) {
+            attack_traits.push(at);
+        }
+    }
+
+    let mut target_def_val = target_def_value(
+        state,
+        registry,
+        owner,
+        target_instance_id,
+        target_is_captain,
+    )?;
+    // Decision §8.55: DEF is clamped at 0 before the halving.
+    if attack_traits.contains(&AttackTrait::Piercing)
+        || crate::captain::captain_has_trait_now(state, registry, owner, Trait::Piercing)?
+    {
+        target_def_val = target_def_val.max(0).div_euclid(2);
+    }
+    if let Some(ignore) = spec.ignore_def.filter(|v| *v != 0) {
+        target_def_val = (target_def_val - ignore).max(0);
+    }
+    let raw_damage = (total_atk - target_def_val).max(0);
+
+    let has_haki = cap_def
+        .verso
+        .natural_haki
+        .as_ref()
+        .is_some_and(|h| !h.is_empty())
+        || state.turn_number >= 7
+        || spec.element == Some(Element::Water)
+        || state.players.get(owner).has_haki_this_turn()
+        || attacker_haki_modifier(state, &captain_attacker_id(owner));
+
+    {
+        let cap = &mut state.players.get_mut(owner).captain;
+        cap.tapped = true;
+        // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
+        cap.used_special_attack = true;
+        cap.used_base_action = true;
+        if spec.once_per_game.unwrap_or(false) {
+            cap.used_once_abilities.push(spec.name.clone());
+        }
+    }
+
+    state.pending_attack = Some(PendingAttack {
+        attacker_id: captain_attacker_id(owner),
+        target_id: target_instance_id.to_string(),
+        target_is_captain,
+        is_special: true,
+        raw_damage,
+        attack_power: Some(total_atk),
+        element: spec.element,
+        attack_traits,
+        has_haki,
+        ignore_shield: spec.ignore_shield,
+        cannot_be_dodged: None,
+        immobilize: spec.immobilize,
+        sleep: spec.sleep,
+        pushback: spec.pushback,
+        pushback_slots: None,
+        strip_stealth: spec.strip_stealth,
+        survive_played: None,
+        survive_target_id: None,
+        damage_reduction: None,
+        ignore_def: spec.ignore_def,
+        permanent_pv_loss: spec.permanent_pv_loss,
+        no_heal: spec.no_heal,
+    });
+
+    let target_name = target_display_name(state, registry, target_instance_id, target_is_captain)?;
+    state.add_log(
+        owner,
+        format!(
+            "Capitaine {cap_name} utilise {} sur {target_name} (ATK {total_atk} vs DEF {target_def_val} = {raw_damage} degats)",
+            spec.name
+        ),
+    );
+
+    Ok(())
 }
 
 /// Body of [`declare_fruit_special_attack`], run inside [`transactional`].
@@ -1113,6 +1554,17 @@ fn declare_fruit_special_attack_inner(
         )));
     }
 
+    // Decision §8.38: the awakened special is an attack like any other, so the
+    // taunt binds it too.
+    enforce_taunt(
+        state,
+        registry,
+        attacker_instance_id,
+        target_instance_id,
+        target_is_captain,
+        true,
+    )?;
+
     state.spend_volonte(owner, spec.cost)?;
 
     let def = registry.get_card_def(&attacker_def_id)?;
@@ -1122,7 +1574,19 @@ fn declare_fruit_special_attack_inner(
     let base_atk = get_effective_atk(state, registry, attacker_instance_id)?;
     let total_atk = base_atk + spec.atk_bonus;
 
-    let attack_traits: Vec<AttackTrait> = spec.attack_traits.clone().unwrap_or_default();
+    let mut attack_traits: Vec<AttackTrait> = spec.attack_traits.clone().unwrap_or_default();
+    // Decision §8.47: the `AttackTrait` arm of an equipped object's
+    // `grantsTraits` is merged into the `attackTraits` of **every** attack the
+    // bearer declares. The base and special paths already did it; the awakened
+    // fruit is the third declaration path and was silently dropping them, so an
+    // object granting `piercing` / `range` was honoured on two of a unit's
+    // three attacks. Latent on the shipped catalogue (no object uses the
+    // `AttackTrait` arm), fixed for the same reason §8.40's `rush` union was.
+    for at in granted_attack_traits(state, registry, attacker_instance_id)? {
+        if !attack_traits.contains(&at) {
+            attack_traits.push(at);
+        }
+    }
 
     let mut target_def_val = target_def_value(
         state,
@@ -1169,11 +1633,14 @@ fn declare_fruit_special_attack_inner(
         survive_target_id: None,
         damage_reduction: None,
         ignore_def: spec.ignore_def,
-        // §8.48: the awakening special is a *different, smaller* shape than
-        // `SpecialAttack` — it has no `permanentPvLoss` / `noHeal` /
-        // `pushbackSlots` field at all, so there is nothing to carry here.
-        permanent_pv_loss: None,
-        no_heal: None,
+        // Decision §8.38 × §8.48: the awakening special stays a *separate,
+        // smaller* shape (§8.48 — no `pushbackSlots`, no `healAmount`, no
+        // support half), but the two clauses §8.38 implemented are printed on
+        // an awakening card too — `BW-011`'s Ground Death reads "La cible perd
+        // 3 PV permanent et ne peut plus être soignée" — so they are carried
+        // here exactly as `declare_special_attack` carries them.
+        permanent_pv_loss: spec.permanent_pv_loss,
+        no_heal: spec.no_heal,
     };
 
     {
@@ -1277,8 +1744,7 @@ pub fn apply_counter_reduce(
         pending.raw_damage = (pending.raw_damage - reduction).max(0);
         // Decision §8.13: remember what the defender paid for, so a later
         // Bouclier block cannot silently refund it.
-        pending.damage_reduction =
-            Some(pending.damage_reduction.unwrap_or(0) + reduction.max(0));
+        pending.damage_reduction = Some(pending.damage_reduction.unwrap_or(0) + reduction.max(0));
     }
 
     state.add_log(
@@ -1441,7 +1907,8 @@ pub fn apply_counter_survive(
 ///
 /// Decision §8.13 — the TS original validated almost nothing. The printed rule
 /// is "S'incline pour bloquer pour 1 adjacent", so the blocker must be a
-/// character **on the board**, owned by the **defender**, **not** the unit
+/// character **on the board**, *controlled* by the **defender** (§8.37 — a
+/// body on loan blocks for its borrower, never for its owner), **not** the unit
 /// already targeted, **untapped**, carrying `Trait::Shield` (through
 /// [`has_trait`], so a fruit- or equipment-granted Bouclier counts) and
 /// **adjacent** to the target's slot — the captain's slot included, since a
@@ -1474,7 +1941,16 @@ pub fn apply_shield_block(
     let Some(blocker) = state.cards.get(blocker_instance_id) else {
         return Err(EngineError::illegal("Blocker not found"));
     };
-    let blocker_owner = blocker.owner;
+    // Decision §8.13 × §8.37: the screen is the **controller**, not the owner
+    // — a body the attacker has borrowed this turn through `BW-024` Trahison
+    // stands in the *attacker's* camp, so it cannot be the defender's
+    // Bouclier, and letting it be one would also make the adjacency test below
+    // compare slots across two different boards. "A body on loan counts for
+    // its controller, as everywhere else" (§8.38's follow-up to §8.37):
+    // `get_valid_targets`, `remove_from_board`, `get_attacker_owner`, both
+    // declarations, the support-special audience check and `move_character`
+    // all read `controller()`; this was the one §8.37 path that did not.
+    let blocker_owner = blocker.controller();
     let blocker_slot = blocker.slot;
     if blocker.zone != Zone::Board || blocker_slot.is_none() {
         return Err(EngineError::illegal("Blocker is not on the board"));
@@ -1564,6 +2040,10 @@ pub fn apply_shield_block(
 /// The counter cards in hand (hand order) that are affordable, filtered by the
 /// `cancel` counters' `maxAttackerAtk` against `pendingAttack.attackPower`.
 /// Empty while there is no pending attack.
+///
+/// Decision §8.57 adds the two `survive` screens the TS engine left out (a
+/// captain target and a character that already used its one save), so that
+/// every counter this returns is one the counter executors will accept.
 pub fn get_eligible_counters(
     state: &GameState,
     registry: &CardRegistry,
@@ -1589,6 +2069,25 @@ pub fn get_eligible_counters(
                 out.push(id.clone());
             }
             continue;
+        }
+        // Decision §8.57 (every offered action is executable) × §8.16: a
+        // `survive` counter reads "Un allié Mugiwara survit" — it protects an
+        // ally *character*, once per character. `apply_counter_survive`
+        // refuses a captain-targeted attack ("Survive only protects allies")
+        // and a character that already survived once, so neither is offered:
+        // the defender keeps its counter window instead of losing the turn to
+        // the host's fallback.
+        if matches!(def.counter_effect, Some(CounterEffect::Survive { .. })) {
+            if pending.target_is_captain {
+                continue;
+            }
+            if state
+                .cards
+                .get(&pending.target_id)
+                .is_some_and(|c| c.used_once(ONCE_SURVIVED))
+            {
+                continue;
+            }
         }
         out.push(id.clone());
     }
@@ -1711,35 +2210,14 @@ pub fn resolve_attack(
     if let Some(loss) = pending.permanent_pv_loss.filter(|n| *n > 0) {
         if pending.target_is_captain {
             let attacker_owner = get_attacker_owner(state, &pending.attacker_id)?;
-            let opponent_id = attacker_owner.opponent();
-            let cap_def_id = state.players.get(opponent_id).captain.def_id.clone();
-            let cap_def = registry.get_captain_def(&cap_def_id)?;
-            let cap = &mut state.players.get_mut(opponent_id).captain;
-            cap.pv_max_loss = Some(cap.pv_max_loss.unwrap_or(0) + loss);
-            let printed = if cap.flipped {
-                cap_def.verso.pv
-            } else {
-                cap_def.recto.pv
-            };
-            let max_pv = printed - cap.pv_max_loss.unwrap_or(0);
-            if cap.current_pv > max_pv {
-                cap.current_pv = max_pv;
-            }
-        } else if state
-            .cards
-            .get(&pending.target_id)
-            .is_some_and(|c| c.zone == Zone::Board)
-        {
-            {
-                let t = state.get_card_mut(&pending.target_id)?;
-                t.pv_max_loss = Some(t.pv_max_loss.unwrap_or(0) + loss);
-            }
-            if let Some(max_pv) = crate::board::max_pv_of(state, registry, &pending.target_id)? {
-                let t = state.get_card_mut(&pending.target_id)?;
-                if t.current_pv > max_pv {
-                    t.current_pv = max_pv;
-                }
-            }
+            crate::board::apply_captain_permanent_pv_loss(
+                state,
+                registry,
+                attacker_owner.opponent(),
+                loss,
+            )?;
+        } else {
+            crate::board::apply_permanent_pv_loss(state, registry, &pending.target_id, loss)?;
         }
     }
 
@@ -1763,10 +2241,21 @@ pub fn resolve_attack(
         }
     }
 
-    // Check KO from thunder propagation on adjacent characters
-    if pending.element == Some(Element::Thunder) && !pending.target_is_captain {
-        if let Some(slot) = entry_target_slot {
-            let opponent_id = get_attacker_owner(state, &pending.attacker_id)?.opponent();
+    // Check KO from thunder propagation on adjacent characters.
+    //
+    // Decision §8.40 gave the captain arm of `apply_element_to_captain` the
+    // same splash — `max(1, raw/2)` on the first occupied slot next to the
+    // captain — so it needs the same KO chain (§8.11: every damage source in
+    // the engine sweeps its KOs). The only difference is where the bolt
+    // landed: the captain's own slot instead of the entry snapshot.
+    if pending.element == Some(Element::Thunder) {
+        let opponent_id = get_attacker_owner(state, &pending.attacker_id)?.opponent();
+        let origin = if pending.target_is_captain {
+            state.players.get(opponent_id).captain.slot
+        } else {
+            entry_target_slot
+        };
+        if let Some(slot) = origin {
             for adj_slot in get_adjacent_slots(slot) {
                 let adj_id = state.players.get(opponent_id).board.get(*adj_slot).cloned();
                 if let Some(adj_id) = adj_id {
@@ -1886,13 +2375,28 @@ pub fn resolve_attack(
                     _ => None,
                 };
                 if let (Some(slot), Some(dest)) = (tgt_slot, dest) {
-                    if state.players.get(tgt_owner).board.get(dest).is_none() {
+                    // Decision §8.31 × §8.38: the pushback writes a board cell,
+                    // so it goes through the single occupancy predicate like
+                    // every other cell-writing path — the destination is free
+                    // only when neither a character *nor the defender's
+                    // flipped captain* stands in it. `flip_captain` accepts any
+                    // of the six slots (A1/A2/A3 included) and the pushback
+                    // destination is always A*, so a raw `board.get(dest)` test
+                    // let a pushed character share a slot with the captain.
+                    if crate::board::is_slot_free(state, tgt_owner, dest) {
                         {
                             let board = &mut state.players.get_mut(tgt_owner).board;
                             board.set(slot, None);
                             board.set(dest, Some(pending.target_id.clone()));
                         }
-                        state.get_card_mut(&pending.target_id)?.slot = Some(dest);
+                        let attached = {
+                            let t = state.get_card_mut(&pending.target_id)?;
+                            t.slot = Some(dest);
+                            t.attached_objects.clone()
+                        };
+                        // Decision §8.29: the equipment travels with its
+                        // bearer — a pushback is a move like any other.
+                        crate::board::move_attached_objects(state, &attached, dest);
                         state.add_log(
                             tgt_owner,
                             format!("{tdef_name} est repoussé en {} (Impact) !", dest.as_str()),
@@ -2043,18 +2547,23 @@ pub fn apply_captain_damage(
     let attacker_owner = get_attacker_owner(state, &pending.attacker_id)?;
     let opponent_id = attacker_owner.opponent();
     let cap = &state.players.get(opponent_id).captain;
-    let cap_flipped = cap.flipped;
     let logia_used_this_turn = cap.logia_used_this_turn.unwrap_or(false);
     let cap_def = registry.get_captain_def(&cap.def_id)?;
     let cap_name = cap_def.name.clone();
 
-    // Logia check on captain — once per turn.
-    if captain_has_trait(cap_def, cap_flipped, Trait::Logia)
+    // Logia check on captain — once per turn. Decision §8.28 (follow-up): a
+    // captain wearing `BW-011` / `MR-011` is a Logia through its equipment,
+    // which is the whole point of "Applique Logia + Maudit".
+    if crate::captain::captain_has_trait_now(state, registry, opponent_id, Trait::Logia)?
         && !pending.has_haki
         && pending.raw_damage > 0
         && !logia_used_this_turn
     {
-        state.players.get_mut(opponent_id).captain.logia_used_this_turn = Some(true);
+        state
+            .players
+            .get_mut(opponent_id)
+            .captain
+            .logia_used_this_turn = Some(true);
         state.add_log(
             attacker_owner,
             format!(
@@ -2191,7 +2700,9 @@ pub fn apply_character_damage(
 ///
 /// fire → `burn` 2t/1dmg; ice → `freeze` 2t; thunder → `max(1, floor(raw/2))`
 /// to the **first** occupied adjacent enemy slot only; poison → permanent
-/// `poison` 1dmg; sand → −1 PV; water → the raw damage applied a second time
+/// `poison` 1dmg; sand → one point of **permanent** maximum PV (§8.36/§8.40 —
+/// "Sable (-1 PV permanent)", superseded by an explicit `permanentPvLoss`);
+/// water → the raw damage applied a second time
 /// when the target is Cursed. Captain targets delegate to
 /// [`apply_element_to_captain`]. No log lines.
 ///
@@ -2288,9 +2799,23 @@ pub fn apply_element_effects(
                     source: pending.attacker_id.clone(),
                 });
         }
-        // -1 PV permanent (irrecoverable)
+        // Decision §8.36/§8.40 — Sable is "-1 PV **permanent**" (`BW-011` Suna
+        // Suna no Mi: "Sable (-1 PV permanent)"), not one point of ordinary
+        // damage a later heal undoes. It is the same rule the captain arm of
+        // this very element (`apply_element_to_captain`) and the `sand` flag
+        // of `EventEffect::DamageEnemies` already apply, so it goes through
+        // the same helper: the maximum drops and the current PV follows.
+        //
+        // The element's `-1` is the **default** amount of a Sand blow, so an
+        // attack that also prints an explicit `permanentPvLoss` supersedes it
+        // rather than stacking with it: Crocodile's Desert Girasol reads
+        // `element: "sand", permanentPvLoss: 2` for the printed "La cible perd
+        // 2 PV permanent (Sable)" — 2 in total, not 2 + 1. `resolve_attack`
+        // applies that field right after this call.
         Element::Sand => {
-            state.get_card_mut(&pending.target_id)?.current_pv -= 1;
+            if pending.permanent_pv_loss.unwrap_or(0) <= 0 {
+                crate::board::apply_permanent_pv_loss(state, registry, &pending.target_id, 1)?;
+            }
         }
         // x2 damage vs Cursed — apply the raw damage a second time
         Element::Water => {
@@ -2318,7 +2843,8 @@ pub fn apply_element_effects(
 ///   a poisoned captain at 1 PV);
 /// * thunder → `max(1, floor(raw/2))` to the first occupied slot adjacent to
 ///   the captain's own slot (nothing while the captain is off-board, recto);
-/// * sand → one point of permanent maximum PV;
+/// * sand → one point of permanent maximum PV (superseded, not stacked, by an
+///   explicit `permanentPvLoss` on the same attack);
 /// * water → the raw damage a second time when the captain's active traits
 ///   carry `cursed` — the Luffy, Akainu and Crocodile versos all do.
 pub fn apply_element_to_captain(
@@ -2378,26 +2904,18 @@ pub fn apply_element_to_captain(
                 }
             }
         }
+        // Same "default, not addition" rule as the character arm above.
         Some(Element::Sand) => {
-            let cap_def_id = state.players.get(opponent_id).captain.def_id.clone();
-            let cap_def = registry.get_captain_def(&cap_def_id)?;
-            let cap = &mut state.players.get_mut(opponent_id).captain;
-            cap.pv_max_loss = Some(cap.pv_max_loss.unwrap_or(0) + 1);
-            let printed = if cap.flipped {
-                cap_def.verso.pv
-            } else {
-                cap_def.recto.pv
-            };
-            let max_pv = printed - cap.pv_max_loss.unwrap_or(0);
-            if cap.current_pv > max_pv {
-                cap.current_pv = max_pv;
+            if pending.permanent_pv_loss.unwrap_or(0) <= 0 {
+                crate::board::apply_captain_permanent_pv_loss(state, registry, opponent_id, 1)?;
             }
         }
         Some(Element::Water) => {
-            let cap = &state.players.get(opponent_id).captain;
-            let cap_flipped = cap.flipped;
-            let cap_def = registry.get_captain_def(&cap.def_id)?;
-            if captain_has_trait(cap_def, cap_flipped, Trait::Cursed) {
+            // Decision §8.28 (follow-up): the Cursed a signature fruit grants
+            // its captain bearer counts here like any other Cursed.
+            let cursed =
+                crate::captain::captain_has_trait_now(state, registry, opponent_id, Trait::Cursed)?;
+            if cursed {
                 state.players.get_mut(opponent_id).captain.current_pv -= pending.raw_damage;
             }
         }
@@ -2419,7 +2937,7 @@ mod tests {
     use crate::state::{Board, CaptainInstance, CardInstance, PlayerState, Players};
     use crate::types::{
         BaseAction, CaptainDef, CaptainRecto, CaptainVerso, CardDef, CounterEffect, EntryEffect,
-        Faction, FlipCondition, PassiveDef, Phase, Rarity, SpecialAttack,
+        Faction, FlipCondition, ObjectSubtype, PassiveDef, Phase, Rarity, SpecialAttack,
     };
 
     fn passive(name: &str, effects: Vec<PassiveEffect>) -> PassiveDef {
@@ -2705,7 +3223,15 @@ mod tests {
 
         // `targetDisplayName` fails on an unknown target id: TS builds a new
         // state and throws before returning it, so nothing is committed.
-        let err = declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &attacker, "ghost", false).unwrap_err();
+        let err = declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &attacker,
+            "ghost",
+            false,
+        )
+        .unwrap_err();
         assert_eq!(err.to_string(), "Instance not found: ghost");
         assert_eq!(state, before);
         assert!(!state.card(&attacker).unwrap().tapped);
@@ -2722,7 +3248,15 @@ mod tests {
         let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
         let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
 
         // ATK 6 vs DEF 5 = 1
         assert_eq!(
@@ -2748,7 +3282,15 @@ mod tests {
         let atk = place(&mut state, &reg, "C-PIERCE", PlayerId::Player1, Slot::V1);
         let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
 
         // DEF 5 -> floor(5/2) = 2, so 6 - 2 = 4
         assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 4);
@@ -2771,7 +3313,15 @@ mod tests {
             });
         }
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
 
         assert!(state.pending_attack.is_none());
         assert_eq!(
@@ -2797,7 +3347,15 @@ mod tests {
         let (mut state, reg) = setup();
         let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
         let c = give(&mut state, "X-RED", PlayerId::Player2);
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, "captain", true).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            "captain",
+            true,
+        )
+        .unwrap();
         // ATK 6 vs captain DEF 1 = 5
         assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 5);
 
@@ -2821,7 +3379,15 @@ mod tests {
         let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
         let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
         let c = give(&mut state, "X-RED", PlayerId::Player2);
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         // ATK 6 vs DEF 5 = 1
         apply_counter_reduce(&mut state, &reg, &c).unwrap();
         assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 0);
@@ -2844,7 +3410,15 @@ mod tests {
         let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
         let blk = place(&mut state, &reg, "C-SHIELD", PlayerId::Player2, Slot::V2);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         apply_shield_block(&mut state, &reg, &blk).unwrap();
 
         let pending = state.pending_attack.clone().unwrap();
@@ -2864,7 +3438,15 @@ mod tests {
         let c = give(&mut state, "X-SURV", PlayerId::Player2);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         assert_eq!(state.pending_attack.as_ref().unwrap().raw_damage, 6);
         apply_counter_survive(&mut state, &reg, &c).unwrap();
         assert!(survive_played(&state));
@@ -2876,13 +3458,28 @@ mod tests {
         assert!(state.pending_attack.is_none());
         // Decision §8.15: the once-per-character tag is spent by the landed
         // attack, not by the counter.
-        assert!(state.card(&tgt).unwrap().used_once_abilities.iter().any(|a| a == "survived"));
+        assert!(
+            state
+                .card(&tgt)
+                .unwrap()
+                .used_once_abilities
+                .iter()
+                .any(|a| a == "survived")
+        );
 
         // A second attack (no counter) must NOT be saved again: the flag lived
         // on the pending attack, not on the character.
         state.card_mut(&atk).unwrap().tapped = false;
         state.card_mut(&atk).unwrap().used_base_action = false;
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         assert!(!survive_played(&state));
         resolve_attack(&mut state, &reg, &ctx).unwrap();
         assert_eq!(state.card(&tgt).unwrap().zone, Zone::Graveyard);
@@ -2907,7 +3504,15 @@ mod tests {
         state.card_mut(&tgt).unwrap().attached_objects.push(hat);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
         assert_eq!(state.card(&tgt).unwrap().current_pv, 1);
@@ -2938,7 +3543,15 @@ mod tests {
         let second = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V3);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         // 6 - 5 = 1 raw, propagation = max(1, floor(1/2)) = 1
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
@@ -2969,7 +3582,15 @@ mod tests {
         let ghost = place(&mut state, &reg, "C-LOGIA", PlayerId::Player2, Slot::V3);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
         // V1 (3 PV) is hit for 6 and KO'd, V3 (Logia) is untouched.
@@ -2995,7 +3616,15 @@ mod tests {
         let tgt = place(&mut state, &reg, "C-LOGIA", PlayerId::Player2, Slot::V1);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
         assert_eq!(state.card(&tgt).unwrap().current_pv, 4);
@@ -3019,7 +3648,15 @@ mod tests {
         let tgt = place(&mut state, &reg, "C-THORNS", PlayerId::Player2, Slot::V1);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
         assert_eq!(state.card(&atk).unwrap().current_pv, 6);
@@ -3046,7 +3683,15 @@ mod tests {
                 .is_empty()
         );
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         // attackPower 6 > maxAttackerAtk 4 → the cancel counter drops out.
         assert_eq!(
             get_eligible_counters(&state, &reg, PlayerId::Player2).unwrap(),
@@ -3069,6 +3714,65 @@ mod tests {
     }
 
     #[test]
+    fn a_survive_counter_is_not_offered_where_it_would_be_refused() {
+        // Decision §8.57: `get_valid_actions` is the legality contract, so the
+        // counter window never offers a `survive` the executor refuses —
+        // §8.16 keeps it an *ally* save ("Un allié Mugiwara survit"), once per
+        // character. Offering it against a captain-targeted attack cost the AI
+        // its whole counter window to the host fallback.
+        let (mut state, reg) = setup();
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V2);
+        let surv = give(&mut state, "X-SURV", PlayerId::Player2);
+        let red = give(&mut state, "X-RED", PlayerId::Player2);
+        state.players.player2.captain.flipped = true;
+        state.players.player2.captain.slot = Some(Slot::V1);
+        let ctx = EngineContext::seeded(1);
+
+        // Against the captain: only the damage-reduction counter is offered,
+        // and the survive really would throw.
+        declare_base_attack(&mut state, &reg, &ctx, &atk, "captain", true).unwrap();
+        assert_eq!(
+            get_eligible_counters(&state, &reg, PlayerId::Player2).unwrap(),
+            vec![red.clone()]
+        );
+        assert_eq!(
+            apply_counter_survive(&mut state, &reg, &surv).unwrap_err(),
+            EngineError::illegal("Survive only protects allies")
+        );
+        assert!(
+            !crate::actions::get_valid_actions(&state, &reg, PlayerId::Player2)
+                .unwrap()
+                .contains(&crate::types::GameAction::PlayCounter {
+                    instance_id: surv.clone()
+                })
+        );
+        state.pending_attack = None;
+
+        // Against an ally it is offered — until that ally has used its one save.
+        state.card_mut(&atk).unwrap().tapped = false;
+        state.card_mut(&atk).unwrap().used_base_action = false;
+        declare_base_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
+        assert_eq!(
+            get_eligible_counters(&state, &reg, PlayerId::Player2).unwrap(),
+            vec![surv.clone(), red.clone()]
+        );
+        state
+            .card_mut(&tgt)
+            .unwrap()
+            .used_once_abilities
+            .push(ONCE_SURVIVED.to_string());
+        assert_eq!(
+            get_eligible_counters(&state, &reg, PlayerId::Player2).unwrap(),
+            vec![red]
+        );
+        assert_eq!(
+            apply_counter_survive(&mut state, &reg, &surv).unwrap_err(),
+            EngineError::illegal("This character already survived once")
+        );
+    }
+
+    #[test]
     fn flipped_logia_captain_ignores_a_hakiless_hit() {
         let (mut state, reg) = setup();
         state.players.player2.captain = CaptainInstance::new("CAP-L".into(), PlayerId::Player2, 20);
@@ -3076,7 +3780,15 @@ mod tests {
         let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
         let ctx = EngineContext::seeded(1);
 
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, "captain", true).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            "captain",
+            true,
+        )
+        .unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
         assert_eq!(state.players.player2.captain.current_pv, 20);
@@ -3087,12 +3799,19 @@ mod tests {
         state.turn_number = 7;
         state.card_mut(&atk).unwrap().tapped = false;
         state.card_mut(&atk).unwrap().used_base_action = false;
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, "captain", true).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            "captain",
+            true,
+        )
+        .unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
         assert_eq!(state.players.player2.captain.current_pv, 15);
         assert_eq!(last_log(&state), "Capitaine Logia subit 5 degats (PV: 15)");
     }
-
 
     // ============================================================
     // Decision §8.12 — the trap KO is a KO
@@ -3127,8 +3846,7 @@ mod tests {
         state.players.player1.volonte = 1;
         let ctx = EngineContext::seeded(1);
 
-        let err =
-            declare_special_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap_err();
+        let err = declare_special_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap_err();
         assert_eq!(err, EngineError::illegal("Cannot afford special (cost 3)"));
         // Alive, untapped, and the trap is still armed.
         assert_eq!(state.card(&atk).unwrap().zone, Zone::Board);
@@ -3203,6 +3921,50 @@ mod tests {
         state.card_mut(&near).unwrap().tapped = false;
         apply_shield_block(&mut state, &reg, &near).unwrap();
         assert_eq!(state.pending_attack.as_ref().unwrap().target_id, near);
+    }
+
+    /// Decision §8.13 × §8.37 — the Bouclier screen is the **controller**: a
+    /// body the attacker has borrowed this turn (`BW-024` Trahison) stands in
+    /// the attacker's camp and cannot block for the defender, and a body the
+    /// *defender* has borrowed can.
+    #[test]
+    fn shield_block_screens_the_controller_not_the_owner() {
+        let (mut state, mut reg) = setup();
+        reg.register_card(shield_card("C-SHIELD", 2));
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        // Owned by the defender, but on loan to the attacker: not a blocker.
+        let lent = place(&mut state, &reg, "C-SHIELD", PlayerId::Player2, Slot::V2);
+        state.card_mut(&lent).unwrap().controlled_by = Some(PlayerId::Player1);
+        let ctx = EngineContext::seeded(1);
+        declare_base_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
+        assert_eq!(
+            apply_shield_block(&mut state, &reg, &lent).unwrap_err(),
+            EngineError::illegal("Blocker is not yours")
+        );
+
+        // The mirror: owned by the attacker, on loan to the defender, so it
+        // stands in the defender's own camp (A1, adjacent to the target's V1)
+        // exactly as `take_control_for_the_turn` leaves it.
+        let borrowed = place(&mut state, &reg, "C-SHIELD", PlayerId::Player1, Slot::A2);
+        state
+            .players
+            .get_mut(PlayerId::Player1)
+            .board
+            .set(Slot::A2, None);
+        state
+            .players
+            .get_mut(PlayerId::Player2)
+            .board
+            .set(Slot::A1, Some(borrowed.clone()));
+        {
+            let c = state.card_mut(&borrowed).unwrap();
+            c.slot = Some(Slot::A1);
+            c.controlled_by = Some(PlayerId::Player2);
+            c.loan_return_slot = Some(Slot::A2);
+        }
+        apply_shield_block(&mut state, &reg, &borrowed).unwrap();
+        assert_eq!(state.pending_attack.as_ref().unwrap().target_id, borrowed);
     }
 
     #[test]
@@ -3396,7 +4158,12 @@ mod tests {
         // max(1, floor(6/2)) = 3 → the 3-PV neighbour dies too, through the
         // normal KO chain (the TS engine propagated nothing at all here).
         assert_eq!(state.card(&adj).unwrap().zone, Zone::Graveyard);
-        assert!(state.log.iter().any(|l| l.message == "Voisin est KO (foudre) !"));
+        assert!(
+            state
+                .log
+                .iter()
+                .any(|l| l.message == "Voisin est KO (foudre) !")
+        );
         // +2 Volonte for each lost ally.
         assert_eq!(state.players.player2.volonte, 14);
     }
@@ -3482,6 +4249,19 @@ mod tests {
 
         let atk = place(&mut state, &reg, "C-IMPACT", PlayerId::Player1, Slot::V1);
         let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        // Decision §8.29 — the equipment travels with its bearer, and a
+        // pushback is a move like any other.
+        let obj_id = "OBJ@pushed".to_string();
+        let mut obj = CardInstance::new(obj_id.clone(), "C-ADJ".into(), PlayerId::Player2, 0);
+        obj.zone = Zone::Board;
+        obj.slot = Some(Slot::V1);
+        state.cards.insert(obj_id.clone(), obj);
+        state
+            .card_mut(&tgt)
+            .unwrap()
+            .attached_objects
+            .push(obj_id.clone());
+
         declare_base_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
         // The attack sets no `pushback` flag — only the printed "Impact."
         assert_eq!(state.pending_attack.as_ref().unwrap().pushback, None);
@@ -3489,6 +4269,7 @@ mod tests {
         assert_eq!(state.card(&tgt).unwrap().slot, Some(Slot::A1));
         assert_eq!(state.players.player2.board.get(Slot::A1), Some(&tgt));
         assert_eq!(state.players.player2.board.get(Slot::V1), None);
+        assert_eq!(state.card(&obj_id).unwrap().slot, Some(Slot::A1));
 
         // `immuneImpact` (Luffy verso) absorbs it.
         let (mut state2, _) = setup();
@@ -3499,6 +4280,41 @@ mod tests {
         assert_eq!(state2.card(&tgt).unwrap().slot, Some(Slot::V1));
     }
 
+    /// Decision §8.36/§8.40 — the Sand **element** on a character is the same
+    /// "-1 PV permanent" as everywhere else (`BW-011`'s printed base passive),
+    /// not one point of ordinary damage a later heal undoes.
+    #[test]
+    fn the_sand_element_costs_one_point_of_maximum_pv_for_good() {
+        let (mut state, mut reg) = setup();
+        let mut sandman = character("C-SUNA", "Sables", 6, 0, 8);
+        sandman.special_attack = Some(SpecialAttack {
+            name: "Sables".to_string(),
+            cost: 1,
+            atk_bonus: 0,
+            element: Some(Element::Sand),
+            ..SpecialAttack::default()
+        });
+        reg.register_card(sandman);
+        let atk = place(&mut state, &reg, "C-SUNA", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        let ctx = EngineContext::seeded(1);
+
+        declare_special_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        // PV 6 - (ATK 6 vs DEF 5 = 1) = 5, and the maximum dropped to 5 — the
+        // current PV is already at it, so the element takes nothing extra now.
+        assert_eq!(state.card(&tgt).unwrap().pv_max_loss, Some(1));
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 5);
+        // The point is gone for good: a heal stops at the new maximum.
+        crate::board::heal_unit(&mut state, &reg, &tgt, 9).unwrap();
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 5);
+    }
+
+    /// Desert Girasol prints `element: "sand"` **and** `permanentPvLoss: 2`
+    /// for the single printed clause "La cible perd 2 PV permanent (Sable)":
+    /// the element's default -1 is superseded by the explicit total, never
+    /// added to it.
     #[test]
     fn permanent_pv_loss_lowers_the_max_pv_for_good() {
         let (mut state, mut reg) = setup();
@@ -3550,9 +4366,99 @@ mod tests {
 
         declare_special_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
         resolve_attack(&mut state, &reg, &ctx).unwrap();
-        assert!(state.card(&tgt).unwrap().has_status(StatusEffectType::NoHeal));
+        assert!(
+            state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::NoHeal)
+        );
         assert_eq!(state.card(&tgt).unwrap().current_pv, 5);
-        assert_eq!(crate::board::heal_unit(&mut state, &reg, &tgt, 3).unwrap(), 0);
+        assert_eq!(
+            crate::board::heal_unit(&mut state, &reg, &tgt, 3).unwrap(),
+            0
+        );
+    }
+
+    /// Decision §8.38 × §8.48 — Ground Death (`BW-011` awakened) prints
+    /// exactly the two clauses §8.38 implemented, so the awakening shape now
+    /// carries them and `resolve_attack` honours them on this path too.
+    #[test]
+    fn an_awakened_fruit_special_honours_permanent_pv_loss_and_no_heal() {
+        let (mut state, mut reg) = setup();
+        let mut fruit = CardDef::new(
+            "BW-011",
+            "Suna Suna no Mi",
+            CardType::Object,
+            3,
+            Faction::Pirate,
+            Rarity::Sr,
+            "TEST",
+        );
+        fruit.subtype = Some(crate::types::ObjectSubtype::Fruit);
+        fruit.fruit_effects = Some(crate::types::FruitEffects {
+            base: crate::types::FruitBaseEffects::default(),
+            awakening: Some(crate::types::FruitAwakening {
+                porteur_legitime: "Attaquant".into(),
+                min_turns: 1,
+                vol_cost: 3,
+                grants_traits: None,
+                atk_bonus: Some(5),
+                def_bonus: None,
+                passive_description: None,
+                special_attack: Some(crate::types::FruitAwakeningSpecialAttack {
+                    name: "Ground Death".into(),
+                    cost: 0,
+                    atk_bonus: 0,
+                    description: "La cible perd 3 PV permanent et ne peut plus être soignée."
+                        .into(),
+                    once_per_game: Some(true),
+                    attack_traits: None,
+                    element: Some(Element::Sand),
+                    ignore_def: None,
+                    immobilize: None,
+                    sleep: None,
+                    pushback: None,
+                    ignore_shield: None,
+                    strip_stealth: None,
+                    permanent_pv_loss: Some(3),
+                    no_heal: Some(true),
+                }),
+            }),
+        });
+        reg.register_card(fruit);
+
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        let fruit_id = give(&mut state, "BW-011", PlayerId::Player1);
+        state.card_mut(&fruit_id).unwrap().is_awakened = Some(true);
+        state
+            .card_mut(&atk)
+            .unwrap()
+            .attached_objects
+            .push(fruit_id.clone());
+        let ctx = EngineContext::seeded(1);
+
+        declare_fruit_special_attack(&mut state, &reg, &atk, &fruit_id, &tgt, false).unwrap();
+        let pending = state.pending_attack.as_ref().unwrap();
+        assert_eq!(pending.permanent_pv_loss, Some(3));
+        assert_eq!(pending.no_heal, Some(true));
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        // PV 6 - (ATK 6 vs DEF 5 = 1) = 5; the explicit 3 supersedes the Sand
+        // element's default -1, so the maximum is 6 - 3 = 3 and the current PV
+        // follows it down.
+        assert_eq!(state.card(&tgt).unwrap().pv_max_loss, Some(3));
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 3);
+        assert!(
+            state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::NoHeal)
+        );
+        assert_eq!(
+            crate::board::heal_unit(&mut state, &reg, &tgt, 5).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -3590,7 +4496,12 @@ mod tests {
         assert_eq!(state.players.player1.volonte, 8);
         assert!(state.card(&caster).unwrap().tapped);
         assert_eq!(get_effective_atk(&state, &reg, &ally).unwrap(), 4);
-        assert!(!state.card(&ally).unwrap().has_status(StatusEffectType::Freeze));
+        assert!(
+            !state
+                .card(&ally)
+                .unwrap()
+                .has_status(StatusEffectType::Freeze)
+        );
     }
 
     #[test]
@@ -3680,20 +4591,170 @@ mod tests {
         let ctx = EngineContext::seeded(1);
 
         let before = crate::board::get_valid_targets(&state, &reg, &enemy, false).unwrap();
-        assert_eq!(before.character_targets, vec![taunter.clone(), other.clone()]);
+        assert_eq!(
+            before.character_targets,
+            vec![taunter.clone(), other.clone()]
+        );
 
         declare_special_attack(&mut state, &reg, &ctx, &taunter, &enemy, false).unwrap();
         assert!(state.pending_attack.is_none());
-        assert!(state.card(&enemy).unwrap().has_status(StatusEffectType::Taunt));
+        assert!(
+            state
+                .card(&enemy)
+                .unwrap()
+                .has_status(StatusEffectType::Taunt)
+        );
 
         let bound = crate::board::get_valid_targets(&state, &reg, &enemy, false).unwrap();
         assert_eq!(bound.character_targets, vec![taunter.clone()]);
         assert!(!bound.can_target_captain);
 
+        // The *executor* honours it too, not just the enumerator: a
+        // hand-built declaration against anyone else is refused.
+        let err = declare_base_attack(&mut state, &reg, &ctx, &enemy, &other, false).unwrap_err();
+        assert_eq!(
+            err,
+            EngineError::illegal("Attaquant doit cibler Rockstar (Provocation)")
+        );
+        assert!(state.pending_attack.is_none(), "the refusal parks nothing");
+        assert!(!state.card(&enemy).unwrap().tapped, "and costs no action");
+        // The captain is out of reach while the taunt holds, too.
+        state.players.player1.captain.flipped = true;
+        state.players.player1.captain.slot = Some(Slot::A1);
+        assert!(
+            declare_base_attack(&mut state, &reg, &ctx, &enemy, "captain", true).is_err(),
+            "a taunted unit cannot swing at the captain either"
+        );
+        state.players.player1.captain.flipped = false;
+        state.players.player1.captain.slot = None;
+        // Against the taunter it goes through.
+        declare_base_attack(&mut state, &reg, &ctx, &enemy, &taunter, false).unwrap();
+        assert!(state.pending_attack.is_some());
+        state.pending_attack = None;
+        state.card_mut(&enemy).unwrap().tapped = false;
+        state.card_mut(&enemy).unwrap().used_base_action = false;
+
         // Once the taunt lapses the enemy is free again.
         state.card_mut(&enemy).unwrap().status_effects.clear();
         let free = crate::board::get_valid_targets(&state, &reg, &enemy, false).unwrap();
-        assert_eq!(free.character_targets, vec![taunter, other]);
+        assert_eq!(free.character_targets, vec![taunter.clone(), other.clone()]);
+        declare_base_attack(&mut state, &reg, &ctx, &enemy, &other, false).unwrap();
+        assert!(state.pending_attack.is_some());
+    }
+
+    #[test]
+    fn a_support_special_refuses_a_target_on_the_wrong_side() {
+        // Decision §8.38: the enemy/ally split is printed on the card
+        // ("Un allié gagne +2 ATK…", "Un ennemi doit cibler X…"), so the
+        // executor enforces it and not only the enumerator.
+        let (mut state, mut reg) = setup();
+        let mut hongo = character("C-STIM", "Hongo", 2, 1, 4);
+        hongo.special_attack = Some(SpecialAttack {
+            name: "Stimulant".to_string(),
+            cost: 1,
+            atk_bonus: 0,
+            is_support: Some(true),
+            buff_ally_atk: Some(2),
+            cleanse: Some(true),
+            ..SpecialAttack::default()
+        });
+        let mut rockstar = character("C-PROV", "Rockstar", 3, 2, 4);
+        rockstar.special_attack = Some(SpecialAttack {
+            name: "Provocation".to_string(),
+            cost: 1,
+            atk_bonus: 0,
+            is_support: Some(true),
+            taunt: Some(true),
+            ..SpecialAttack::default()
+        });
+        reg.register_card(hongo);
+        reg.register_card(rockstar);
+        let medic = place(&mut state, &reg, "C-STIM", PlayerId::Player1, Slot::V1);
+        let provoker = place(&mut state, &reg, "C-PROV", PlayerId::Player1, Slot::V2);
+        let ally = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V3);
+        let enemy = place(&mut state, &reg, "C-ATK", PlayerId::Player2, Slot::V1);
+        let ctx = EngineContext::seeded(1);
+        state.players.player1.volonte = 9;
+
+        // Stimulant on an enemy: refused, and it costs nothing.
+        let vol = state.players.player1.volonte;
+        let err =
+            declare_special_attack(&mut state, &reg, &ctx, &medic, &enemy, false).unwrap_err();
+        assert_eq!(
+            err,
+            EngineError::illegal("Support special: cet effet vise un allie")
+        );
+        assert_eq!(state.players.player1.volonte, vol);
+        assert!(state.card(&enemy).unwrap().modifiers.is_empty());
+        assert!(!state.card(&medic).unwrap().tapped);
+
+        // Provocation on one of your own: refused the same way.
+        let err =
+            declare_special_attack(&mut state, &reg, &ctx, &provoker, &ally, false).unwrap_err();
+        assert_eq!(
+            err,
+            EngineError::illegal("Support special: cet effet vise un ennemi")
+        );
+        assert!(
+            !state
+                .card(&ally)
+                .unwrap()
+                .has_status(StatusEffectType::Taunt)
+        );
+
+        // Each on its proper audience still resolves.
+        declare_special_attack(&mut state, &reg, &ctx, &medic, &ally, false).unwrap();
+        assert_eq!(state.card(&ally).unwrap().modifiers.len(), 1);
+        declare_special_attack(&mut state, &reg, &ctx, &provoker, &enemy, false).unwrap();
+        assert!(
+            state
+                .card(&enemy)
+                .unwrap()
+                .has_status(StatusEffectType::Taunt)
+        );
+    }
+
+    #[test]
+    fn thunder_on_a_captain_koes_the_body_it_splashes() {
+        // Decision §8.40's captain arm splashes `max(1, raw/2)` on the first
+        // occupied slot next to the captain — and, like every other damage
+        // source in the engine (§8.11), it must sweep the KO it causes instead
+        // of leaving a body standing at <= 0 PV until its owner's next turn.
+        let (mut state, mut reg) = setup();
+        let mut elem = character("C-ELEM2", "Elementaire", 6, 0, 8);
+        elem.base_action = Some(BaseAction {
+            name: "Coup".to_string(),
+            atk: 6,
+            element: Some(Element::Thunder),
+            ..Default::default()
+        });
+        reg.register_card(elem);
+        state.players.player2.captain.flipped = true;
+        state.players.player2.captain.slot = Some(Slot::V2);
+        let atk = place(&mut state, &reg, "C-ELEM2", PlayerId::Player1, Slot::V1);
+        let neighbour = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
+        state.card_mut(&neighbour).unwrap().current_pv = 1;
+        let vol_before = state.players.player2.volonte;
+        let ctx = EngineContext::seeded(1);
+
+        declare_base_attack(&mut state, &reg, &ctx, &atk, "captain", true).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        let victim = state.card(&neighbour).unwrap();
+        assert_eq!(victim.zone, Zone::Graveyard, "the splashed body is KO'd");
+        assert_eq!(victim.slot, None);
+        assert!(state.players.player2.board.get(Slot::V1).is_none());
+        assert!(state.players.player2.graveyard.contains(&neighbour));
+        // +2 Vol. to the player who lost the ally (Rulebook v3.1 §4).
+        assert_eq!(state.players.player2.volonte, vol_before + 2);
+        assert!(
+            state
+                .log
+                .iter()
+                .any(|l| l.message.contains("est KO (foudre) !")),
+            "the KO goes through the normal chain: {:?}",
+            state.log
+        );
     }
 
     #[test]
@@ -3709,7 +4770,15 @@ mod tests {
         reg.register_card(sniper);
         let atk = place(&mut state, &reg, "C-NODODGE", PlayerId::Player1, Slot::V1);
         let tgt = place(&mut state, &reg, "C-ADJ", PlayerId::Player2, Slot::V1);
-        declare_base_attack(&mut state, &reg, &EngineContext::seeded(1), &atk, &tgt, false).unwrap();
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &atk,
+            &tgt,
+            false,
+        )
+        .unwrap();
         assert_eq!(
             state.pending_attack.as_ref().unwrap().cannot_be_dodged,
             Some(true)
@@ -3789,6 +4858,227 @@ mod tests {
         assert_eq!(state.card(&mini).unwrap().current_pv, 4);
     }
 
+    /// Decision §8.39 (follow-up) — "`current_pv = t.pv` (and the printed-PV
+    /// cap follows via `pv_max_loss = 0`)": the transformed body keeps no
+    /// permanent max-PV loss from the form it left.
+    ///
+    /// Without the reset a Chopper who had already eaten a point of Sand
+    /// (`pv_max_loss = 1`) walked into Monster Point at `current_pv = 6` with a
+    /// maximum of 3, and the very next permanent loss clamped him from 6 to 2 —
+    /// four PV for one point of Sand.
+    #[test]
+    fn a_transform_clears_the_permanent_max_pv_loss_of_the_old_form() {
+        let (mut state, mut reg) = setup();
+        let mut chopper = character("C-CHOP2", "Chopper", 2, 1, 4);
+        chopper.special_attack = Some(SpecialAttack {
+            name: "Monster Point".to_string(),
+            cost: 3,
+            atk_bonus: 0,
+            transform: Some(crate::types::Transform {
+                atk: 8,
+                def: 2,
+                pv: 6,
+                turns: 2,
+            }),
+            ..SpecialAttack::default()
+        });
+        reg.register_card(chopper);
+        let ctx = EngineContext::seeded(1);
+
+        let chop = place(&mut state, &reg, "C-CHOP2", PlayerId::Player1, Slot::V1);
+        // One point of Sand before the transformation.
+        crate::board::apply_permanent_pv_loss(&mut state, &reg, &chop, 1).unwrap();
+        assert_eq!(state.card(&chop).unwrap().pv_max_loss, Some(1));
+
+        declare_special_attack(&mut state, &reg, &ctx, &chop, &chop, false).unwrap();
+        assert_eq!(state.card(&chop).unwrap().current_pv, 6);
+        assert_eq!(state.card(&chop).unwrap().pv_max_loss, None);
+        // The cap is the printed PV of the card again, so a fresh point of Sand
+        // costs one point, not four.
+        assert_eq!(
+            crate::board::max_pv_of(&state, &reg, &chop).unwrap(),
+            Some(4)
+        );
+        crate::board::apply_permanent_pv_loss(&mut state, &reg, &chop, 1).unwrap();
+        assert_eq!(state.card(&chop).unwrap().current_pv, 3);
+    }
+
+    /// Decision §8.31 × §8.38 — the Impact pushback is a cell write like any
+    /// other, so it goes through the single occupancy predicate: a character
+    /// is never shoved into the cell the defender's flipped captain stands in.
+    #[test]
+    fn the_impact_pushback_never_lands_on_the_flipped_captain() {
+        let (mut state, mut reg) = setup();
+        let mut impactor = character("C-IMPACT2", "Choc", 6, 0, 8);
+        impactor.base_action = Some(BaseAction {
+            name: "Poing de l'Amour".to_string(),
+            atk: 6,
+            attack_traits: Some(vec![AttackTrait::Impact]),
+            ..Default::default()
+        });
+        reg.register_card(impactor);
+        let ctx = EngineContext::seeded(1);
+
+        let atk = place(&mut state, &reg, "C-IMPACT2", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        // The defender's captain physically stands in A1 — not a board cell,
+        // but occupied all the same (§8.31).
+        {
+            let cap = &mut state.players.get_mut(PlayerId::Player2).captain;
+            cap.flipped = true;
+            cap.slot = Some(Slot::A1);
+        }
+
+        declare_base_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+
+        // The push is simply refused; the target stays where it was and the two
+        // units never share a slot.
+        assert_eq!(state.card(&tgt).unwrap().slot, Some(Slot::V1));
+        assert_eq!(state.players.player2.board.get(Slot::V1), Some(&tgt));
+        assert_eq!(state.players.player2.board.get(Slot::A1), None);
+        assert!(!crate::board::is_slot_free(
+            &state,
+            PlayerId::Player2,
+            Slot::A1
+        ));
+    }
+
+    /// Decision §8.47 (follow-up) — `GrantedTrait::AttackTrait` is merged into
+    /// **every** declaration path, the awakened-fruit special included; it used
+    /// to be honoured on the bearer's base and special attacks only.
+    #[test]
+    fn granted_attack_traits_reach_the_awakened_fruit_special() {
+        let (mut state, mut reg) = setup();
+        let mut scope = CardDef::new(
+            "OBJ-SCOPE",
+            "Lunette",
+            CardType::Object,
+            1,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        scope.subtype = Some(ObjectSubtype::Accessory);
+        scope.grants_traits = Some(vec![crate::types::GrantedTrait::AttackTrait(
+            AttackTrait::Piercing,
+        )]);
+        let mut fruit = CardDef::new(
+            "OBJ-FRUIT",
+            "Fruit",
+            CardType::Object,
+            1,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        fruit.subtype = Some(ObjectSubtype::Fruit);
+        fruit.fruit_effects = Some(crate::types::FruitEffects {
+            base: crate::types::FruitBaseEffects::default(),
+            awakening: Some(crate::types::FruitAwakening {
+                porteur_legitime: String::new(),
+                min_turns: 1,
+                vol_cost: 1,
+                grants_traits: None,
+                atk_bonus: None,
+                def_bonus: None,
+                passive_description: None,
+                special_attack: Some(crate::types::FruitAwakeningSpecialAttack {
+                    name: "Eveil".to_string(),
+                    cost: 1,
+                    atk_bonus: 0,
+                    description: String::new(),
+                    once_per_game: None,
+                    attack_traits: None,
+                    element: None,
+                    ignore_def: None,
+                    immobilize: None,
+                    sleep: None,
+                    pushback: None,
+                    ignore_shield: None,
+                    strip_stealth: None,
+                    permanent_pv_loss: None,
+                    no_heal: None,
+                }),
+            }),
+        });
+        reg.register_card(scope);
+        reg.register_card(fruit);
+
+        let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        // C-DEF has DEF 5: piercing halves it to 2, so 6 - 2 = 4 damage.
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        for (id, def_id) in [("obj-scope#1", "OBJ-SCOPE"), ("obj-fruit#1", "OBJ-FRUIT")] {
+            let mut inst =
+                CardInstance::new(id.to_string(), def_id.to_string(), PlayerId::Player1, 0);
+            inst.zone = Zone::Board;
+            inst.slot = Some(Slot::V1);
+            if def_id == "OBJ-FRUIT" {
+                inst.is_awakened = Some(true);
+            }
+            state.cards.insert(id.to_string(), inst);
+            state
+                .card_mut(&atk)
+                .unwrap()
+                .attached_objects
+                .push(id.to_string());
+        }
+
+        declare_fruit_special_attack(&mut state, &reg, &atk, "obj-fruit#1", &tgt, false).unwrap();
+        let pending = state.pending_attack.as_ref().unwrap();
+        assert!(pending.attack_traits.contains(&AttackTrait::Piercing));
+        assert_eq!(pending.raw_damage, 4);
+    }
+
+    /// Decision §8.38 — `healAmount` is its own clause: a special that prints a
+    /// heal heals even when it is not a support special. With no ally in the
+    /// target set of an attacking special, the unit it heals is its user.
+    #[test]
+    fn a_special_that_prints_a_heal_heals_its_user() {
+        let (mut state, mut reg) = setup();
+        let mut medic = character("C-MEDIC", "Medic", 6, 0, 8);
+        medic.special_attack = Some(SpecialAttack {
+            name: "Drain".to_string(),
+            cost: 1,
+            atk_bonus: 0,
+            heal_amount: Some(3),
+            ..SpecialAttack::default()
+        });
+        reg.register_card(medic);
+        let ctx = EngineContext::seeded(1);
+
+        let atk = place(&mut state, &reg, "C-MEDIC", PlayerId::Player1, Slot::V1);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        state.card_mut(&atk).unwrap().current_pv = 2;
+
+        declare_special_attack(&mut state, &reg, &ctx, &atk, &tgt, false).unwrap();
+        // Healed through the single §8.5 path (capped at the printed 8 PV).
+        assert_eq!(state.card(&atk).unwrap().current_pv, 5);
+        assert_eq!(
+            state.log[state.log.len() - 2].message,
+            "Medic utilise Drain : +3 PV a Medic"
+        );
+        // …and it is still an attack.
+        assert!(state.pending_attack.is_some());
+
+        // `noHeal` still wins: the clause goes through `heal_unit`.
+        let atk2 = place(&mut state, &reg, "C-MEDIC", PlayerId::Player1, Slot::V2);
+        state.card_mut(&atk2).unwrap().current_pv = 2;
+        state
+            .card_mut(&atk2)
+            .unwrap()
+            .status_effects
+            .push(StatusEffect {
+                effect_type: StatusEffectType::NoHeal,
+                turns_remaining: 2,
+                damage_per_turn: 0,
+                source: String::new(),
+            });
+        state.pending_attack = None;
+        declare_special_attack(&mut state, &reg, &ctx, &atk2, &tgt, false).unwrap();
+        assert_eq!(state.card(&atk2).unwrap().current_pv, 2);
+    }
+
     // ============================================================
     // Decision §8.40 — captains feel every element, Logia once a turn
     // ============================================================
@@ -3814,8 +5104,7 @@ mod tests {
         });
         reg.register_card(elem);
 
-        state.players.player2.captain =
-            CaptainInstance::new("CAP-E".into(), PlayerId::Player2, 20);
+        state.players.player2.captain = CaptainInstance::new("CAP-E".into(), PlayerId::Player2, 20);
         if let Some(slot) = captain_slot {
             state.players.player2.captain.flipped = true;
             state.players.player2.captain.slot = Some(slot);
@@ -3942,19 +5231,14 @@ mod tests {
     fn a_captain_debuffed_below_zero_def_takes_exactly_the_attack() {
         let (mut state, reg) = setup();
         let atk = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
-        state
-            .players
-            .player2
-            .captain
-            .modifiers
-            .push(Modifier {
-                id: "debuff".to_string(),
-                stat: ModifierStat::Def,
-                amount: -5,
-                source: "test".to_string(),
-                duration: ModifierDuration::Turn,
-                turns_remaining: None,
-            });
+        state.players.player2.captain.modifiers.push(Modifier {
+            id: "debuff".to_string(),
+            stat: ModifierStat::Def,
+            amount: -5,
+            source: "test".to_string(),
+            duration: ModifierDuration::Turn,
+            turns_remaining: None,
+        });
         let ctx = EngineContext::seeded(1);
         declare_base_attack(&mut state, &reg, &ctx, &atk, "captain", true).unwrap();
         // Face DEF 1 - 5 = -4, clamped at 0: exactly ATK 6, not 6 + 4.
@@ -3995,6 +5279,165 @@ mod tests {
         assert_eq!(
             get_attacker_owner(&state, "nope").unwrap_err(),
             EngineError::illegal("Attacker not found: nope")
+        );
+    }
+
+    /// Decision §8.28 (follow-up) × §8.38 × §8.48 — the whole life of the
+    /// captain's signature fruit: equip it, awaken it, and fire the awakening
+    /// special with it.
+    ///
+    /// `BW-011` Suna Suna no Mi is printed "Équipable sur Crocodile" and its
+    /// `porteurLegitime` is "Crocodile" — a name that exists in the game only
+    /// as a captain. Under the character-only rule of §8.28 the card could
+    /// never be equipped, so its Ground Death ("La cible perd 3 PV permanent et
+    /// ne peut plus être soignée"), and with it the whole §8.38 × §8.48 pair,
+    /// was unreachable in any real game.
+    #[test]
+    fn the_captain_equips_awakens_and_fires_its_signature_fruit() {
+        let (mut state, mut reg) = setup();
+        reg.register_captain(captain_def("CAP-C", "Crocodile (Mr. 0)", 1, false));
+        state.players.get_mut(PlayerId::Player1).captain =
+            CaptainInstance::new("CAP-C".into(), PlayerId::Player1, 20);
+        {
+            // Flipped onto the board long ago: the captain attacks from V1.
+            let cap = &mut state.players.get_mut(PlayerId::Player1).captain;
+            cap.flipped = true;
+            cap.slot = Some(Slot::V1);
+            cap.deployed_turn = Some(0);
+        }
+        state.turn_number = 5;
+        state.players.get_mut(PlayerId::Player1).volonte = 10;
+
+        let mut fruit = CardDef::new(
+            "BW-011",
+            "Suna Suna no Mi",
+            CardType::Object,
+            3,
+            Faction::Pirate,
+            Rarity::Sr,
+            "TEST",
+        );
+        fruit.subtype = Some(ObjectSubtype::Fruit);
+        fruit.restriction = Some("Crocodile".into());
+        fruit.fruit_effects = Some(crate::types::FruitEffects {
+            base: crate::types::FruitBaseEffects {
+                grants_traits: Some(vec![Trait::Cursed, Trait::Logia]),
+                passive_description: Some("Logia.".into()),
+                atk_bonus: None,
+                def_bonus: None,
+            },
+            awakening: Some(crate::types::FruitAwakening {
+                porteur_legitime: "Crocodile".into(),
+                min_turns: 5,
+                vol_cost: 3,
+                grants_traits: None,
+                atk_bonus: Some(5),
+                def_bonus: None,
+                passive_description: None,
+                special_attack: Some(crate::types::FruitAwakeningSpecialAttack {
+                    name: "Ground Death".into(),
+                    cost: 4,
+                    atk_bonus: 5,
+                    description: "La cible perd 3 PV permanent et ne peut plus être soignée."
+                        .into(),
+                    once_per_game: Some(true),
+                    attack_traits: None,
+                    element: Some(Element::Sand),
+                    ignore_def: None,
+                    immobilize: None,
+                    sleep: None,
+                    pushback: None,
+                    ignore_shield: None,
+                    strip_stealth: None,
+                    permanent_pv_loss: Some(3),
+                    no_heal: Some(true),
+                }),
+            }),
+        });
+        reg.register_card(fruit);
+        let mut bulky = character("C-BULK", "Colosse", 1, 0, 30);
+        bulky.pv = Some(30);
+        reg.register_card(bulky);
+        let ctx = EngineContext::seeded(1);
+
+        let cap_id = captain_attacker_id(PlayerId::Player1);
+        let fruit_id = give(&mut state, "BW-011", PlayerId::Player1);
+        let tgt = place(&mut state, &reg, "C-BULK", PlayerId::Player2, Slot::V1);
+
+        // Equip — only the captain satisfies "Équipable sur Crocodile".
+        crate::board::equip_object(
+            &mut state,
+            &reg,
+            PlayerId::Player1,
+            &fruit_id,
+            &cap_id,
+            true,
+        )
+        .unwrap();
+        // The fruit's `grantsTraits` are the captain's: it is a Logia now.
+        assert!(
+            crate::captain::captain_has_trait_now(&state, &reg, PlayerId::Player1, Trait::Logia)
+                .unwrap()
+        );
+
+        // Awaken — `porteurLegitime` matches the captain's printed name.
+        assert!(
+            crate::fruits::can_awaken_fruit(&state, &reg, PlayerId::Player1, &fruit_id).unwrap()
+        );
+        crate::fruits::awaken_fruit(&mut state, &reg, PlayerId::Player1, &fruit_id).unwrap();
+        assert!(last_log(&state).starts_with("⭐ EVEIL ! Crocodile (Mr. 0) eveille"));
+
+        // Fire it — the awakened special is offered on the captain …
+        state.players.get_mut(PlayerId::Player1).volonte = 10;
+        let offered = crate::actions::get_valid_actions(&state, &reg, PlayerId::Player1).unwrap();
+        let action = crate::types::GameAction::FruitSpecialAttack {
+            attacker_instance_id: cap_id.clone(),
+            fruit_instance_id: fruit_id.clone(),
+            target_instance_id: tgt.clone(),
+            target_is_captain: None,
+        };
+        assert!(offered.contains(&action));
+
+        // … and it lands with both of its printed clauses.
+        declare_fruit_special_attack(&mut state, &reg, &cap_id, &fruit_id, &tgt, false).unwrap();
+        let pending = state.pending_attack.as_ref().unwrap();
+        assert_eq!(pending.attacker_id, cap_id);
+        assert_eq!(pending.permanent_pv_loss, Some(3));
+        assert_eq!(pending.no_heal, Some(true));
+        // Verso ATK 5 + the awakening's +5 modifier + the attack's +5 = 15.
+        assert_eq!(pending.attack_power, Some(15));
+        assert_eq!(state.players.get(PlayerId::Player1).volonte, 6);
+        assert_eq!(
+            last_log(&state),
+            "Capitaine Crocodile (Mr. 0) utilise Ground Death sur Colosse (ATK 15 vs DEF 0 = 15 degats)"
+        );
+
+        resolve_attack(&mut state, &reg, &ctx).unwrap();
+        assert_eq!(state.card(&tgt).unwrap().current_pv, 15);
+        assert_eq!(state.card(&tgt).unwrap().pv_max_loss, Some(3));
+        assert!(
+            state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::NoHeal)
+        );
+
+        // The captain spent its action and its one use of the ability.
+        let cap = &state.players.get(PlayerId::Player1).captain;
+        assert!(cap.tapped && cap.used_special_attack && cap.used_base_action);
+        assert!(cap.used_once("Ground Death"));
+        state.players.get_mut(PlayerId::Player1).captain.tapped = false;
+        state
+            .players
+            .get_mut(PlayerId::Player1)
+            .captain
+            .used_special_attack = false;
+        state.pending_attack = None;
+        assert_eq!(
+            declare_fruit_special_attack(&mut state, &reg, &cap_id, &fruit_id, &tgt, false),
+            Err(EngineError::illegal(
+                "Already used this fruit ability (1x/game)"
+            ))
         );
     }
 }

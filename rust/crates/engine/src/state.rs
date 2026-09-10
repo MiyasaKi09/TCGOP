@@ -205,6 +205,18 @@ pub struct CaptainInstance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<Slot>,
     pub tapped: bool,
+    /// Decision §8.28 (follow-up) — the objects the captain wears.
+    ///
+    /// The three signature SR Devil Fruits are printed "Équipable sur Luffy /
+    /// Crocodile / Akainu", and those three names exist in the game **only** as
+    /// captains (no set ships a character whose name contains them), so the
+    /// captain has to be able to carry an object for the card to mean anything.
+    ///
+    /// Serialised exactly like a new optional field: `#[serde(default)]` plus
+    /// `skip_serializing_if`, so a captain with no object is byte-for-byte the
+    /// captain the TypeScript engine wrote.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached_objects: Vec<String>,
     pub modifiers: Vec<Modifier>,
     pub status_effects: Vec<StatusEffect>,
     /// Turn the captain flipped onto the board — `i64` for the same reason as
@@ -235,6 +247,7 @@ impl CaptainInstance {
             current_pv: recto_pv,
             slot: None,
             tapped: false,
+            attached_objects: Vec::new(),
             modifiers: Vec::new(),
             status_effects: Vec::new(),
             deployed_turn: None,
@@ -1229,7 +1242,16 @@ impl GameState {
     /// the first injured enemy loses N permanent PV, KO if it drops to 0;
     /// decision §8.17), then phase `end`, hand-limit
     /// discard and the player switch ([`GameState::end_turn_switch`]).
-    pub fn end_turn(&mut self, registry: &CardRegistry) -> Result<(), EngineError> {
+    ///
+    /// Takes the [`EngineContext`] for the same reason
+    /// [`GameState::start_turn`] does: a desiccation KO runs the standard KO
+    /// chain (§8.12/§8.17), and the on-KO triggers mint modifier ids from
+    /// `ctx.now()`.
+    pub fn end_turn(
+        &mut self,
+        registry: &CardRegistry,
+        ctx: &EngineContext,
+    ) -> Result<(), EngineError> {
         // End-of-turn desiccation (Crocodile): an injured enemy loses 1 permanent PV.
         {
             let me = self.current_player;
@@ -1271,7 +1293,29 @@ impl GameState {
                         format!("Déshydratation : {name} perd {desicc} PV permanent."),
                     );
                     if self.get_card(&tid)?.current_pv <= 0 {
+                        // Decision §8.17, on the §8.11/§8.12 principle: a
+                        // desiccation KO is a KO like any other. It was the
+                        // last damage source in the engine whose KO skipped
+                        // the chain — no log, no +2 Volonté for the player who
+                        // lost the character (Rulebook v3.1 §4), no on-KO
+                        // triggers (`allyKOedThisTurn`, `selfBuffOnAllyKO`,
+                        // the synergy rage). Every sibling path — the ship
+                        // broadside, the trap, captain thunder, the Épines
+                        // recoil — sweeps its KOs, and this one is live in
+                        // every game the Baroque deck plays.
+                        let ko_owner = self.get_card(&tid)?.owner;
+                        let ko_def_id = self.get_card(&tid)?.def_id.clone();
+                        self.add_log(ko_owner, format!("{name} est KO (Déshydratation) !"));
+                        self.grant_ko_bonus(ko_owner);
                         remove_from_board(self, registry, &tid)?;
+                        apply_on_ko_effects(
+                            self,
+                            registry,
+                            ctx,
+                            ko_owner,
+                            ko_owner.opponent(),
+                            &ko_def_id,
+                        )?;
                     }
                 }
             }
@@ -1321,28 +1365,69 @@ impl GameState {
             let here = card.slot;
             let on_board = card.zone == Zone::Board;
 
+            // Where the body lands back home. The slot it left is *not*
+            // guaranteed free: decision §8.38 made `AttackTrait::Impact` imply
+            // a pushback, so the borrower's own attacks can shove one of the
+            // owner's characters from V* into the A* cell the loan vacated.
+            // Overwriting the cell there would orphan that occupant (still
+            // `zone == Board` with a slot, but in no board cell), so a taken
+            // home slot falls back to the first free slot of the owner's board
+            // — the body comes back to its camp, just not to its old spot.
+            let landing = if on_board {
+                home.filter(|s| crate::board::is_slot_free(self, owner, *s))
+                    .or_else(|| crate::board::get_empty_slots(self, owner).first().copied())
+            } else {
+                None
+            };
+
+            if on_board && landing.is_none() {
+                // The owner's board is somehow completely full — the loan left
+                // one cell and nothing on the borrower's turn can refill an
+                // opponent's board, so this arm is unreachable on the shipped
+                // catalogue. Decision §8.37 follow-up (b) authorises exactly
+                // one thing here: "the body leaves the board through
+                // `remove_from_board` instead of squatting in the borrower's
+                // camp". It is a *homeless* loan, not a KO — no +2 Volonté, no
+                // on-KO triggers, no log line — because nothing in §8 turns a
+                // failed hand-back into a kill, and inventing one would move
+                // Volonté and fire `onPartnerKO` chains for an event no card
+                // describes.
+                crate::board::remove_from_board(self, registry, &id)?;
+                if let Some(card) = self.cards.get_mut(&id) {
+                    card.controlled_by = None;
+                    card.loan_return_slot = None;
+                }
+                continue;
+            }
+
             if let Some(slot) = here {
                 if self.players.get(me).board.get(slot) == Some(&id) {
                     self.players.get_mut(me).board.set(slot, None);
                 }
             }
-            if on_board {
-                if let Some(home) = home {
-                    self.players
-                        .get_mut(owner)
-                        .board
-                        .set(home, Some(id.clone()));
-                }
+            if let Some(dest) = landing {
+                self.players
+                    .get_mut(owner)
+                    .board
+                    .set(dest, Some(id.clone()));
             }
 
             let card = self.cards.get_mut(&id).expect("just read");
             card.controlled_by = None;
             card.loan_return_slot = None;
+            let attached = card.attached_objects.clone();
             if on_board {
-                card.slot = home;
                 // The borrowed body spent its turn away from home: it comes
                 // back tapped-out exactly as it left, but its slot is its own
                 // again.
+                card.slot = landing;
+                // Decision §8.29: the equipment travels with its bearer — the
+                // landing cell is often *not* the one the loan left (the free
+                // slot fallback above), so the attachments follow the body
+                // rather than keeping the borrower's cell.
+                if let Some(dest) = landing {
+                    crate::board::move_attached_objects(self, &attached, dest);
+                }
             }
             if on_board {
                 let def_id = self.cards[&id].def_id.clone();

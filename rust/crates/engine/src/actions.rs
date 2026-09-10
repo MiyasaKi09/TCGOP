@@ -28,8 +28,9 @@
 // of the port, so the lint is turned off for this file only.
 
 use crate::board::{
-    can_move, deploy_cost, equip_restriction_ok, get_adjacent_slots, get_board_characters,
-    get_effective_atk, get_effective_def, get_empty_slots, get_valid_targets, has_free_object_slot,
+    can_move, captain_equip_restriction_ok, captain_has_free_object_slot, deploy_cost,
+    equip_restriction_ok, get_adjacent_slots, get_board_characters, get_effective_atk,
+    get_effective_def, get_empty_slots, get_valid_targets, has_free_object_slot,
     has_summoning_sickness, has_trait,
 };
 use crate::captain::{can_flip_captain, captain_cannot_act};
@@ -267,6 +268,17 @@ fn build_valid_actions(
                 continue;
             }
             for target in &board_chars {
+                // Decision §8.57 × §8.37 (`betrayal`): `board_chars` reads
+                // board *cells*, which for the duration of a loan also hold a
+                // borrowed enemy body. An object is a permanent attachment —
+                // it would ride home with the body at end of turn and buff the
+                // opponent for the rest of the game — so, unlike the
+                // turn-scoped controller actions (attack, move, support),
+                // equipment stays restricted to the characters you *own*,
+                // which is exactly what `equip_object` enforces.
+                if target.owner != player_id {
+                    continue;
+                }
                 // Decision §8.28: only the pairs `equip_object` would accept —
                 // a character (`board_chars` holds only board cells, so the
                 // active ship is already out) that satisfies the printed
@@ -286,6 +298,23 @@ fn build_valid_actions(
                 actions.push(GameAction::EquipObject {
                     object_instance_id: card_id.clone(),
                     target_instance_id: target.instance_id.clone(),
+                    target_is_captain: None,
+                });
+            }
+            // Decision §8.28 (follow-up) × §8.57: the captain is the printed
+            // bearer of the three signature SR fruits ("Équipable sur Luffy /
+            // Crocodile / Akainu" — names no character carries), so the equip
+            // is offered on it under exactly the two conditions
+            // `equip_object_on_captain` enforces: the object's own printed
+            // restriction names this captain, and the subtype slot is free.
+            let cap_def = registry.get_captain_def(&player.captain.def_id)?;
+            if captain_equip_restriction_ok(cap_def, def)
+                && captain_has_free_object_slot(state, registry, player_id, def)?
+            {
+                actions.push(GameAction::EquipObject {
+                    object_instance_id: card_id.clone(),
+                    target_instance_id: captain_attacker_id(player_id),
+                    target_is_captain: Some(true),
                 });
             }
         }
@@ -506,13 +535,10 @@ fn build_valid_actions(
         // stripStealth) pick from the legal attack targets, ally-facing ones
         // (healAmount / buffAllyAtk / cleanse) from the caster's own board.
         if sa.is_support.unwrap_or(false) {
-            let hits_enemy = sa.taunt.unwrap_or(false)
-                || sa.immobilize.unwrap_or(false)
-                || sa.sleep.unwrap_or(false)
-                || sa.strip_stealth.unwrap_or(false);
-            let helps_ally = sa.heal_amount.is_some_and(|n| n != 0)
-                || sa.buff_ally_atk.is_some_and(|n| n != 0)
-                || sa.cleanse.unwrap_or(false);
+            // The audience split lives in `combat` so the enumerator and
+            // `resolve_support_special` can never disagree about it (§8.57).
+            let hits_enemy = crate::combat::support_hits_enemy(sa);
+            let helps_ally = crate::combat::support_helps_ally(sa);
             if hits_enemy {
                 let targets = get_valid_targets(state, registry, &ch.instance_id, true)?;
                 for target_id in &targets.character_targets {
@@ -523,6 +549,9 @@ fn build_valid_actions(
                     });
                 }
             } else if helps_ally {
+                // `board_chars` are the caster's board cells — a body borrowed
+                // by `betrayal` sits there and counts as an ally for the turn,
+                // which is the side `resolve_support_special` checks too.
                 for ally in &board_chars {
                     actions.push(GameAction::SpecialAttack {
                         attacker_instance_id: ch.instance_id.clone(),
@@ -650,11 +679,11 @@ fn build_valid_actions(
         // TS `getCaptainDef(...)` — unguarded, so an unregistered captain
         // aborts the enumeration instead of dropping the attack group.
         let cap_def = registry.get_captain_def(&player.captain.def_id)?;
-        let has_rush = cap_def
-            .verso
-            .traits
-            .as_ref()
-            .is_some_and(|ts| ts.contains(&Trait::Rush));
+        // Decision §8.40 — the same union read the two executors use
+        // (`declare_captain_base_attack` / `declare_captain_spec_attack`), so
+        // a card-level `rush` is offered as well as accepted.
+        let has_rush =
+            crate::captain::captain_has_trait_now(state, registry, player_id, Trait::Rush)?;
         if player.captain.deployed_turn != Some(i64::from(state.turn_number)) || has_rush {
             // Can attack — simplified: target any enemy front or captain
             actions.push(GameAction::CaptainAttack {
@@ -693,13 +722,59 @@ fn build_valid_actions(
                 }
             }
 
+            // Decision §8.28 (follow-up) — the awakened-fruit special of a
+            // fruit the *captain* wears (`MG-014` Kong Gun, `BW-011` Ground
+            // Death, `MR-011` Inugami Guren). Same gates as the captain's own
+            // special, plus the fruit's: awakened, `oncePerGame` unused and
+            // affordable.
+            for obj_id in &player.captain.attached_objects {
+                let Some(obj_card) = state.cards.get(obj_id) else {
+                    continue;
+                };
+                if !obj_card.is_awakened.unwrap_or(false) {
+                    continue;
+                }
+                let obj_def = registry.get_card_def(&obj_card.def_id)?;
+                let Some(fruit_spec) = obj_def
+                    .fruit_effects
+                    .as_ref()
+                    .and_then(|fx| fx.awakening.as_ref())
+                    .and_then(|aw| aw.special_attack.as_ref())
+                else {
+                    continue;
+                };
+                if player.captain.used_special_attack {
+                    continue;
+                }
+                if fruit_spec.once_per_game.unwrap_or(false)
+                    && player.captain.used_once(&fruit_spec.name)
+                {
+                    continue;
+                }
+                if !state.can_afford(player_id, fruit_spec.cost) {
+                    continue;
+                }
+                actions.push(GameAction::FruitSpecialAttack {
+                    attacker_instance_id: captain_attacker_id(player_id),
+                    fruit_instance_id: obj_id.clone(),
+                    target_instance_id: captain_attacker_id(opponent_id),
+                    target_is_captain: Some(true),
+                });
+                for opp in &opp_chars {
+                    actions.push(GameAction::FruitSpecialAttack {
+                        attacker_instance_id: captain_attacker_id(player_id),
+                        fruit_instance_id: obj_id.clone(),
+                        target_instance_id: opp.instance_id.clone(),
+                        target_is_captain: None,
+                    });
+                }
+            }
+
             // §8.2 item 34(b) — the active face's `surcharge`, offered only
             // when the data defines one (never on the shipped catalogue).
             if let Some(surcharge) = cap_def.verso.surcharge.as_ref() {
                 let once_used = surcharge.once_per_game.unwrap_or(false)
-                    && player
-                        .captain
-                        .used_once(&once_surcharge(&surcharge.name));
+                    && player.captain.used_once(&once_surcharge(&surcharge.name));
                 if !player.captain.used_special_attack
                     && !once_used
                     && state.can_afford(player_id, surcharge.cost)
@@ -778,6 +853,21 @@ fn build_valid_actions(
                         fruit_instance_id: obj_id.clone(),
                     });
                 }
+            }
+        }
+    }
+    // Decision §8.28 (follow-up): a fruit worn by the captain awakens the same
+    // way — `porteurLegitime` on the three signature fruits *is* the captain's
+    // name, so `can_awaken_fruit` matches it through the widened bearer search.
+    for obj_id in &player.captain.attached_objects {
+        if let Some(obj_card) = state.cards.get(obj_id) {
+            let obj_def = registry.get_card_def(&obj_card.def_id)?;
+            if obj_def.subtype == Some(ObjectSubtype::Fruit)
+                && can_awaken_fruit(state, registry, player_id, obj_id)?
+            {
+                actions.push(GameAction::AwakenFruit {
+                    fruit_instance_id: obj_id.clone(),
+                });
             }
         }
     }
@@ -1267,7 +1357,8 @@ mod tests {
             actions[6],
             GameAction::EquipObject {
                 object_instance_id: hand_obj,
-                target_instance_id: ally.clone()
+                target_instance_id: ally.clone(),
+                target_is_captain: None,
             }
         );
         assert_eq!(
@@ -1425,6 +1516,8 @@ mod tests {
                     pushback: None,
                     ignore_shield: None,
                     strip_stealth: None,
+                    permanent_pv_loss: None,
+                    no_heal: None,
                 }),
             }),
         });
@@ -1775,6 +1868,7 @@ mod tests {
         let equip = GameAction::EquipObject {
             object_instance_id: w2.clone(),
             target_instance_id: a.clone(),
+            target_is_captain: None,
         };
         assert!(get_valid_actions(&state, &reg, P1).contains(&equip));
 
@@ -1804,10 +1898,13 @@ mod tests {
         let mut state = blank_state();
         let a = put(&mut state, &reg, "A", P1, Zone::Board, Some(Slot::V1));
         let obj = put(&mut state, &reg, "W-ZORO", P1, Zone::Hand, None);
-        assert!(!get_valid_actions(&state, &reg, P1).contains(&GameAction::EquipObject {
-            object_instance_id: obj,
-            target_instance_id: a,
-        }));
+        assert!(
+            !get_valid_actions(&state, &reg, P1).contains(&GameAction::EquipObject {
+                object_instance_id: obj,
+                target_instance_id: a,
+                target_is_captain: None,
+            })
+        );
     }
 
     #[test]
@@ -1824,6 +1921,7 @@ mod tests {
         let equip = GameAction::EquipObject {
             object_instance_id: w,
             target_instance_id: a,
+            target_is_captain: None,
         };
         let deploy = GameAction::DeployShip {
             instance_id: ship.clone(),

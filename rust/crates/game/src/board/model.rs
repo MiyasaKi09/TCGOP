@@ -483,7 +483,11 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
     let highlight = selection::cell_highlight(
         ctx.mode,
         captain.slot.unwrap_or(Slot::V1),
-        false,
+        // Decision §8.28 (follow-up): the captain can be an *equip* target now,
+        // and `cell_highlight` only lights one on the player's own side. The
+        // attack and impact branches are the other side's and are unaffected —
+        // your own captain key is never in `attack_targets`.
+        is_you,
         Some(&key),
         &BTreeSet::new(),
         &ctx.attack,
@@ -496,12 +500,14 @@ fn command_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> CommandView {
     let decor = CellDecor {
         ring: if is_target {
             Ring::Target
+        } else if highlight.equip_target {
+            Ring::Deploy
         } else if selected {
             Ring::Select
         } else {
             Ring::None
         },
-        dimmed: ctx.mode.is_selecting() && !is_target,
+        dimmed: ctx.mode.is_selecting() && !is_target && !highlight.equip_target,
     };
 
     let (name, def_id, atk, def, max_pv, accent) =

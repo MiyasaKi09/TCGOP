@@ -262,6 +262,7 @@ fn execute_action_inner(
         GameAction::EquipObject {
             object_instance_id,
             target_instance_id,
+            target_is_captain,
         } => {
             // Decision §8.37 (`embargo`, `MR-027`): "L'adversaire ne peut ni
             // équiper ni jouer de Navire à son prochain tour."
@@ -274,6 +275,7 @@ fn execute_action_inner(
                 current,
                 object_instance_id,
                 target_instance_id,
+                target_is_captain.unwrap_or(false),
             )
         }
 
@@ -444,7 +446,7 @@ pub fn end_turn_and_start_turn(
     registry: &CardRegistry,
     ctx: &EngineContext,
 ) -> Result<(), EngineError> {
-    state.end_turn(registry)?;
+    state.end_turn(registry, ctx)?;
     state.start_turn(registry, ctx)
 }
 
@@ -680,10 +682,21 @@ pub fn resolve_event_effect(
                         damage_enemy(state, registry, &tid, *amount, *cursed_bonus, *sand)?;
                     }
                     None => {
-                        // No body to hit: the blow lands on the captain. A
-                        // captain has no max-PV model in this port, so `sand`
-                        // is only the damage there.
+                        // No body to hit: the blow lands on the captain.
+                        // Decision §8.40 gave the captain a max-PV model
+                        // (`CaptainInstance::pv_max_loss`), so `sand` is the
+                        // same permanent loss here as it is on a character.
+                        // `cursedBonus` is deliberately left out of this arm,
+                        // unchanged (§8.36 pinned it to the body pool).
                         state.players.get_mut(opponent_id).captain.current_pv -= *amount;
+                        if sand.unwrap_or(false) {
+                            crate::board::apply_captain_permanent_pv_loss(
+                                state,
+                                registry,
+                                opponent_id,
+                                1,
+                            )?;
+                        }
                     }
                 }
             } else {
@@ -1067,7 +1080,9 @@ fn damage_enemy(
     let Some(card) = state.cards.get(instance_id) else {
         return Ok(());
     };
-    let cursed = registry.get_card_def(&card.def_id)?.has_trait(Trait::Cursed);
+    let cursed = registry
+        .get_card_def(&card.def_id)?
+        .has_trait(Trait::Cursed);
     // Decision §8.14: `cursedBonus` is a *replacement* total ("2 degats, 3
     // contre Maudit" — MG-025 Tempete reads 2 -> 3, never 2 + 3), but the
     // JS-falsy-zero quirk is gone: a `Some(0)` really means 0 damage against a
@@ -1081,7 +1096,12 @@ fn damage_enemy(
     };
     card.current_pv -= dmg;
     if sand.unwrap_or(false) {
-        card.pv_max_loss = Some(card.pv_max_loss.unwrap_or(0) + 1);
+        // The current PV follows the maximum down, exactly like every other
+        // permanent-loss path (`resolve_attack`'s `permanentPvLoss`, the Sand
+        // element on a character and on a captain): a full-PV unit hit by
+        // `BW-023` Tempete de Sable must not be left standing above its own
+        // maximum until something else happens to touch it.
+        crate::board::apply_permanent_pv_loss(state, registry, instance_id, 1)?;
     }
     Ok(())
 }
@@ -1114,8 +1134,7 @@ fn strongest_enemy(
         let take = match best_id.as_deref() {
             None => true,
             Some(cur) => {
-                get_effective_atk(state, registry, &id)?
-                    > get_effective_atk(state, registry, cur)?
+                get_effective_atk(state, registry, &id)? > get_effective_atk(state, registry, cur)?
             }
         };
         if take {
@@ -1159,8 +1178,7 @@ fn take_control_for_the_turn(
         let take = match best.as_deref() {
             None => true,
             Some(cur) => {
-                get_effective_atk(state, registry, &id)?
-                    > get_effective_atk(state, registry, cur)?
+                get_effective_atk(state, registry, &id)? > get_effective_atk(state, registry, cur)?
             }
         };
         if take {
@@ -1190,6 +1208,10 @@ fn take_control_for_the_turn(
     card.tapped = false;
     card.used_base_action = false;
     card.used_special_attack = false;
+    // Decision §8.29: the equipment travels with its bearer — the loan moves
+    // the body to another cell (of another board), so its attachments follow.
+    let attached = card.attached_objects.clone();
+    crate::board::move_attached_objects(state, &attached, dest);
 
     let def_id = state.get_card(&target_id)?.def_id.clone();
     let name = registry.get_card_def(&def_id)?.name.clone();
@@ -2558,7 +2580,12 @@ mod tests {
         assert_eq!(state.card(&wounded).unwrap().current_pv, 3);
         assert_eq!(state.card(&scratched).unwrap().current_pv, 3);
         // …and the heal still honours `noHeal` (decision §8.5).
-        assert!(!state.card(&wounded).unwrap().has_status(StatusEffectType::NoHeal));
+        assert!(
+            !state
+                .card(&wounded)
+                .unwrap()
+                .has_status(StatusEffectType::NoHeal)
+        );
     }
 
     #[test]
@@ -2618,6 +2645,52 @@ mod tests {
         assert_eq!(state.card(&victim).unwrap().current_pv, 3);
     }
 
+    #[test]
+    fn a_sand_event_never_leaves_a_unit_above_its_new_maximum() {
+        use crate::board::max_pv_of;
+
+        // The three permanent-max-PV-loss paths (this one, `resolve_attack`'s
+        // `permanentPvLoss` and the Sand arm of `apply_element_to_captain`)
+        // agree: the current PV follows the maximum down. A unit whose damage
+        // is absorbed — here Chopper's `damageReduction` passive brings the
+        // 2-point hit to 1 — must not be left standing above its own maximum.
+        let p = PlayerId::Player1;
+        let opp = p.opponent();
+        let (mut state, reg, mut ctx) = game_with_in_hand("BW-023", p);
+        state.players.get_mut(p).volonte = 5;
+        let ev = state.players.get(p).hand.last().unwrap().clone();
+        let victim = put_on_board(&mut state, &reg, &mut ctx, "MR-001", opp, Slot::V1);
+        // Heal-proof setup: a unit at full PV whose damage is undone before we
+        // look, i.e. the maximum is what constrains it.
+        state.card_mut(&victim).unwrap().current_pv = 4;
+
+        play_event(&mut state, &reg, &mut ctx, p, &ev).unwrap();
+        // 4 - 2 damage = 2, under the new maximum of 3, so nothing to clamp.
+        assert_eq!(max_pv_of(&state, &reg, &victim).unwrap(), Some(3));
+        assert_eq!(state.card(&victim).unwrap().current_pv, 2);
+
+        // Now the same sand on a unit the damage cannot reach: the max drops
+        // to 2 and the current PV is pulled down with it.
+        state.card_mut(&victim).unwrap().current_pv = 3;
+        sand_only(&mut state, &reg, &victim).unwrap();
+        assert_eq!(max_pv_of(&state, &reg, &victim).unwrap(), Some(2));
+        assert_eq!(
+            state.card(&victim).unwrap().current_pv,
+            2,
+            "the current PV never stays above the new maximum"
+        );
+    }
+
+    /// `damage_enemy` with a `sand` flag and no damage at all — the isolated
+    /// max-PV-loss half of `BW-023`.
+    fn sand_only(
+        state: &mut GameState,
+        registry: &CardRegistry,
+        instance_id: &str,
+    ) -> Result<(), EngineError> {
+        super::damage_enemy(state, registry, instance_id, 0, None, Some(true))
+    }
+
     // --------------------------------------------------------
     // §8.37 — custom event ids
     // --------------------------------------------------------
@@ -2652,6 +2725,7 @@ mod tests {
         let equip = GameAction::EquipObject {
             object_instance_id: "whatever".into(),
             target_instance_id: "whoever".into(),
+            target_is_captain: None,
         };
         assert_eq!(
             execute_action(&mut state, &reg, &mut ctx, &deploy)
@@ -2666,13 +2740,21 @@ mod tests {
             EMBARGO_EQUIP
         );
         let offered = get_valid_actions(&state, &reg, opp).unwrap();
-        assert!(!offered.iter().any(|a| matches!(a, GameAction::DeployShip { .. })));
-        assert!(!offered.iter().any(|a| matches!(a, GameAction::EquipObject { .. })));
+        assert!(
+            !offered
+                .iter()
+                .any(|a| matches!(a, GameAction::DeployShip { .. }))
+        );
+        assert!(
+            !offered
+                .iter()
+                .any(|a| matches!(a, GameAction::EquipObject { .. }))
+        );
         // Everything else still works — the ban is exactly two actions wide.
         assert!(offered.iter().any(|a| matches!(a, GameAction::EndTurn)));
 
         // …and it lapses at the end of that same turn.
-        state.end_turn(&reg).unwrap();
+        state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
         assert_eq!(state.players.get(opp).embargo_turns, None);
         state.current_player = opp;
         state.phase = crate::types::Phase::Main;
@@ -2695,7 +2777,12 @@ mod tests {
         state.card_mut(&enemy).unwrap().current_pv = 1;
 
         play_event(&mut state, &reg, &mut ctx, p, &ev).unwrap();
-        assert!(state.card(&enemy).unwrap().has_status(StatusEffectType::NoHeal));
+        assert!(
+            state
+                .card(&enemy)
+                .unwrap()
+                .has_status(StatusEffectType::NoHeal)
+        );
 
         // Still the caster's turn: already dry.
         heal_unit(&mut state, &reg, &enemy, 3).unwrap();
@@ -2728,6 +2815,180 @@ mod tests {
         );
         heal_unit(&mut state, &reg, &enemy, 3).unwrap();
         assert_eq!(state.card(&enemy).unwrap().current_pv, 4);
+    }
+
+    #[test]
+    fn a_borrowed_body_is_only_offered_its_former_allies_as_targets() {
+        // Decision §8.37 at the *targeting* layer: `get_valid_targets` reads
+        // the attacker's `controller()`, so the enemy side of a borrowed body
+        // is the borrower's opponent — its own former camp. Reading `owner`
+        // inverted it: the loan was offered the borrower's units and itself,
+        // and the crew it was lent against was invisible.
+        use crate::board::get_valid_targets;
+
+        let p = PlayerId::Player1;
+        let opp = p.opponent();
+        let (mut state, reg, mut ctx) = game_with_in_hand("BW-024", p);
+        state.players.get_mut(p).volonte = 5;
+        let ev = state.players.get(p).hand.last().unwrap().clone();
+
+        let helmeppo = put_on_board(&mut state, &reg, &mut ctx, "MR-002", opp, Slot::V1);
+        let tashigi = put_on_board(&mut state, &reg, &mut ctx, "MR-003", opp, Slot::V2);
+        let ally = put_on_board(&mut state, &reg, &mut ctx, "MG-002", p, Slot::V2);
+
+        play_event(&mut state, &reg, &mut ctx, p, &ev).unwrap();
+        assert_eq!(state.card(&helmeppo).unwrap().controlled_by, Some(p));
+
+        let targets = get_valid_targets(&state, &reg, &helmeppo, false).unwrap();
+        assert!(
+            targets.character_targets.contains(&tashigi),
+            "the borrowed body must be able to turn on its former ally: {targets:?}"
+        );
+        assert!(
+            !targets.character_targets.contains(&ally),
+            "the borrower's own units are not targets: {targets:?}"
+        );
+        assert!(
+            !targets.character_targets.contains(&helmeppo),
+            "and neither is the borrowed body itself: {targets:?}"
+        );
+        assert!(
+            !targets.can_target_captain,
+            "the enemy crew is still standing"
+        );
+
+        // The enumerator follows the same rule, so no friendly fire is offered.
+        let actions = crate::actions::get_valid_actions(&state, &reg, p).unwrap();
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                GameAction::BaseAttack { attacker_instance_id, target_instance_id, .. }
+                    if attacker_instance_id == &helmeppo && target_instance_id == &tashigi
+            )),
+            "the loan should be offered an attack on its former ally"
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                GameAction::BaseAttack { attacker_instance_id, target_instance_id, .. }
+                    if attacker_instance_id == &helmeppo
+                        && (target_instance_id == &ally || target_instance_id == &helmeppo)
+            )),
+            "no friendly fire from a borrowed body"
+        );
+        // An object is a permanent attachment, so the loan is never an equip
+        // target either (decision §8.57 x §8.37 — `equip_object` refuses it).
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                GameAction::EquipObject { target_instance_id, .. }
+                    if target_instance_id == &helmeppo
+            )),
+            "a borrowed body cannot be equipped"
+        );
+    }
+
+    #[test]
+    fn a_loan_returns_beside_a_body_pushed_into_its_home_slot() {
+        // Decision §8.37 assumed `loan_return_slot` was still free at the end
+        // of the turn. Decision §8.38 then made `Impact` imply a pushback, so
+        // the borrower's own attacks can shove an enemy from V* into the A*
+        // cell the loan vacated. The returning body must not overwrite that
+        // occupant (which would leave it in no board cell at all).
+        let p = PlayerId::Player1;
+        let opp = p.opponent();
+        let (mut state, reg, mut ctx) = game_with_in_hand("BW-024", p);
+        state.players.get_mut(p).volonte = 5;
+        let ev = state.players.get(p).hand.last().unwrap().clone();
+
+        // Helmeppo (cost 2, ATK 3) is the pick; it sits in A1, so A1 is the
+        // slot the loan will try to return to.
+        let helmeppo = put_on_board(&mut state, &reg, &mut ctx, "MR-002", opp, Slot::A1);
+        let coby = put_on_board(&mut state, &reg, &mut ctx, "MR-001", opp, Slot::V1);
+        play_event(&mut state, &reg, &mut ctx, p, &ev).unwrap();
+        assert_eq!(
+            state.card(&helmeppo).unwrap().loan_return_slot,
+            Some(Slot::A1)
+        );
+
+        // Push Coby out of V1 into the now-empty A1 by hand — the pushback an
+        // `Impact` attack performs.
+        {
+            let board = &mut state.players.get_mut(opp).board;
+            board.set(Slot::V1, None);
+            board.set(Slot::A1, Some(coby.clone()));
+        }
+        state.card_mut(&coby).unwrap().slot = Some(Slot::A1);
+
+        state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
+
+        // Coby keeps A1, the loan lands in a free slot of its own camp, and
+        // every board cell still agrees with the instance it holds.
+        assert_eq!(state.players.get(opp).board.get(Slot::A1), Some(&coby));
+        assert_eq!(state.card(&coby).unwrap().slot, Some(Slot::A1));
+        let back = state.card(&helmeppo).unwrap();
+        assert_eq!(back.controlled_by, None);
+        assert_eq!(back.loan_return_slot, None);
+        assert_eq!(back.zone, Zone::Board);
+        let home = back.slot.expect("it is back on its owner's board");
+        assert_ne!(home, Slot::A1);
+        assert_eq!(state.players.get(opp).board.get(home), Some(&helmeppo));
+        for slot in Slot::ALL {
+            if let Some(id) = state.players.get(opp).board.get(slot) {
+                assert_eq!(
+                    state.card(id).unwrap().slot,
+                    Some(slot),
+                    "board cell {slot:?} and instance disagree"
+                );
+            }
+        }
+    }
+
+    /// Decision §8.37 follow-up (b) — when the owner's board has no free cell
+    /// at all, the homeless loan "leaves the board through `remove_from_board`
+    /// instead of squatting in the borrower's camp", and that is *all* it does:
+    /// a failed hand-back is not a KO, so no +2 Volonté moves, no on-KO trigger
+    /// fires and no log line is written for it.
+    #[test]
+    fn a_homeless_loan_is_removed_without_being_treated_as_a_ko() {
+        let p = PlayerId::Player1;
+        let opp = p.opponent();
+        let (mut state, reg, mut ctx) = game_with_in_hand("BW-024", p);
+        state.players.get_mut(p).volonte = 5;
+        let ev = state.players.get(p).hand.last().unwrap().clone();
+
+        let helmeppo = put_on_board(&mut state, &reg, &mut ctx, "MR-002", opp, Slot::A1);
+        play_event(&mut state, &reg, &mut ctx, p, &ev).unwrap();
+        assert_eq!(state.card(&helmeppo).unwrap().controlled_by, Some(p));
+
+        // Refill every cell of the owner's board while the body is away — no
+        // shipped effect can do this, which is why the arm is unreachable in a
+        // real game; it is still a total fallback and must not invent a KO.
+        for slot in Slot::ALL {
+            let filler = put_on_board(&mut state, &reg, &mut ctx, "MR-001", opp, slot);
+            assert_eq!(state.players.get(opp).board.get(slot), Some(&filler));
+        }
+        let vol_before = state.players.get(opp).volonte;
+        let ko_flag_before = state.players.get(opp).char_ko_ed_this_game;
+        let logs_before = state.log.len();
+
+        state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
+
+        let gone = state.card(&helmeppo).unwrap();
+        assert_ne!(gone.zone, Zone::Board);
+        assert_eq!(gone.slot, None);
+        assert_eq!(gone.controlled_by, None);
+        assert_eq!(gone.loan_return_slot, None);
+        // No KO bonus and no on-KO bookkeeping: this is a removal, not a kill.
+        assert_eq!(state.players.get(opp).volonte, vol_before);
+        assert_eq!(state.players.get(opp).char_ko_ed_this_game, ko_flag_before);
+        // …and no log line about it (the only new lines are the turn's own).
+        assert!(
+            !state.log[logs_before..]
+                .iter()
+                .any(|l| l.message.contains("n'a plus de place")),
+            "the fallback writes no log line of its own"
+        );
     }
 
     #[test]
@@ -2785,7 +3046,7 @@ mod tests {
         assert!(state.players.get(opp).graveyard.contains(&coby));
 
         // End of the borrower's turn: home it goes.
-        state.end_turn(&reg).unwrap();
+        state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
         let back = state.card(&helmeppo).unwrap();
         assert_eq!(back.controlled_by, None);
         assert_eq!(back.loan_return_slot, None);
@@ -2796,6 +3057,48 @@ mod tests {
             Some(&helmeppo.clone())
         );
         assert!(state.players.get(p).board.get(lent_slot).is_none());
+    }
+
+    /// Decision §8.29 — "the equipment travels with its bearer" on *every*
+    /// path that moves a bearer between cells, not only the free move: the
+    /// betrayal take-over and the loan return both drag the attachments along,
+    /// so a serialised object's `slot` always names its bearer's cell.
+    #[test]
+    fn a_loan_drags_the_bearers_equipment_there_and_back() {
+        let p = PlayerId::Player1;
+        let opp = p.opponent();
+        let (mut state, reg, mut ctx) = game_with_in_hand("BW-024", p);
+        state.players.get_mut(p).volonte = 5;
+        let ev = state.players.get(p).hand.last().unwrap().clone();
+
+        let helmeppo = put_on_board(&mut state, &reg, &mut ctx, "MR-002", opp, Slot::V2);
+        // A weapon (`MR-012`) riding on the body it is attached to.
+        let sabre = "MR-012@loan-test".to_string();
+        let mut obj = crate::state::CardInstance::new(sabre.clone(), "MR-012".into(), opp, 0);
+        obj.zone = Zone::Board;
+        obj.slot = Some(Slot::V2);
+        state.cards.insert(sabre.clone(), obj);
+        state
+            .card_mut(&helmeppo)
+            .unwrap()
+            .attached_objects
+            .push(sabre.clone());
+
+        play_event(&mut state, &reg, &mut ctx, p, &ev).unwrap();
+        let lent_slot = state.card(&helmeppo).unwrap().slot.unwrap();
+        assert_eq!(
+            state.card(&sabre).unwrap().slot,
+            Some(lent_slot),
+            "the sabre followed its bearer into the borrower's camp"
+        );
+
+        state.end_turn(&reg, &EngineContext::seeded(1)).unwrap();
+        assert_eq!(state.card(&helmeppo).unwrap().slot, Some(Slot::V2));
+        assert_eq!(
+            state.card(&sabre).unwrap().slot,
+            Some(Slot::V2),
+            "and back home again"
+        );
     }
 
     #[test]
@@ -2868,17 +3171,16 @@ mod tests {
 
         // The attacker asking directly is refused, and burns nothing.
         let err = crate::haki::use_observation_haki(&mut state, p).unwrap_err();
-        assert_eq!(err.to_string(), "Only the defender can use Observation Haki");
+        assert_eq!(
+            err.to_string(),
+            "Only the defender can use Observation Haki"
+        );
         assert!(state.pending_attack.is_some());
         assert!(!state.players.get(p).observation_used);
         assert!(!state.players.get(opp).observation_used);
 
         // `cannotBeDodged` still wins over the defender's reaction.
-        state
-            .pending_attack
-            .as_mut()
-            .unwrap()
-            .cannot_be_dodged = Some(true);
+        state.pending_attack.as_mut().unwrap().cannot_be_dodged = Some(true);
         let dodge = GameAction::UseHaki {
             haki_type: HakiType::Observation,
             target_instance_id: None,
@@ -2891,11 +3193,7 @@ mod tests {
         );
 
         // The action is routed to the defender: their flag is the one spent.
-        state
-            .pending_attack
-            .as_mut()
-            .unwrap()
-            .cannot_be_dodged = Some(false);
+        state.pending_attack.as_mut().unwrap().cannot_be_dodged = Some(false);
         execute_action(&mut state, &reg, &mut ctx, &dodge).unwrap();
         assert!(state.pending_attack.is_none());
         assert!(state.players.get(opp).observation_used);

@@ -243,6 +243,7 @@ pub fn build_announcement(
         GameAction::EquipObject {
             object_instance_id,
             target_instance_id,
+            ..
         } => {
             let def = def_of(state, registry, object_instance_id)?;
             let mut ann = PlayAnnouncement::base(side, kind, format!("Équipe {}", def.name));
