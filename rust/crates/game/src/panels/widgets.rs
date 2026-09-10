@@ -38,10 +38,37 @@ pub struct ClickCommand(pub UiCommand);
 pub struct SwallowClicks;
 
 /// A hoverable button: `base` is its resting fill, `hover` the lit one.
+///
+/// `gradient` carries the two stops when the skin is a ramp rather than a flat
+/// fill (mock-up `.pop .acts button{background:linear-gradient(135deg,…)}`):
+/// a `BackgroundGradient` paints over `BackgroundColor`, so the hover pass has
+/// to rewrite the ramp instead of the colour or the button would not light up
+/// at all.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PanelButton {
     pub base: Color,
     pub hover: Color,
+    pub gradient: Option<(Color, Color)>,
+}
+
+impl PanelButton {
+    /// The stops to paint for the current pointer state.
+    pub fn stops(&self, hovered: bool) -> Option<(Color, Color)> {
+        let (from, to) = self.gradient?;
+        Some(if hovered {
+            (lighten(from), lighten(to))
+        } else {
+            (from, to)
+        })
+    }
+}
+
+/// Mock-up `linear-gradient(135deg, …)` — the fill of every call to action.
+pub fn button_gradient(from: Color, to: Color) -> BackgroundGradient {
+    BackgroundGradient::from(LinearGradient::to_bottom_right(vec![
+        ColorStop::new(from, percent(0.)),
+        ColorStop::new(to, percent(100.)),
+    ]))
 }
 
 // ============================================================
@@ -57,6 +84,7 @@ pub const EYE: &str = "\u{25C9}";
 pub const SHIELD: &str = "\u{26E8}";
 pub const CROWN: &str = "\u{265B}";
 pub const CROSS: &str = "\u{2715}";
+pub const HEART: &str = "\u{2665}";
 
 // ============================================================
 // Text
@@ -109,25 +137,82 @@ pub fn scrim(palette: &Palette, z: i32) -> impl Bundle {
     )
 }
 
+/// An **invisible** full-screen catcher: the popover has no dimmer (the
+/// mock-up's `.pop` sits straight on the board), but a click outside it must
+/// still close it, exactly like a modal backdrop.
+pub fn catcher(z: i32) -> impl Bundle {
+    (
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0.),
+            right: px(0.),
+            top: px(0.),
+            bottom: px(0.),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        GlobalZIndex(z),
+    )
+}
+
+/// Mock-up `.pop` — the info + actions card anchored on a selected tile.
+pub fn popover(palette: &Palette, at: Vec2) -> impl Bundle {
+    (
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(at.x),
+            top: px(at.y),
+            width: px(L::POPOVER_W),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(6.),
+            padding: UiRect::axes(px(10.), px(9.)),
+            border: UiRect::all(px(1.)),
+            border_radius: BorderRadius::all(px(14.)),
+            ..default()
+        },
+        BackgroundColor(palette.bg_panel),
+        BorderColor::all(palette.gold.with_alpha(0.5)),
+        SwallowClicks,
+    )
+}
+
+/// Marks a panel body whose content may be taller than the window, so the
+/// wheel can move it (see `panels::scroll_panels`).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ScrollArea;
+
 /// The gold-edged navy panel itself.
+///
+/// The body **scrolls** rather than clipping: the window is resizable down to
+/// `min_window_h()`, which leaves a modal about 690 px tall, and a card detail
+/// stacks a full `CardFace` (~350 px) plus name, quote, trait pills, ability
+/// sections and wrapped rules prose. Clipping that silently cuts the tail of a
+/// long card off with no scrollbar, no fade and no way to reach it.
 pub fn panel(palette: &Palette, width: f32, edge: Color) -> impl Bundle {
     (
         Node {
             width: px(width.min(L::PANEL_MAX_W)),
-            max_height: px(L::WINDOW_H - 40.0),
+            // Relative to the full-screen scrim, so a modal follows the window
+            // instead of being capped at the design height.
+            max_height: percent(92.),
             flex_direction: FlexDirection::Column,
             row_gap: px(10.),
             padding: UiRect::all(px(L::PANEL_PAD)),
             border: UiRect::all(px(2.)),
             border_radius: BorderRadius::all(px(L::PANEL_RADIUS)),
-            overflow: Overflow::clip(),
+            overflow: Overflow::scroll_y(),
             ..default()
         },
+        ScrollPosition::default(),
+        ScrollArea,
         BackgroundColor(palette.bg_panel),
         BorderColor::all(edge),
         SwallowClicks,
     )
 }
+
+/// How many logical pixels one wheel "line" moves a panel.
+pub const SCROLL_LINE: f32 = 22.0;
 
 /// A tinted rounded box — the "Équipement" / "Effet" / "Synergies" cards.
 pub fn section(tint: Color, edge: Option<Color>) -> impl Bundle {
@@ -244,15 +329,25 @@ pub enum ButtonTone {
 }
 
 impl ButtonTone {
+    /// The two stops of the mock-up's gradient skins, if this tone has one.
+    ///
+    /// `.btn` / `.pop .acts button` are `gold → amber`, `.sp` is
+    /// `--atk → #ff5d7a`; every other tone is a flat panel fill.
+    fn gradient(self, palette: &Palette) -> Option<(Color, Color)> {
+        match self {
+            ButtonTone::Gold => Some((palette.gold, palette.amber)),
+            ButtonTone::Danger => Some((palette.atk, palette.atk_deep)),
+            _ => None,
+        }
+    }
+
     /// `(fill, label, border)`.
     fn colors(self, palette: &Palette) -> (Color, Color, Color) {
         match self {
             ButtonTone::Gold => (palette.gold, palette.text_on_gold, palette.gold_deep),
-            ButtonTone::Danger => (
-                Color::srgb(0.78, 0.20, 0.18),
-                Color::WHITE,
-                Color::srgb(0.45, 0.10, 0.09),
-            ),
+            // Mock-up `.pop .acts .sp{background:linear-gradient(135deg,#ff7a8a,#ff5d7a);
+            // color:#fff}` — the pink of `--atk`, not a brick red of its own.
+            ButtonTone::Danger => (palette.atk, Color::WHITE, palette.atk_deep),
             ButtonTone::Ghost => (
                 Color::srgba(1., 1., 1., 0.07),
                 palette.text,
@@ -337,6 +432,10 @@ pub fn spawn_button(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, spec: But
     let alpha = if spec.disabled { 0.45 } else { 1.0 };
     let fill = fill.with_alpha(fill.alpha() * alpha);
     let label_color = label_color.with_alpha(alpha);
+    let gradient = spec
+        .tone
+        .gradient(ctx.palette)
+        .map(|(from, to)| (from.with_alpha(alpha), to.with_alpha(alpha)));
 
     let mut button = parent.spawn((
         Node {
@@ -356,6 +455,9 @@ pub fn spawn_button(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, spec: But
         BorderColor::all(border.with_alpha(alpha)),
         Button,
     ));
+    if let Some((from, to)) = gradient {
+        button.insert(button_gradient(from, to));
+    }
 
     if !spec.disabled {
         button.insert((
@@ -363,6 +465,7 @@ pub fn spawn_button(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, spec: But
             PanelButton {
                 base: fill,
                 hover: lighten(fill),
+                gradient,
             },
         ));
     }
@@ -370,13 +473,17 @@ pub fn spawn_button(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, spec: But
     let glyph = spec.glyph;
     let label = spec.label.clone();
     let symbols = ctx.symbols.clone();
-    let oswald = ctx.fonts.oswald_bold.clone();
+    // Mock-up: every call to action is `font-family:'Poppins';font-weight:700`
+    // — `.btn` in the footer, `.pop .acts button` in the popover and the panel
+    // buttons alike. Oswald here made the two families disagree with the
+    // footer's own CTA, which already uses Poppins.
+    let poppins = ctx.fonts.poppins_bold.clone();
     let size = spec.font_size;
     button.with_children(|inner| {
         if let Some(glyph) = glyph {
             inner.spawn(line(glyph, &symbols, size + 1.0, label_color));
         }
-        inner.spawn(line(label, &oswald, size, label_color));
+        inner.spawn(line(label, &poppins, size, label_color));
     });
 }
 
@@ -396,6 +503,7 @@ pub fn spawn_close_cross(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx) {
         Button,
         ClickCommand(UiCommand::Reset),
         PanelButton {
+            gradient: None,
             base: Color::srgba(1., 1., 1., 0.06),
             hover: Color::srgba(1., 1., 1., 0.18),
         },

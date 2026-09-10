@@ -181,10 +181,27 @@ pub enum Slot {
 impl Slot {
     /// TS `ALL_SLOTS` (utils.ts) — same order.
     pub const ALL: [Slot; 6] = [Slot::V1, Slot::V2, Slot::V3, Slot::A1, Slot::A2, Slot::A3];
-    /// TS `FRONT_SLOTS` (utils.ts).
-    pub const FRONT: [Slot; 3] = [Slot::V1, Slot::V2, Slot::V3];
-    /// TS `BACK_SLOTS` (utils.ts).
-    pub const BACK: [Slot; 3] = [Slot::A1, Slot::A2, Slot::A3];
+    /// TS `FRONT_SLOTS` (utils.ts) — derived from [`Slot::row`], in `ALL` order.
+    pub const FRONT: [Slot; 3] = Slot::of_row(Row::Front);
+    /// TS `BACK_SLOTS` (utils.ts) — derived from [`Slot::row`], in `ALL` order.
+    pub const BACK: [Slot; 3] = Slot::of_row(Row::Back);
+
+    /// The three slots of `row`, in `ALL` order. The board is a fixed 2×3
+    /// grid, so each row holds exactly three slots.
+    pub const fn of_row(row: Row) -> [Slot; 3] {
+        let mut out = [Slot::V1; 3];
+        let (mut i, mut n) = (0, 0);
+        while i < Slot::ALL.len() {
+            let slot = Slot::ALL[i];
+            if slot.row() as u8 == row as u8 {
+                out[n] = slot;
+                n += 1;
+            }
+            i += 1;
+        }
+        assert!(n == 3, "every row holds exactly three slots");
+        out
+    }
 
     /// TS `ADJACENCY[slot]` (utils.ts) — same order as the TS arrays.
     pub fn adjacency(self) -> &'static [Slot] {
@@ -203,12 +220,25 @@ impl Slot {
         self.adjacency().contains(&other)
     }
 
-    /// Which row (`Row`) this slot belongs to (`V*` = front, `A*` = back).
-    pub fn row(self) -> Row {
+    /// Which row this slot belongs to — the single declaration of the
+    /// slot→row mapping (`V*` = *Avant* / front, `A*` = *Arrière* / back).
+    /// [`Slot::FRONT`], [`Slot::BACK`], [`Slot::is_front`] and
+    /// [`Slot::is_back`] are all derived from it (spec §8.46).
+    pub const fn row(self) -> Row {
         match self {
             Slot::V1 | Slot::V2 | Slot::V3 => Row::Front,
             Slot::A1 | Slot::A2 | Slot::A3 => Row::Back,
         }
+    }
+
+    /// `true` when this slot is in the front row — see [`Slot::row`].
+    pub const fn is_front(self) -> bool {
+        matches!(self.row(), Row::Front)
+    }
+
+    /// `true` when this slot is in the back row — see [`Slot::row`].
+    pub const fn is_back(self) -> bool {
+        matches!(self.row(), Row::Back)
     }
 
     /// The exact TS literal (`"V1"`, …).
@@ -231,6 +261,14 @@ pub enum Row {
     Front,
     #[serde(rename = "back")]
     Back,
+}
+
+impl Row {
+    /// The three slots making up this row, in `Slot::ALL` order — the
+    /// inverse of [`Slot::row`].
+    pub const fn slots(self) -> [Slot; 3] {
+        Slot::of_row(self)
+    }
 }
 
 /// TS `Phase = "untap" | "draw" | "willGain" | "main" | "end"`.
@@ -368,6 +406,11 @@ pub enum ModifierStat {
 }
 
 /// TS `Modifier.duration: "permanent" | "turn" | "nextTurn"`.
+///
+/// Decision §8.22 pins the two open-ended variants down: `Turn` is dropped at
+/// the owner's next `resetTurnFlags`, `NextTurn` expires at the end of the
+/// owner's **next** turn (a two-turn countdown, see [`Modifier::next_turn`]),
+/// and `Permanent` lives on unless it carries its own `turnsRemaining`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModifierDuration {
     #[serde(rename = "permanent")]
@@ -403,6 +446,12 @@ pub enum StatusEffectType {
     NoStealth,
     #[serde(rename = "noHeal")]
     NoHeal,
+    /// Decision §8.38 — "Un ennemi doit cibler X a son prochain tour"
+    /// (`RH-004` Provocation, `BW-005` Peinture de la Colère). While this
+    /// status lives and its `source` instance is a legal target,
+    /// [`crate::board::get_valid_targets`] offers *only* that source.
+    #[serde(rename = "taunt")]
+    Taunt,
 }
 
 /// TS `CardInstance.zone: "deck" | "hand" | "board" | "graveyard" | "banished"`.
@@ -546,6 +595,19 @@ pub struct SpecialAttack {
     /// Self-transformation special (Chopper Monster Point): set stats + Rush for N turns, then self-KO
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<Transform>,
+    /// Decision §8.38/§8.54 — support special: the target must attack the
+    /// caster on its next turn (`StatusEffectType::Taunt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taunt: Option<bool>,
+    /// Decision §8.38/§8.54 — support special: the ally loses `freeze` /
+    /// `immobilize` (and `sleep` / `loseAction`, the same "perd son action"
+    /// family).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanse: Option<bool>,
+    /// Decision §8.38/§8.54 — support special: one ally gains +N ATK this turn
+    /// (the `BaseAction` field of the same name, lifted to specials).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buff_ally_atk: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -1191,8 +1253,37 @@ pub struct Modifier {
     pub amount: i32,
     pub source: String,
     pub duration: ModifierDuration,
+    /// Decision §8.22 — `Some(n)`: the modifier survives `n` more of its
+    /// owner's turn starts and is dropped when the countdown hits `0`;
+    /// `None`: no countdown, the `duration` alone decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turns_remaining: Option<i32>,
+}
+
+impl Modifier {
+    /// Decision §8.22 — the countdown a `nextTurn` modifier is created with:
+    /// it survives the rest of the turn that created it plus the whole of the
+    /// owner's next turn, and is dropped at the start of the one after.
+    pub const NEXT_TURN_COUNT: i32 = 2;
+
+    /// A `nextTurn` modifier ("until the end of your next turn"), created with
+    /// the [`NEXT_TURN_COUNT`](Self::NEXT_TURN_COUNT) countdown that
+    /// `resetTurnFlags` ticks down.
+    pub fn next_turn(
+        id: impl Into<String>,
+        stat: ModifierStat,
+        amount: i32,
+        source: impl Into<String>,
+    ) -> Self {
+        Modifier {
+            id: id.into(),
+            stat,
+            amount,
+            source: source.into(),
+            duration: ModifierDuration::NextTurn,
+            turns_remaining: Some(Self::NEXT_TURN_COUNT),
+        }
+    }
 }
 
 /// TS `StatusEffect`.
@@ -1201,7 +1292,9 @@ pub struct Modifier {
 pub struct StatusEffect {
     #[serde(rename = "type")]
     pub effect_type: StatusEffectType,
-    /// -1 = permanent (poison)
+    /// Decision §8.24 — `n > 0`: ticks `n` more times; `0`: already expired
+    /// (deals nothing and is dropped by the next tick); `-1`: permanent, and
+    /// legal for **every** status type, not just poison and traps.
     pub turns_remaining: i32,
     pub damage_per_turn: i32,
     pub source: String,
@@ -1267,6 +1360,14 @@ pub enum GameAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_special: Option<bool>,
     },
+    /// The captain's `surcharge` ability — §8.2 item 34(b). Not a TS variant:
+    /// the TS engine never read `CaptainDef.{recto,verso}.surcharge` at all.
+    #[serde(rename = "useSurcharge")]
+    UseSurcharge {
+        target_instance_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_is_captain: Option<bool>,
+    },
     #[serde(rename = "useHaki")]
     UseHaki {
         haki_type: HakiType,
@@ -1310,6 +1411,7 @@ impl GameAction {
             GameAction::PassCounter => "passCounter",
             GameAction::FlipCaptain { .. } => "flipCaptain",
             GameAction::CaptainAttack { .. } => "captainAttack",
+            GameAction::UseSurcharge { .. } => "useSurcharge",
             GameAction::UseHaki { .. } => "useHaki",
             GameAction::MoveCharacter { .. } => "moveCharacter",
             GameAction::ActivateShip { .. } => "activateShip",

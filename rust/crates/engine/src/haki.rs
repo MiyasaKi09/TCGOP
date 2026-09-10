@@ -6,13 +6,13 @@
 //! King / Roi (T10+) is a once-per-game board wipe of every enemy with
 //! effective DEF ≤ 3, gated on controlling a Conquerant unit.
 
-use crate::board::{get_board_characters, get_effective_def, remove_from_board};
+use crate::board::{get_board_characters, get_effective_def, has_trait, remove_from_board};
 use crate::context::EngineContext;
 use crate::error::EngineError;
 use crate::passives::apply_on_ko_effects;
 use crate::registry::CardRegistry;
 use crate::state::GameState;
-use crate::types::{HakiType, PlayerId, Trait};
+use crate::types::{CardDef, HakiType, PassiveEffect, PlayerId, Trait};
 
 /// TS `HAKI_THRESHOLDS` — `src/engine/haki.ts:9`
 /// (`{ observation: 5, armament: 7, king: 10 }`).
@@ -44,18 +44,35 @@ pub fn is_haki_available(state: &GameState, player_id: PlayerId, haki_type: Haki
     match haki_type {
         HakiType::Observation => !player.observation_used,
         // Armament is a passive from T7+ (Rulebook v3.1 §7) — never "used".
+        //
+        // Decision §8.42: `PlayerState::armament_used` is vestigial — it is
+        // written by the legacy action path but never read, because there is
+        // no per-turn Armament activation to spend. Haki itself costs 0
+        // Volonte in every form (Observation once per turn, Rois once per
+        // game), so `hakiCostReduction` has nothing to reduce and stays inert.
         HakiType::Armament => false,
         HakiType::King => !player.king_used,
     }
 }
+
+/// Decision §8.43 — the refusal a non-defender gets from
+/// [`use_observation_haki`].
+pub const NOT_THE_DEFENDER: &str = "Only the defender can use Observation Haki";
 
 /// TS `useObservationHaki(state, playerId)` — `src/engine/haki.ts:36`.
 ///
 /// Sets `observationUsed`, clears `pendingAttack` and logs
 /// `"Haki de l'Observation ! Attaque esquivee !"`.
 ///
+/// Decision §8.43: Observation is a **defensive** reaction. The TS function
+/// took whatever `playerId` it was handed, so the attacker could dodge their
+/// own attack and burn the defender's once-per-turn flag; only the UI hook
+/// hid it. The caller must now be the side the pending attack is aimed at —
+/// `currentPlayer.opponent()`, which is the side every damage path resolves
+/// the target on (`combat.ts` `applyCaptainDamage` / `applyCharacterDamage`).
+///
 /// Errors: `Observation Haki not available`, `No pending attack to dodge`,
-/// `This attack cannot be dodged`.
+/// [`NOT_THE_DEFENDER`], `This attack cannot be dodged`.
 pub fn use_observation_haki(state: &mut GameState, player_id: PlayerId) -> Result<(), EngineError> {
     if !is_haki_available(state, player_id, HakiType::Observation) {
         return Err(EngineError::illegal("Observation Haki not available"));
@@ -63,6 +80,21 @@ pub fn use_observation_haki(state: &mut GameState, player_id: PlayerId) -> Resul
     let Some(pending) = state.pending_attack.as_ref() else {
         return Err(EngineError::illegal("No pending attack to dodge"));
     };
+    // Decision §8.43: only the defender may dodge. The defender is
+    // `currentPlayer.opponent()` — attacks are declared on the attacker's own
+    // turn — and the attack has to be aimed at that side: a captain target is
+    // the defender's captain by construction, and a character target must be
+    // one they control.
+    if player_id != state.current_player.opponent() {
+        return Err(EngineError::illegal(NOT_THE_DEFENDER));
+    }
+    if !pending.target_is_captain
+        && let Some(target) = state.cards.get(&pending.target_id)
+        && target.controller() != player_id
+    {
+        return Err(EngineError::illegal(NOT_THE_DEFENDER));
+    }
+    let pending = state.pending_attack.as_ref().expect("checked just above");
     if pending.cannot_be_dodged.unwrap_or(false) {
         return Err(EngineError::illegal("This attack cannot be dodged"));
     }
@@ -87,35 +119,54 @@ pub fn has_conqueror_in_play(
 ) -> Result<bool, EngineError> {
     let captain = &state.players.get(player_id).captain;
     let cap_def = registry.get_captain_def(&captain.def_id)?;
-    // NB (TS quirk): the recto side reads `capDef.traits`, not `capDef.recto.traits`.
-    let cap_traits = if captain.flipped {
-        cap_def.verso.traits.as_ref()
-    } else {
-        cap_def.traits.as_ref()
-    };
-    if cap_traits.is_some_and(|ts| ts.contains(&Trait::Conqueror)) {
-        return Ok(true);
-    }
-    if cap_def
-        .traits
-        .as_ref()
-        .is_some_and(|ts| ts.contains(&Trait::Conqueror))
-    {
+    // Decision §8.40: the captain's active traits come from the single helper
+    // `captain_traits(def, flipped) = def.traits ∪ (flipped ? verso.traits : [])`,
+    // which is exactly what the two reads below used to spell out by hand
+    // (card-level traits on both faces, verso traits only when flipped).
+    if crate::captain::captain_has_trait(cap_def, captain.flipped, Trait::Conqueror) {
         return Ok(true);
     }
 
     // `Array.prototype.some` short-circuits, so a later unknown def id is never
     // looked up once an earlier character already matched.
-    let def_ids: Vec<String> = get_board_characters(state, player_id)
+    //
+    // Decision §8.41: board characters go through [`crate::board::has_trait`]
+    // rather than `CardDef::has_trait`, so a Conquerant granted by an equipped
+    // Devil Fruit (base or awakened) or by an object's `grantsTraits` counts
+    // exactly like a printed one — the same lookup every other trait uses.
+    let instance_ids: Vec<String> = get_board_characters(state, player_id)
         .iter()
-        .map(|c| c.def_id.clone())
+        .map(|c| c.instance_id.clone())
         .collect();
-    for def_id in def_ids {
-        if registry.get_card_def(&def_id)?.has_trait(Trait::Conqueror) {
+    for instance_id in instance_ids {
+        if has_trait(state, registry, &instance_id, Trait::Conqueror)? {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Decision §8.42 — does `def` carry natural Haki?
+///
+/// Two forms ship in the catalogue and **both** count:
+/// * the `CardDef.naturalHaki` array (non-empty), and
+/// * a [`PassiveEffect::NaturalHaki`] entry in the card's passive.
+///
+/// `MR-002` (Sentomaru), `MR-011` (Garp) and `RH-005` (Lime Juice) declare both
+/// at once, so honouring the passive changes nothing on the shipped cards; it
+/// removes the trap for a future card that only writes the passive.
+///
+/// The Haki *type* is not inspected: any natural Haki pierces Logia, which is
+/// what the array form already did.
+pub fn def_has_natural_haki(def: &CardDef) -> bool {
+    if def.natural_haki.as_ref().is_some_and(|h| !h.is_empty()) {
+        return true;
+    }
+    def.passive.as_ref().is_some_and(|p| {
+        p.effects
+            .iter()
+            .any(|e| matches!(e, PassiveEffect::NaturalHaki { .. }))
+    })
 }
 
 /// TS `useKingHaki(state, playerId)` — `src/engine/haki.ts:75`.
@@ -186,8 +237,8 @@ mod tests {
     use super::*;
     use crate::state::{Board, CaptainInstance, CardInstance, PendingAttack, PlayerState, Players};
     use crate::types::{
-        BaseAction, CaptainRecto, CaptainVerso, CardDef, CardType, EntryEffect, Faction,
-        FlipCondition, PassiveDef, Phase, Rarity, Slot, SpecialAttack, Zone,
+        BaseAction, CaptainRecto, CaptainVerso, CardType, EntryEffect, Faction, FlipCondition,
+        PassiveDef, Phase, Rarity, Slot, SpecialAttack, Zone,
     };
     use std::collections::BTreeMap;
 
@@ -280,6 +331,7 @@ mod tests {
             ally_ko_ed_this_turn: None,
             char_ko_ed_this_game: None,
             haki_this_turn: None,
+            embargo_turns: None,
         }
     }
 
@@ -305,6 +357,7 @@ mod tests {
         let mut inst = CardInstance::new(instance_id.into(), def_id.into(), owner, 5);
         inst.zone = Zone::Board;
         inst.slot = Some(slot);
+        inst.deployed_turn = Some(0);
         state.cards.insert(instance_id.to_string(), inst);
         state
             .players
@@ -332,6 +385,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         }
     }
 
@@ -491,6 +549,160 @@ mod tests {
         assert!(!has_conqueror_in_play(&s, &reg, PlayerId::Player1).unwrap());
         place(&mut s, PlayerId::Player1, Slot::A2, "i2", "C-CONQ");
         assert!(has_conqueror_in_play(&s, &reg, PlayerId::Player1).unwrap());
+    }
+
+    /// Decision §8.41 — board characters go through `board::has_trait`, so a
+    /// Conquerant granted by an equipped Devil Fruit counts. Under the old
+    /// `CardDef::has_trait`-only read this returned `false` and King Haki was
+    /// refused.
+    #[test]
+    fn conqueror_granted_by_an_equipped_fruit_counts() {
+        let mut reg = CardRegistry::new();
+        reg.register_captain(captain_def("CAP-P1", None, None));
+        reg.register_captain(captain_def("CAP-P2", None, None));
+        reg.register_card(char_def("C-PLAIN", 2, None));
+        let mut fruit = CardDef::new(
+            "F-CONQ",
+            "Fruit Conquerant",
+            CardType::Object,
+            1,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        fruit.subtype = Some(crate::types::ObjectSubtype::Fruit);
+        fruit.fruit_effects = Some(crate::types::FruitEffects {
+            base: crate::types::FruitBaseEffects {
+                grants_traits: Some(vec![Trait::Conqueror]),
+                ..Default::default()
+            },
+            awakening: None,
+        });
+        reg.register_card(fruit);
+
+        let mut s = state_with(10);
+        place(&mut s, PlayerId::Player1, Slot::V1, "i1", "C-PLAIN");
+        assert!(!has_conqueror_in_play(&s, &reg, PlayerId::Player1).unwrap());
+
+        // Equip the fruit on the plain character.
+        let mut f = CardInstance::new("f1".into(), "F-CONQ".into(), PlayerId::Player1, 0);
+        f.zone = Zone::Board;
+        s.cards.insert("f1".into(), f);
+        s.cards
+            .get_mut("i1")
+            .unwrap()
+            .attached_objects
+            .push("f1".into());
+
+        assert!(has_conqueror_in_play(&s, &reg, PlayerId::Player1).unwrap());
+        // …and King Haki is now legal for that player.
+        let ctx = EngineContext::seeded(1);
+        assert!(use_king_haki(&mut s, &reg, &ctx, PlayerId::Player1).is_ok());
+    }
+
+    /// Decision §8.41 — a verso-only conqueror stays inert while the captain is
+    /// recto (unchanged behaviour, pinned here next to the fruit case).
+    #[test]
+    fn a_verso_only_conqueror_does_not_gate_king_haki_while_recto() {
+        let mut reg = CardRegistry::new();
+        reg.register_captain(captain_def("CAP-P1", None, Some(vec![Trait::Conqueror])));
+        reg.register_captain(captain_def("CAP-P2", None, None));
+        let ctx = EngineContext::seeded(1);
+        let mut s = state_with(10);
+        assert_eq!(
+            use_king_haki(&mut s, &reg, &ctx, PlayerId::Player1),
+            Err(EngineError::illegal(
+                "Roi Haki requires a Conquerant unit in play"
+            ))
+        );
+        s.players.get_mut(PlayerId::Player1).captain.flipped = true;
+        assert!(use_king_haki(&mut s, &reg, &ctx, PlayerId::Player1).is_ok());
+    }
+
+    // ---------- defHasNaturalHaki (§8.42) ----------
+
+    #[test]
+    fn natural_haki_is_read_from_the_array_and_from_the_passive() {
+        let plain = char_def("C-PLAIN", 2, None);
+        assert!(!def_has_natural_haki(&plain));
+
+        let mut array_form = char_def("C-ARRAY", 2, None);
+        array_form.natural_haki = Some(vec![HakiType::Armament]);
+        assert!(def_has_natural_haki(&array_form));
+
+        // An empty array is falsy, exactly like the TS `?.length` read.
+        let mut empty = char_def("C-EMPTY", 2, None);
+        empty.natural_haki = Some(Vec::new());
+        assert!(!def_has_natural_haki(&empty));
+
+        // Passive-only carrier: previously invisible to combat.
+        let mut passive_form = char_def("C-PASSIVE", 2, None);
+        passive_form.passive = Some(PassiveDef {
+            name: "Haki naturel".into(),
+            description: "d".into(),
+            effects: vec![PassiveEffect::NaturalHaki {
+                haki_type: HakiType::Armament,
+            }],
+        });
+        assert!(def_has_natural_haki(&passive_form));
+
+        // A passive without the effect is still no Haki.
+        let mut other_passive = char_def("C-OTHER", 2, None);
+        other_passive.passive = Some(passive());
+        assert!(!def_has_natural_haki(&other_passive));
+    }
+
+    /// Decision §8.42 — the passive form pierces Logia before T7, which the
+    /// array-only read did not.
+    #[test]
+    fn a_passive_only_natural_haki_carrier_pierces_logia() {
+        let mut reg = CardRegistry::new();
+        reg.register_captain(captain_def("CAP-P1", None, None));
+        reg.register_captain(captain_def("CAP-P2", None, None));
+
+        let mut attacker = char_def("C-PASSIVE", 2, None);
+        attacker.atk = Some(4);
+        attacker.base_action = Some(BaseAction {
+            name: "Coup".into(),
+            atk: 4,
+            ..Default::default()
+        });
+        attacker.passive = Some(PassiveDef {
+            name: "Haki naturel".into(),
+            description: "d".into(),
+            effects: vec![PassiveEffect::NaturalHaki {
+                haki_type: HakiType::Armament,
+            }],
+        });
+        reg.register_card(attacker);
+
+        let mut plain = char_def("C-PLAIN-ATK", 2, None);
+        plain.atk = Some(4);
+        plain.base_action = Some(BaseAction {
+            name: "Coup".into(),
+            atk: 4,
+            ..Default::default()
+        });
+        reg.register_card(plain);
+
+        let mut logia = char_def("C-LOGIA", 0, Some(vec![Trait::Logia]));
+        logia.atk = Some(1);
+        reg.register_card(logia);
+
+        let ctx = EngineContext::seeded(1);
+        // T5: below the T7 Armament passive, so only natural Haki can pierce.
+        let mut s = state_with(5);
+        place(&mut s, PlayerId::Player1, Slot::V1, "a1", "C-PASSIVE");
+        place(&mut s, PlayerId::Player2, Slot::V1, "t1", "C-LOGIA");
+        crate::combat::declare_base_attack(&mut s, &reg, &ctx, "a1", "t1", false).unwrap();
+        assert!(s.pending_attack.as_ref().unwrap().has_haki);
+
+        // Control: the same body without the passive has no Haki at T5.
+        let mut s2 = state_with(5);
+        place(&mut s2, PlayerId::Player1, Slot::V1, "a1", "C-PLAIN-ATK");
+        place(&mut s2, PlayerId::Player2, Slot::V1, "t1", "C-LOGIA");
+        crate::combat::declare_base_attack(&mut s2, &reg, &ctx, "a1", "t1", false).unwrap();
+        assert!(!s2.pending_attack.as_ref().unwrap().has_haki);
     }
 
     // ---------- useKingHaki ----------

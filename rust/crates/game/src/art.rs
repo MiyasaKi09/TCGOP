@@ -321,11 +321,6 @@ impl ArtCache {
         art_for(def_id, flipped).map(|path| self.image(assets, path))
     }
 
-    /// Handle for a faction's ship deck floor.
-    pub fn ship_deck(&mut self, assets: &AssetServer, faction: Faction) -> Handle<Image> {
-        self.image(assets, faction_visual(faction).ship_deck)
-    }
-
     /// Load everything referenced by a list of def ids up front.
     pub fn prewarm<'a>(&mut self, assets: &AssetServer, def_ids: impl IntoIterator<Item = &'a str>) {
         self.image(assets, SEA_IMAGE);
@@ -339,15 +334,6 @@ impl ArtCache {
                 self.image(assets, path);
             }
         }
-    }
-
-    /// Number of cached handles (tests / diagnostics).
-    pub fn len(&self) -> usize {
-        self.images.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.images.is_empty()
     }
 }
 

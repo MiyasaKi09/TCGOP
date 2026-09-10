@@ -65,11 +65,6 @@ impl TweenState {
         }
     }
 
-    pub const fn with_offset(mut self, offset: Vec2) -> Self {
-        self.offset = offset;
-        self
-    }
-
     pub const fn with_scale(mut self, scale: Vec2) -> Self {
         self.scale = scale;
         self
@@ -213,10 +208,16 @@ impl Tween {
 pub struct Lifetime(pub Timer);
 
 impl Lifetime {
+    // Constructors for the general "despawn after N" component. Every effect
+    // the render pass spawns today ends through its own `Tween::despawning()`,
+    // so only the `tick_lifetimes` test builds one.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(duration: core::time::Duration) -> Self {
         Lifetime(Timer::new(duration, TimerMode::Once))
     }
 
+    // Seconds-flavoured `new`; same story.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn secs(duration: f32) -> Self {
         Lifetime::new(core::time::Duration::from_secs_f32(duration.max(0.001)))
     }

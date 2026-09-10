@@ -60,14 +60,18 @@ pub mod prelude {
         BASIC_ACTION_TYPES, Difficulty, ai_choose_action, evaluate_state, score_action,
     };
     pub use crate::board::{
-        ValidTarget, ValidTargets, deploy_character, deploy_cost, deploy_ship, equip_object,
-        get_adjacent_slots, get_board_characters, get_character_in_slot, get_effective_atk,
-        get_effective_def, get_empty_slots, get_slot_of, get_valid_targets, has_front_row,
-        has_summoning_sickness, has_trait, is_back_slot, is_front_slot, move_character,
-        remove_from_board,
+        ShipScope, ValidTarget, ValidTargets, can_move, captain_occupies, deploy_character,
+        deploy_cost, deploy_ship, equip_object, equip_restriction_ok, get_adjacent_slots,
+        get_board_characters, get_character_in_slot, get_effective_atk, get_effective_def,
+        get_empty_slots, get_slot_of, get_valid_targets, granted_attack_traits,
+        has_free_object_slot, has_front_row, has_summoning_sickness, has_trait, heal_unit,
+        is_back_slot, is_front_slot, is_slot_free, max_object_slots, max_pv_of, move_character,
+        remove_from_board, ship_passive_scope,
     };
     pub use crate::captain::{
-        can_flip_captain, declare_captain_base_attack, flip_captain, resolve_entry_effect,
+        FreeFlipReason, can_flip_captain, captain_cannot_act, declare_captain_base_attack,
+        declare_captain_special_attack, flip_captain, free_flip_reason, resolve_entry_effect,
+        use_captain_surcharge,
     };
     pub use crate::cards::{all_captains, all_cards, all_sets, registry as card_registry};
     pub use crate::combat::{
@@ -104,8 +108,9 @@ pub mod prelude {
     pub use crate::rng::{EngineRng, draw_top, draw_top_n};
     pub use crate::state::{
         ALLY_KO_BONUS_VOL, Board, CaptainInstance, CardInstance, GameState, HAND_LIMIT, LogEntry,
-        PendingAttack, PlayerState, Players, STARTING_HAND_SIZE, VOLONTE_CAP, create_game,
-        create_initial_state, create_player_state, transactional,
+        ONCE_STRAWHAT, ONCE_SURCHARGE_PREFIX, ONCE_SURVIVED, PendingAttack, PlayerState, Players,
+        STARTING_HAND_SIZE, VOLONTE_CAP, create_game, create_initial_state, create_player_state,
+        once_surcharge, transactional,
     };
     pub use crate::types::*;
 }

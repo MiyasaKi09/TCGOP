@@ -154,6 +154,9 @@ impl VfxElement {
 
 /// TS `styleFor(element, hasHaki)` — explicit element wins, else Haki, else
 /// physical.
+// TS `styleFor`, kept under its own name for the port test; the vfx
+// pipeline calls `element_for(..).style()`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn style_for(element: Option<Element>, has_haki: bool) -> ElementStyle {
     element_for(element, has_haki).style()
 }
@@ -168,6 +171,9 @@ pub fn element_for(element: Option<Element>, has_haki: bool) -> VfxElement {
 }
 
 /// TS `eventElement(defId)` — the AoE flair of an event card.
+// TS `eventElement`: defined in `src/lib/vfx.ts` but never called there
+// either — the port keeps the table (and its test) rather than drop it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn event_element(def_id: &str) -> VfxElement {
     match def_id {
         // Tempête de Sable

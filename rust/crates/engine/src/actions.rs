@@ -28,19 +28,20 @@
 // of the port, so the lint is turned off for this file only.
 
 use crate::board::{
-    deploy_cost, get_adjacent_slots, get_board_characters, get_effective_atk, get_effective_def,
-    get_empty_slots, get_valid_targets, has_summoning_sickness, has_trait,
+    can_move, deploy_cost, equip_restriction_ok, get_adjacent_slots, get_board_characters,
+    get_effective_atk, get_effective_def, get_empty_slots, get_valid_targets, has_free_object_slot,
+    has_summoning_sickness, has_trait,
 };
-use crate::captain::can_flip_captain;
+use crate::captain::{can_flip_captain, captain_cannot_act};
 use crate::combat::{captain_attacker_id, get_eligible_counters};
 use crate::error::EngineError;
 use crate::fruits::can_awaken_fruit;
 use crate::haki::{has_conqueror_in_play, is_haki_available};
 use crate::registry::CardRegistry;
-use crate::state::GameState;
+use crate::state::{GameState, once_surcharge};
 use crate::types::{
-    CardType, GameAction, HakiType, ObjectSubtype, PassiveEffect, Phase, PlayerId, StatusEffect,
-    StatusEffectType, Trait,
+    CardType, EventEffect, GameAction, HakiType, ObjectSubtype, PassiveEffect, Phase, PlayerId,
+    StatusEffect, StatusEffectType, Trait,
 };
 
 /// TS `getValidActions(state, playerId)` — `src/engine/turnManager.ts:829`.
@@ -65,6 +66,12 @@ use crate::types::{
 ///   `loseAction` — quirk);
 /// - the captain may attack when flipped, on-board, untapped, not
 ///   frozen/immobilised, and either not deployed this turn or `rush`;
+/// - decision §8.57: every offered action is executable — a `requiresOwnKO`
+///   event waits for `charKOedThisGame`, `equipObject` needs a character
+///   bearer that matches the printed restriction and still has a free slot of
+///   that subtype, `deployShip` / `equipObject` are silent under `embargo`,
+///   `activateShip` only ever names the active ship, and a support special is
+///   offered only where it has a legal unit to resolve on;
 /// - `useHaki { king }` needs [`crate::haki::is_haki_available`],
 ///   [`crate::haki::has_conqueror_in_play`] and at least one enemy at
 ///   effective DEF ≤ 3.
@@ -230,6 +237,12 @@ fn build_valid_actions(
             .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
         let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Ship && state.can_afford(player_id, def.cost) {
+            // Decision §8.37 (`embargo`, `MR-027`): `execute_action` refuses
+            // both `deployShip` and `equipObject` while the ban is up, so
+            // neither is offered.
+            if player.is_embargoed() {
+                continue;
+            }
             actions.push(GameAction::DeployShip {
                 instance_id: card_id.clone(),
             });
@@ -249,7 +262,27 @@ fn build_valid_actions(
             .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
         let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Object && state.can_afford(player_id, def.cost) {
+            // Decision §8.37 (`embargo`, `MR-027`).
+            if player.is_embargoed() {
+                continue;
+            }
             for target in &board_chars {
+                // Decision §8.28: only the pairs `equip_object` would accept —
+                // a character (`board_chars` holds only board cells, so the
+                // active ship is already out) that satisfies the printed
+                // restriction and still has a free slot of that subtype.
+                let target_def = registry.get_card_def(&target.def_id)?;
+                if target_def.card_type != CardType::Character {
+                    continue;
+                }
+                if let Some(restriction) = def.restriction.as_deref() {
+                    if !equip_restriction_ok(target_def, restriction) {
+                        continue;
+                    }
+                }
+                if !has_free_object_slot(state, registry, target, def)? {
+                    continue;
+                }
                 actions.push(GameAction::EquipObject {
                     object_instance_id: card_id.clone(),
                     target_instance_id: target.instance_id.clone(),
@@ -270,6 +303,18 @@ fn build_valid_actions(
             .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
         let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Event && state.can_afford(player_id, def.cost) {
+            // Decision §8.57: `play_event` refuses a `requiresOwnKO` event
+            // (`MG-024` « Flashback : Promesse ») until one of *your* characters
+            // has been KO'd this game, so it is not offered before then.
+            if let Some(EventEffect::BuffSingle {
+                requires_own_ko: Some(true),
+                ..
+            }) = def.event_effect.as_ref()
+            {
+                if !player.char_koed_this_game() {
+                    continue;
+                }
+            }
             actions.push(GameAction::PlayEvent {
                 instance_id: card_id.clone(),
                 targets: None,
@@ -455,8 +500,44 @@ fn build_valid_actions(
             });
             continue;
         }
-        // Other support specials (heal/buff with no target) — skip offering for now.
+        // Decision §8.38: a support special is a real, playable action — it
+        // resolves its structured fields on one unit and never builds a
+        // pending attack. Enemy-facing fields (taunt / immobilize / sleep /
+        // stripStealth) pick from the legal attack targets, ally-facing ones
+        // (healAmount / buffAllyAtk / cleanse) from the caster's own board.
         if sa.is_support.unwrap_or(false) {
+            let hits_enemy = sa.taunt.unwrap_or(false)
+                || sa.immobilize.unwrap_or(false)
+                || sa.sleep.unwrap_or(false)
+                || sa.strip_stealth.unwrap_or(false);
+            let helps_ally = sa.heal_amount.is_some_and(|n| n != 0)
+                || sa.buff_ally_atk.is_some_and(|n| n != 0)
+                || sa.cleanse.unwrap_or(false);
+            if hits_enemy {
+                let targets = get_valid_targets(state, registry, &ch.instance_id, true)?;
+                for target_id in &targets.character_targets {
+                    actions.push(GameAction::SpecialAttack {
+                        attacker_instance_id: ch.instance_id.clone(),
+                        target_instance_id: target_id.clone(),
+                        target_is_captain: None,
+                    });
+                }
+            } else if helps_ally {
+                for ally in &board_chars {
+                    actions.push(GameAction::SpecialAttack {
+                        attacker_instance_id: ch.instance_id.clone(),
+                        target_instance_id: ally.instance_id.clone(),
+                        target_is_captain: None,
+                    });
+                }
+            } else {
+                // Nothing structured to target: the special resolves on itself.
+                actions.push(GameAction::SpecialAttack {
+                    attacker_instance_id: ch.instance_id.clone(),
+                    target_instance_id: ch.instance_id.clone(),
+                    target_is_captain: None,
+                });
+            }
             continue;
         }
 
@@ -556,10 +637,11 @@ fn build_valid_actions(
     }
 
     // ------------------------------------------------------------
-    // Captain attacks (if verso and on board) — frozen/immobilized captains
-    // can't act
+    // Captain attacks (if verso and on board) — frozen / immobilized /
+    // sleeping captains can't act (§8.1 item 35: the enumerator and the
+    // executor share [`captain_cannot_act`])
     // ------------------------------------------------------------
-    let captain_disabled = is_frozen_or_immobilized(&player.captain.status_effects);
+    let captain_disabled = captain_cannot_act(&player.captain.status_effects);
     if player.captain.flipped
         && player.captain.slot.is_some()
         && !player.captain.tapped
@@ -587,6 +669,53 @@ fn build_valid_actions(
                     is_special: None,
                 });
             }
+
+            // §8.2 item 34(a) — the captain's special attack, on the existing
+            // `captainAttack` action with `isSpecial: true`.
+            let spec = &cap_def.verso.special_attack;
+            let spec_once_used =
+                spec.once_per_game.unwrap_or(false) && player.captain.used_once(&spec.name);
+            if !player.captain.used_special_attack
+                && !spec_once_used
+                && state.can_afford(player_id, spec.cost)
+            {
+                actions.push(GameAction::CaptainAttack {
+                    target_instance_id: captain_attacker_id(opponent_id),
+                    target_is_captain: Some(true),
+                    is_special: Some(true),
+                });
+                for opp in &opp_chars {
+                    actions.push(GameAction::CaptainAttack {
+                        target_instance_id: opp.instance_id.clone(),
+                        target_is_captain: None,
+                        is_special: Some(true),
+                    });
+                }
+            }
+
+            // §8.2 item 34(b) — the active face's `surcharge`, offered only
+            // when the data defines one (never on the shipped catalogue).
+            if let Some(surcharge) = cap_def.verso.surcharge.as_ref() {
+                let once_used = surcharge.once_per_game.unwrap_or(false)
+                    && player
+                        .captain
+                        .used_once(&once_surcharge(&surcharge.name));
+                if !player.captain.used_special_attack
+                    && !once_used
+                    && state.can_afford(player_id, surcharge.cost)
+                {
+                    actions.push(GameAction::UseSurcharge {
+                        target_instance_id: captain_attacker_id(opponent_id),
+                        target_is_captain: Some(true),
+                    });
+                    for opp in &opp_chars {
+                        actions.push(GameAction::UseSurcharge {
+                            target_instance_id: opp.instance_id.clone(),
+                            target_is_captain: None,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -595,9 +724,17 @@ fn build_valid_actions(
     // ------------------------------------------------------------
     if !player.used_free_move {
         for ch in &board_chars {
+            // Decision §8.29: a tapped / frozen / immobilized / sleeping unit
+            // cannot reposition, so it is never offered.
+            if !can_move(ch) {
+                continue;
+            }
             if let Some(slot) = ch.slot {
                 for adj_slot in get_adjacent_slots(slot) {
-                    if player.board.get(*adj_slot).is_none() {
+                    // Decision §8.31: the flipped captain's slot is not empty.
+                    if player.board.get(*adj_slot).is_none()
+                        && !(player.captain.flipped && player.captain.slot == Some(*adj_slot))
+                    {
                         actions.push(GameAction::MoveCharacter {
                             instance_id: ch.instance_id.clone(),
                             target_slot: *adj_slot,
@@ -713,8 +850,9 @@ mod tests {
                 attacks: vec![],
                 surcharge: None,
             },
-            // No cost / no free-flip clause => `canFlipCaptain` is false, so the
-            // `flipCaptain` group stays empty in these fixtures.
+            // No cost / no free-flip clause => a cost of 0 (§8.1 item 6), so
+            // `canFlipCaptain` is true and the `flipCaptain` group lists every
+            // empty slot in these fixtures.
             flip_condition: FlipCondition::default(),
             verso: CaptainVerso {
                 pv: 25,
@@ -786,6 +924,7 @@ mod tests {
             ally_ko_ed_this_turn: None,
             char_ko_ed_this_game: None,
             haki_this_turn: None,
+            embargo_turns: None,
         }
     }
 
@@ -878,6 +1017,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         });
         // The attacker is `currentPlayer`; only `getOpponent(currentPlayer)` acts.
         assert!(get_valid_actions(&state, &reg, P1).is_empty());
@@ -932,6 +1076,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         });
 
         let actions = get_valid_actions(&state, &reg, P2);
@@ -975,6 +1124,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         });
         assert_eq!(
             types_of(&get_valid_actions(&state, &reg, P2)),
@@ -1007,6 +1161,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         };
         state.pending_attack = Some(pending.clone());
         assert_eq!(
@@ -1071,6 +1230,13 @@ mod tests {
                 "deployShip",
                 "equipObject",
                 "playEvent",
+                // Item 6: `flipCondition` without a `cost` is a cost of 0, so
+                // the captain may flip into any of the 5 empty slots.
+                "flipCaptain",
+                "flipCaptain",
+                "flipCaptain",
+                "flipCaptain",
+                "flipCaptain",
                 // V1 -> V2 and V1 -> A1
                 "moveCharacter",
                 "moveCharacter",
@@ -1111,8 +1277,11 @@ mod tests {
                 targets: None
             }
         );
+        // Item 6: the `flipCaptain` group (5 empty slots) sits between the
+        // event and the free move.
+        assert_eq!(actions[8], GameAction::FlipCaptain { slot: Slot::V2 });
         assert_eq!(
-            actions[8],
+            actions[13],
             GameAction::MoveCharacter {
                 instance_id: ally,
                 target_slot: Slot::V2
@@ -1344,14 +1513,31 @@ mod tests {
                     is_special: None,
                 },
                 GameAction::CaptainAttack {
-                    target_instance_id: e1,
+                    target_instance_id: e1.clone(),
                     target_is_captain: None,
                     is_special: None,
                 },
                 GameAction::CaptainAttack {
-                    target_instance_id: e2,
+                    target_instance_id: e2.clone(),
                     target_is_captain: None,
                     is_special: None,
+                },
+                // §8.2 item 34(a): the special attack group follows, same
+                // targets, `isSpecial: true` (cost 2 out of 10 Volonté).
+                GameAction::CaptainAttack {
+                    target_instance_id: "captain_player2".into(),
+                    target_is_captain: Some(true),
+                    is_special: Some(true),
+                },
+                GameAction::CaptainAttack {
+                    target_instance_id: e1,
+                    target_is_captain: None,
+                    is_special: Some(true),
+                },
+                GameAction::CaptainAttack {
+                    target_instance_id: e2,
+                    target_is_captain: None,
+                    is_special: Some(true),
                 },
             ]
         );
@@ -1510,6 +1696,211 @@ mod tests {
         state.cards.get_mut(&s).unwrap().used_once_abilities.clear();
         state.players.get_mut(P1).volonte = 2;
         assert!(!has_activate(&state));
+    }
+
+    // --- Decision §8.57: every offered action is executable ---
+
+    /// Run one enumerated action through the executor; item 57's whole point is
+    /// that this never raises.
+    fn run(state: &mut GameState, reg: &CardRegistry, action: &GameAction) {
+        let mut ctx = crate::context::EngineContext::seeded(7);
+        crate::execute::execute_action(state, reg, &mut ctx, action)
+            .unwrap_or_else(|e| panic!("offered action {action:?} must be executable: {e}"));
+    }
+
+    fn weapon(id: &str) -> CardDef {
+        let mut w = simple(id, CardType::Object, 1);
+        w.subtype = Some(ObjectSubtype::Weapon);
+        w
+    }
+
+    #[test]
+    fn a_requires_own_ko_event_is_offered_only_once_one_of_yours_has_been_koed() {
+        // MG-024 « Flashback : Promesse » — `play_event` refuses it while
+        // `charKOedThisGame` is false, so the enumerator must not offer it.
+        let mut ev = simple("EV-KO", CardType::Event, 1);
+        ev.event_effect = Some(EventEffect::BuffSingle {
+            stat: crate::types::AtkDefStat::Atk,
+            amount: 3,
+            duration: crate::types::BuffDuration::Permanent,
+            requires_own_ko: Some(true),
+        });
+        let reg = registry_with(vec![character("A", 1, 2, 1, 3), ev]);
+        let mut state = blank_state();
+        put(&mut state, &reg, "A", P1, Zone::Board, Some(Slot::V1));
+        let e = put(&mut state, &reg, "EV-KO", P1, Zone::Hand, None);
+        let play = GameAction::PlayEvent {
+            instance_id: e,
+            targets: None,
+        };
+
+        assert!(
+            !get_valid_actions(&state, &reg, P1).contains(&play),
+            "Flashback is unplayable before one of your characters dies"
+        );
+
+        state.players.get_mut(P1).char_ko_ed_this_game = Some(true);
+        assert!(get_valid_actions(&state, &reg, P1).contains(&play));
+        run(&mut state, &reg, &play);
+    }
+
+    #[test]
+    fn an_event_without_the_own_ko_clause_is_offered_as_before() {
+        // Parity guard: only `requiresOwnKO` events are held back.
+        let mut ev = simple("EV-FREE", CardType::Event, 1);
+        ev.event_effect = Some(EventEffect::BuffSingle {
+            stat: crate::types::AtkDefStat::Atk,
+            amount: 3,
+            duration: crate::types::BuffDuration::Permanent,
+            requires_own_ko: None,
+        });
+        let reg = registry_with(vec![character("A", 1, 2, 1, 3), ev]);
+        let mut state = blank_state();
+        put(&mut state, &reg, "A", P1, Zone::Board, Some(Slot::V1));
+        let e = put(&mut state, &reg, "EV-FREE", P1, Zone::Hand, None);
+        let play = GameAction::PlayEvent {
+            instance_id: e,
+            targets: None,
+        };
+        assert!(get_valid_actions(&state, &reg, P1).contains(&play));
+        run(&mut state, &reg, &play);
+    }
+
+    #[test]
+    fn a_full_weapon_slot_removes_the_equip() {
+        let reg = registry_with(vec![character("A", 1, 2, 1, 3), weapon("W1"), weapon("W2")]);
+        let mut state = blank_state();
+        let a = put(&mut state, &reg, "A", P1, Zone::Board, Some(Slot::V1));
+        let w2 = put(&mut state, &reg, "W2", P1, Zone::Hand, None);
+        let equip = GameAction::EquipObject {
+            object_instance_id: w2.clone(),
+            target_instance_id: a.clone(),
+        };
+        assert!(get_valid_actions(&state, &reg, P1).contains(&equip));
+
+        // Fill the single weapon slot: `equip_object` would now refuse, so the
+        // action must disappear from the enumeration.
+        let w1 = put(&mut state, &reg, "W1", P1, Zone::Board, None);
+        state.cards.get_mut(&w1).unwrap().slot = Some(Slot::V1);
+        state
+            .cards
+            .get_mut(&a)
+            .unwrap()
+            .attached_objects
+            .push(w1.clone());
+        assert!(!get_valid_actions(&state, &reg, P1).contains(&equip));
+
+        // ... and it comes back — executable — once the slot is free again.
+        state.cards.get_mut(&a).unwrap().attached_objects.clear();
+        assert!(get_valid_actions(&state, &reg, P1).contains(&equip));
+        run(&mut state, &reg, &equip);
+    }
+
+    #[test]
+    fn equip_is_not_offered_for_a_mismatched_restriction() {
+        let mut w = weapon("W-ZORO");
+        w.restriction = Some("Zoro".into());
+        let reg = registry_with(vec![character("A", 1, 2, 1, 3), w]);
+        let mut state = blank_state();
+        let a = put(&mut state, &reg, "A", P1, Zone::Board, Some(Slot::V1));
+        let obj = put(&mut state, &reg, "W-ZORO", P1, Zone::Hand, None);
+        assert!(!get_valid_actions(&state, &reg, P1).contains(&GameAction::EquipObject {
+            object_instance_id: obj,
+            target_instance_id: a,
+        }));
+    }
+
+    #[test]
+    fn embargo_suppresses_deploy_ship_and_equip_and_lifting_it_restores_both() {
+        let reg = registry_with(vec![
+            character("A", 1, 2, 1, 3),
+            weapon("W1"),
+            simple("SHIP", CardType::Ship, 1),
+        ]);
+        let mut state = blank_state();
+        let a = put(&mut state, &reg, "A", P1, Zone::Board, Some(Slot::V1));
+        let w = put(&mut state, &reg, "W1", P1, Zone::Hand, None);
+        let ship = put(&mut state, &reg, "SHIP", P1, Zone::Hand, None);
+        let equip = GameAction::EquipObject {
+            object_instance_id: w,
+            target_instance_id: a,
+        };
+        let deploy = GameAction::DeployShip {
+            instance_id: ship.clone(),
+        };
+
+        state.players.get_mut(P1).embargo_turns = Some(2);
+        let under_ban = get_valid_actions(&state, &reg, P1);
+        assert!(!under_ban.contains(&equip));
+        assert!(!under_ban.contains(&deploy));
+
+        state.players.get_mut(P1).embargo_turns = None;
+        let free = get_valid_actions(&state, &reg, P1);
+        assert!(free.contains(&equip));
+        assert!(free.contains(&deploy));
+        run(&mut state, &reg, &deploy);
+        run(&mut state, &reg, &equip);
+    }
+
+    #[test]
+    fn only_the_active_ship_is_offered_for_activation() {
+        let mut ship = simple("SHIP", CardType::Ship, 2);
+        ship.ship_active = Some(ShipActive {
+            name: "Canon".into(),
+            cost: 1,
+            description: "d".into(),
+            once_per_game: None,
+        });
+        let reg = registry_with(vec![ship]);
+        let mut state = blank_state();
+        // Two ship instances, only one of them active.
+        let benched = put(&mut state, &reg, "SHIP", P1, Zone::Board, None);
+        let active = put(&mut state, &reg, "SHIP", P1, Zone::Board, None);
+        state.players.get_mut(P1).active_ship = Some(active.clone());
+
+        let actions = get_valid_actions(&state, &reg, P1);
+        assert!(!actions.contains(&GameAction::ActivateShip {
+            ship_instance_id: benched,
+        }));
+        let act = GameAction::ActivateShip {
+            ship_instance_id: active,
+        };
+        assert!(actions.contains(&act));
+        run(&mut state, &reg, &act);
+    }
+
+    #[test]
+    fn a_support_special_is_offered_only_with_a_legal_target() {
+        let mut caster = character("SUP", 1, 1, 1, 5);
+        caster.special_attack = Some(SpecialAttack {
+            name: "Clutch".into(),
+            cost: 1,
+            atk_bonus: 0,
+            is_support: Some(true),
+            immobilize: Some(true),
+            ..Default::default()
+        });
+        let reg = registry_with(vec![caster, character("E", 1, 2, 1, 3)]);
+        let mut state = blank_state();
+        let c = put(&mut state, &reg, "SUP", P1, Zone::Board, Some(Slot::V1));
+
+        // No enemy character: the enemy-facing support special has nothing to
+        // hit and is not offered (the captain is not a legal target for it).
+        assert!(
+            !get_valid_actions(&state, &reg, P1)
+                .iter()
+                .any(|a| matches!(a, GameAction::SpecialAttack { .. })),
+            "no enemy character, no support special"
+        );
+
+        let e = put(&mut state, &reg, "E", P2, Zone::Board, Some(Slot::V1));
+        let cast = GameAction::SpecialAttack {
+            attacker_instance_id: c,
+            target_instance_id: e,
+            target_is_captain: None,
+        };
+        assert!(get_valid_actions(&state, &reg, P1).contains(&cast));
+        run(&mut state, &reg, &cast);
     }
 
     // --- end turn ---

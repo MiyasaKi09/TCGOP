@@ -185,6 +185,9 @@ pub fn cards() -> Vec<CardDef> {
                 cost: 1,
                 atk_bonus: 0,
                 is_support: Some(true),
+                // Decision §8.38/§8.54: the printed text becomes a structured
+                // field, in lockstep with `src/data/cards/baroque.ts`.
+                taunt: Some(true),
                 description: Some(s(
                     "Un ennemi doit cibler Miss Goldenweek à son prochain tour.",
                 )),

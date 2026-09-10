@@ -25,6 +25,19 @@
 //! [`on_captain_click`](crate::selection::on_captain_click)); a
 //! [`UiCommand::Dispatch`](crate::selection::UiCommand) writes
 //! [`DispatchAction`](crate::bridge::DispatchAction) **and** resets the UI.
+//! Cells also observe `Pointer<DragDrop>`, so a card dragged out of the hand is
+//! played by releasing it over a slot
+//! ([`on_cell_drop`](crate::selection::on_cell_drop)).
+//!
+//! The board owns **no button**: the mock-up has a single `.cta` row, and
+//! [`crate::hand`]'s footer builds it. The header is brand / turn ring /
+//! status pill and nothing else — the foe's counts and ship are drawn once, in
+//! the foe command bar.
+//!
+//! **Responsive.** [`BoardMetrics`] resolves every box from the window size and
+//! `relayout_on_resize` re-derives it on `WindowResized`, so the tiles keep the
+//! mock-up's aspect and the battlefield column follows the window instead of
+//! being pinned to a design-time constant.
 
 pub mod geometry;
 pub mod interaction;
@@ -35,17 +48,20 @@ pub mod widgets;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
-use tcgop_engine::types::{GameAction, PlayerId, Slot};
+use bevy::window::{PrimaryWindow, WindowResized};
+use tcgop_engine::types::{PlayerId, Slot};
 
-use crate::app::{AppScreen, AppSet, Fonts, Palette, configure_pipeline, layout as l};
+use crate::app::{
+    AppScreen, AppSet, Fonts, Palette, board_ready, configure_pipeline, layout as l,
+};
+use crate::hand::SymbolFont;
 use crate::art::{ArtCache, Focus};
 use crate::bridge::{BridgeSet, DispatchAction, Session};
 use crate::selection::{
-    SelectedHandCard, UiCommand, UiMode, on_captain_click, on_cell_click,
+    SelectedHandCard, UiCommand, UiMode, on_captain_click, on_cell_click, on_cell_drop,
 };
 
-use geometry::{BATTLE_W, HalfMetrics, cover, half_available_h, half_metrics};
+use geometry::{HalfMetrics, cover, half_available_h, half_metrics};
 use interaction::apply_ui_command;
 use model::{
     BoardView, CaptainCardView, CellContent, CellView, HeaderView, ResourceView, Ring, ShipView,
@@ -67,12 +83,53 @@ pub struct BoardSet;
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
         configure_pipeline(app);
+        // The board's stat chips are glyphs (⚔ / 🛡): they need the one font in
+        // `assets/fonts` with symbol coverage. `HandPlugin` normally owns it;
+        // this keeps `BoardPlugin` usable on its own, whatever the plugin order.
+        if !app.world().contains_resource::<SymbolFont>() {
+            // `Assets<Font>` only exists once the text plugins are in: a
+            // head-less app with a bare `AssetPlugin` would panic on `load`.
+            let can_load = app.world().contains_resource::<Assets<Font>>();
+            let symbols = match app.world().get_resource::<AssetServer>() {
+                Some(assets) if can_load => {
+                    SymbolFont(assets.load(crate::hand::SYMBOL_FONT_PATH))
+                }
+                _ => SymbolFont::default(),
+            };
+            app.insert_resource(symbols);
+        }
+        // `WindowResized` is registered by `WindowPlugin`, which a head-less
+        // app does not add; the reader must still have a queue to read from.
+        app.add_message::<WindowResized>();
         app.init_resource::<BoardAnchors>()
             .init_resource::<BoardViewCache>()
             .init_resource::<BoardMetrics>()
+            .init_resource::<crate::vfx::ReducedMotion>()
+            .init_resource::<crate::hand::HandDrag>()
             .add_systems(
                 OnEnter(AppScreen::Board),
                 spawn_board.run_if(board_ready),
+            )
+            // …and again as soon as it *can* be built. `OnEnter` fires once,
+            // in `StateTransition`, so a screen entered before the `Session`
+            // exists would otherwise stay terrain-less for the whole game with
+            // no way back short of replaying. The guard is "there is no board",
+            // so this costs one empty query per frame and never double-spawns.
+            .add_systems(
+                Update,
+                spawn_board
+                    .in_set(AppSet::Render)
+                    .before(BoardSet)
+                    .run_if(in_state(AppScreen::Board))
+                    .run_if(board_ready)
+                    .run_if(board_missing),
+            )
+            .add_systems(
+                Update,
+                relayout_on_resize
+                    .in_set(AppSet::Render)
+                    .before(BoardSet)
+                    .run_if(in_state(AppScreen::Board)),
             )
             .add_systems(
                 Update,
@@ -102,15 +159,16 @@ impl Plugin for BoardPlugin {
     }
 }
 
-/// The board can only be built with a game **and** an asset server (a head-less
-/// app has neither).
-fn board_ready(session: Option<Res<Session>>, assets: Option<Res<AssetServer>>) -> bool {
-    session.is_some() && assets.is_some()
-}
+
 
 // ============================================================
 // Resources
 // ============================================================
+
+/// Run condition: the terrain is not on screen.
+fn board_missing(roots: Query<(), With<BoardRoot>>) -> bool {
+    roots.is_empty()
+}
 
 /// The last computed [`BoardView`]; `None` forces a full rebuild.
 #[derive(Resource, Default)]
@@ -128,8 +186,22 @@ pub struct BoardMetrics(pub HalfMetrics);
 
 impl Default for BoardMetrics {
     fn default() -> Self {
-        BoardMetrics(half_metrics(half_available_h(l::WINDOW_H)))
+        BoardMetrics(fit(l::WINDOW_W, l::WINDOW_H))
     }
+}
+
+/// The metrics a window of that logical size asks for.
+fn fit(window_w: f32, window_h: f32) -> HalfMetrics {
+    half_metrics(half_available_h(window_h), window_w)
+}
+
+/// Logical size of the primary window, falling back to the design size when
+/// there is none (a head-less app).
+fn window_size(windows: &Query<&Window, With<PrimaryWindow>>) -> Vec2 {
+    windows
+        .single()
+        .map(|w| Vec2::new(w.resolution.width(), w.resolution.height()))
+        .unwrap_or(Vec2::new(l::WINDOW_W, l::WINDOW_H))
 }
 
 /// Where the board's tiles sit on screen, so popovers and vfx can be anchored
@@ -140,19 +212,12 @@ impl Default for BoardMetrics {
 pub struct BoardAnchors {
     /// Card instance id (and `captain_<player>` for the command cards) → tile.
     pub by_instance: HashMap<String, Rect>,
-    /// `(is_you, slot)` → cell, occupied or not.
-    pub by_slot: HashMap<(bool, Slot), Rect>,
 }
 
 impl BoardAnchors {
     /// The tile of a unit / captain, if it is on screen.
     pub fn instance(&self, id: &str) -> Option<Rect> {
         self.by_instance.get(id).copied()
-    }
-
-    /// The cell of a slot, if it is on screen.
-    pub fn slot(&self, is_you: bool, slot: Slot) -> Option<Rect> {
-        self.by_slot.get(&(is_you, slot)).copied()
     }
 }
 
@@ -217,11 +282,24 @@ struct HeaderNode {
 #[derive(Component, Default)]
 struct HeaderCache(Option<HeaderView>);
 
-/// The two header buttons.
+/// Every box whose size is derived from [`BoardMetrics`], so one system can
+/// re-fit the whole terrain when the window is resized.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum HeaderButton {
-    EndTurn,
-    Cancel,
+enum BoardBox {
+    /// The battlefield column of a half (rows + captions + command bar).
+    Column,
+    /// A line of three slots.
+    Row,
+    /// A "LIGNE AVANT" caption.
+    Label,
+    /// A command bar.
+    Command,
+    /// One of the twelve cells.
+    Cell,
+    /// A command bar's captain card.
+    Captain,
+    /// A command bar's ship slot.
+    Ship,
 }
 
 /// A ring that breathes (attack / impact).
@@ -229,6 +307,14 @@ enum HeaderButton {
 struct RingPulse {
     color: Color,
 }
+
+/// Mock-up `.slot.unit{border:1px …}` — the resting hairline of a tile.
+const CELL_BORDER: f32 = 1.0;
+/// Mock-up `.slot.empty{border:1.5px dashed …}`, drawn as ticks instead, so the
+/// cell's own border box is collapsed and the dashes sit on the edge.
+const CELL_BORDER_EMPTY: f32 = 0.0;
+/// Mock-up `.slot.sel{border:2px solid var(--gd)}`.
+const CELL_BORDER_RING: f32 = 2.0;
 
 // ============================================================
 // Skeleton
@@ -239,6 +325,7 @@ fn spawn_board(
     mut commands: Commands,
     palette: Res<Palette>,
     fonts: Res<Fonts>,
+    symbols: Res<SymbolFont>,
     session: Res<Session>,
     mode: Res<UiMode>,
     mut art: ResMut<ArtCache>,
@@ -247,11 +334,8 @@ fn spawn_board(
     mut cache: ResMut<BoardViewCache>,
     mut metrics: ResMut<BoardMetrics>,
 ) {
-    let window_h = windows
-        .single()
-        .map(|w| w.resolution.height())
-        .unwrap_or(l::WINDOW_H);
-    metrics.0 = half_metrics(half_available_h(window_h));
+    let window = window_size(&windows);
+    metrics.0 = fit(window.x, window.y);
     // The content is filled by the sync systems on the very next frame.
     cache.0 = None;
 
@@ -260,6 +344,7 @@ fn spawn_board(
         commands: &mut commands,
         palette: &palette,
         fonts: &fonts,
+        symbols: &symbols.0,
         art: &mut art,
         assets: &assets,
         metrics: metrics.0,
@@ -282,6 +367,7 @@ fn spawn_board(
         ))
         .id();
 
+    spawn_glows(&mut painter, root);
     spawn_header(&mut painter, root);
 
     let area = painter
@@ -306,7 +392,8 @@ fn spawn_board(
     spawn_half(&mut painter, area, &view, true);
 
     // The hand owns the bottom strip; reserve it so the terrain never slides
-    // under the cards.
+    // under the footer — `l::HAND_H` is the sum of the footer's own boxes, so
+    // YOUR command bar always stays above the cards.
     painter.commands.spawn((
         Node {
             width: percent(100.0),
@@ -320,14 +407,76 @@ fn spawn_board(
     ));
 }
 
+/// The two blurred ambient discs of the mock-up (`.g1` / `.g2`).
+///
+/// CSS `filter: blur(75px)` has no Bevy UI equivalent; a radial gradient that
+/// fades a saturated core to full transparency is the same picture, and it
+/// costs one node instead of an off-screen pass.
+fn spawn_glows(painter: &mut Painter, root: Entity) {
+    let cool = painter.palette.glow_cool;
+    let warm = painter.palette.glow_warm;
+    let glow = |painter: &mut Painter, color: Color, name: &'static str, node: Node| {
+        painter.commands.spawn((
+            node,
+            BackgroundGradient::from(RadialGradient::new(
+                UiPosition::CENTER,
+                RadialGradientShape::ClosestSide,
+                vec![
+                    ColorStop::new(color.with_alpha(0.50), percent(0.0)),
+                    ColorStop::new(color.with_alpha(0.22), percent(55.0)),
+                    ColorStop::new(color.with_alpha(0.0), percent(100.0)),
+                ],
+            )),
+            GlobalZIndex(l::Z_GLOW),
+            Pickable::IGNORE,
+            Name::new(name),
+            ChildOf(root),
+        ));
+    };
+    glow(
+        painter,
+        cool,
+        "GlowCool",
+        Node {
+            position_type: PositionType::Absolute,
+            width: px(l::GLOW_D),
+            height: px(l::GLOW_D),
+            top: px(l::HEADER_H + 24.0),
+            left: px(-l::GLOW_D * 0.34),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+    );
+    glow(
+        painter,
+        warm,
+        "GlowWarm",
+        Node {
+            position_type: PositionType::Absolute,
+            width: px(l::GLOW_D),
+            height: px(l::GLOW_D),
+            bottom: px(l::HAND_H + 24.0),
+            right: px(-l::GLOW_D * 0.34),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+    );
+}
+
+/// The top bar — mock-up `header`: brand left, the turn ring centred, the
+/// "À toi" pill right, and **nothing else**.
+///
+/// The foe's hand / deck counts and its ship used to live here too; they belong
+/// to the foe command bar (`counts_row` / the ship slot), which already draws
+/// them, so the header no longer duplicates them. The foe's ship stays
+/// inspectable by clicking that slot (`on_ship_clicked` → `ShipMenu`, which
+/// shows the whole card frame).
+///
+/// The two "Fin de tour" / "Annuler" buttons are gone as well: the mock-up has
+/// exactly one CTA row, in the footer, and [`crate::hand`] owns it.
 fn spawn_header(painter: &mut Painter, root: Entity) {
     let palette = painter.palette;
-    let bg = palette.bg_panel;
-    let ink = palette.ink;
-    let gold = palette.gold;
-    let text_on_gold = palette.text_on_gold;
-    let dim = palette.text_dim;
-    let label = painter.fonts.oswald_bold.clone();
+    let deep = palette.bg_deep;
 
     let header = painter
         .commands
@@ -338,14 +487,18 @@ fn spawn_header(painter: &mut Painter, root: Entity) {
                 flex_shrink: 0.0,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
-                column_gap: px(8.0),
+                column_gap: px(10.0),
                 padding: UiRect::horizontal(px(l::HEADER_PAD_X)),
-                border: UiRect::bottom(px(2.0)),
                 ..default()
             },
-            BackgroundColor(bg),
-            BorderColor::all(ink),
+            // Mock-up: a vertical fade, no bottom rule — the terrain reads
+            // continuously behind it.
+            BackgroundGradient::from(LinearGradient::to_bottom(vec![
+                ColorStop::new(deep.with_alpha(0.95), percent(0.0)),
+                ColorStop::new(deep.with_alpha(0.40), percent(100.0)),
+            ])),
             GlobalZIndex(l::Z_HEADER),
+            Pickable::IGNORE,
             Name::new("Header"),
             ChildOf(root),
         ))
@@ -359,7 +512,7 @@ fn spawn_header(painter: &mut Painter, root: Entity) {
                 height: percent(100.0),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
-                column_gap: px(8.0),
+                column_gap: px(10.0),
                 ..default()
             },
             Pickable::IGNORE,
@@ -372,63 +525,6 @@ fn spawn_header(painter: &mut Painter, root: Entity) {
         .commands
         .entity(header)
         .insert((HeaderNode { content }, HeaderCache::default()));
-
-    // "Fin de tour"
-    let end_turn = painter
-        .commands
-        .spawn((
-            Node {
-                width: px(132.0),
-                height: px(l::HEADER_H - 16.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                border_radius: BorderRadius::all(px(l::BUTTON_RADIUS)),
-                margin: UiRect::left(px(10.0)),
-                ..default()
-            },
-            BackgroundColor(gold),
-            Button,
-            HeaderButton::EndTurn,
-            Name::new("EndTurnButton"),
-            ChildOf(header),
-        ))
-        .id();
-    painter
-        .commands
-        .spawn((
-            style::text("Fin de tour", &label, l::FS_LABEL, text_on_gold),
-            ChildOf(end_turn),
-        ));
-    painter.commands.entity(end_turn).observe(on_end_turn_clicked);
-
-    // "Annuler"
-    let cancel = painter
-        .commands
-        .spawn((
-            Node {
-                display: Display::None,
-                width: px(84.0),
-                height: px(l::HEADER_H - 16.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                border: UiRect::all(px(1.0)),
-                border_radius: BorderRadius::all(px(l::BUTTON_RADIUS)),
-                margin: UiRect::left(px(6.0)),
-                ..default()
-            },
-            BackgroundColor(Color::NONE),
-            BorderColor::all(ink),
-            Button,
-            HeaderButton::Cancel,
-            Name::new("CancelButton"),
-            ChildOf(header),
-        ))
-        .id();
-    painter.commands.spawn((
-        style::text("Annuler", &label, l::FS_LABEL, dim),
-        ChildOf(cancel),
-    ));
-    painter.commands.entity(cancel).observe(on_cancel_clicked);
 }
 
 fn spawn_waterline(painter: &mut Painter, parent: Entity) {
@@ -498,18 +594,30 @@ fn spawn_half(painter: &mut Painter, parent: Entity, view: &BoardView, is_you: b
         .id();
 
     // Ship-deck floor (yours is flipped, bow down) + the side's shade.
-    painter.art(root, half.floor, Focus::CENTER, is_you);
+    let floor_box = metrics.half_box;
+    painter.art(
+        root,
+        half.floor,
+        Focus::CENTER,
+        is_you,
+        floor_box,
+        widgets::NOMINAL_DECK,
+    );
+    // Mock-up `.shade.foe` / `.shade.you`: the third stop is the **side**'s
+    // colour — pink over the foe, green over yours — never the faction's, so
+    // playing the pirates does not paint your own half orange.
+    let wash = painter.palette.wash(is_you);
     let shade = if is_you {
         LinearGradient::to_top(vec![
             ColorStop::new(Color::srgba(0.06, 0.16, 0.12, 0.55), percent(0.0)),
             ColorStop::new(Color::srgba(0.04, 0.05, 0.11, 0.40), percent(50.0)),
-            ColorStop::new(half.ambiance, percent(100.0)),
+            ColorStop::new(wash, percent(100.0)),
         ])
     } else {
         LinearGradient::to_bottom(vec![
             ColorStop::new(Color::srgba(0.16, 0.06, 0.16, 0.55), percent(0.0)),
             ColorStop::new(Color::srgba(0.04, 0.05, 0.11, 0.40), percent(50.0)),
-            ColorStop::new(half.ambiance, percent(100.0)),
+            ColorStop::new(wash, percent(100.0)),
         ])
     };
     painter.commands.spawn((
@@ -524,12 +632,13 @@ fn spawn_half(painter: &mut Painter, parent: Entity, view: &BoardView, is_you: b
         .commands
         .spawn((
             Node {
-                width: px(BATTLE_W),
+                width: px(metrics.battle_w),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(metrics.gap),
                 padding: UiRect::vertical(px(metrics.pad_y)),
                 ..default()
             },
+            BoardBox::Column,
             Pickable::IGNORE,
             ChildOf(root),
         ))
@@ -555,7 +664,8 @@ fn spawn_half(painter: &mut Painter, parent: Entity, view: &BoardView, is_you: b
 fn spawn_row_label(painter: &mut Painter, parent: Entity, label: &str) {
     let height = painter.metrics.label_h;
     let color = painter.palette.text_dim;
-    let font = painter.fonts.oswald.clone();
+    // Mock-up `.rowlab` is body text, i.e. Poppins.
+    let font = painter.fonts.poppins.clone();
     let row = painter
         .commands
         .spawn((
@@ -565,6 +675,7 @@ fn spawn_row_label(painter: &mut Painter, parent: Entity, label: &str) {
                 padding: UiRect::left(px(3.0)),
                 ..default()
             },
+            BoardBox::Label,
             Pickable::IGNORE,
             ChildOf(parent),
         ))
@@ -590,9 +701,11 @@ fn spawn_row(painter: &mut Painter, parent: Entity, cells: &[CellView], is_you: 
                 width: percent(100.0),
                 height: px(metrics.slot_h),
                 flex_direction: FlexDirection::Row,
-                column_gap: px(l::SLOT_GAP),
+                justify_content: JustifyContent::Center,
+                column_gap: px(metrics.gap_x()),
                 ..default()
             },
+            BoardBox::Row,
             GlobalZIndex(l::Z_ROW),
             Pickable::IGNORE,
             ChildOf(parent),
@@ -607,6 +720,8 @@ fn spawn_row(painter: &mut Painter, parent: Entity, cells: &[CellView], is_you: 
 fn spawn_cell(painter: &mut Painter, parent: Entity, slot: Slot, is_you: bool) {
     let bg = painter.palette.bg_slot;
     let ink = painter.palette.ink;
+    let metrics = painter.metrics;
+    let radius = metrics.chrome(l::SLOT_RADIUS);
     let content = painter.commands.spawn_empty().id();
     let veil = painter.commands.spawn_empty().id();
 
@@ -614,17 +729,22 @@ fn spawn_cell(painter: &mut Painter, parent: Entity, slot: Slot, is_you: bool) {
         .commands
         .spawn((
             Node {
-                flex_grow: 1.0,
-                flex_basis: px(0.0),
+                width: px(metrics.slot_w),
                 height: percent(100.0),
-                max_width: px(l::SLOT_W),
+                flex_shrink: 0.0,
                 overflow: Overflow::clip(),
-                border: UiRect::all(px(2.0)),
-                border_radius: BorderRadius::all(px(l::SLOT_RADIUS)),
+                // Mock-up: `.slot.unit` is a 1 px hairline and 2 px is the
+                // *selected* weight only. The box is rewritten per state by
+                // `paint_decor`, which also collapses it to zero on an empty
+                // slot so the dashed placeholder is not inset by a border the
+                // mock-up does not draw.
+                border: UiRect::all(px(metrics.chrome(CELL_BORDER))),
+                border_radius: BorderRadius::all(px(radius)),
                 ..default()
             },
             BackgroundColor(bg),
             BorderColor::all(ink),
+            BoardBox::Cell,
             CellNode {
                 slot,
                 is_you,
@@ -640,7 +760,7 @@ fn spawn_cell(painter: &mut Painter, parent: Entity, slot: Slot, is_you: bool) {
     painter.commands.entity(content).insert((
         Node {
             overflow: Overflow::clip(),
-            border_radius: BorderRadius::all(px(l::SLOT_RADIUS)),
+            border_radius: BorderRadius::all(px(radius)),
             ..fill_node()
         },
         Pickable::IGNORE,
@@ -652,7 +772,11 @@ fn spawn_cell(painter: &mut Painter, parent: Entity, slot: Slot, is_you: bool) {
         Pickable::IGNORE,
         ChildOf(cell),
     ));
-    painter.commands.entity(cell).observe(on_cell_clicked);
+    painter
+        .commands
+        .entity(cell)
+        .observe(on_cell_clicked)
+        .observe(on_cell_dropped);
 }
 
 fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you: bool) {
@@ -668,9 +792,10 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
                 width: percent(100.0),
                 height: px(metrics.cmd_h),
                 flex_direction: FlexDirection::Row,
-                column_gap: px(l::CMD_GAP),
+                column_gap: px(metrics.chrome(l::CMD_GAP)),
                 ..default()
             },
+            BoardBox::Command,
             GlobalZIndex(l::Z_COMMAND),
             Pickable::IGNORE,
             Name::new(if is_you { "CommandYou" } else { "CommandFoe" }),
@@ -685,7 +810,7 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
         .commands
         .spawn((
             Node {
-                width: px(l::CAPTAIN_CARD_W),
+                width: px(metrics.captain_w),
                 height: percent(100.0),
                 flex_shrink: 0.0,
                 overflow: Overflow::clip(),
@@ -695,6 +820,7 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
             },
             BackgroundColor(slot_bg),
             BorderColor::all(side),
+            BoardBox::Captain,
             CaptainNode {
                 player,
                 is_you,
@@ -728,7 +854,7 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
         .commands
         .spawn((
             Node {
-                width: px(l::SHIP_SLOT_W),
+                width: px(metrics.ship_w),
                 height: percent(100.0),
                 flex_shrink: 0.0,
                 overflow: Overflow::clip(),
@@ -738,6 +864,7 @@ fn spawn_command(painter: &mut Painter, parent: Entity, player: PlayerId, is_you
             },
             BackgroundColor(slot_bg),
             BorderColor::all(cyan.with_alpha(0.45)),
+            BoardBox::Ship,
             ShipNode {
                 is_you,
                 content: ship_content,
@@ -809,10 +936,15 @@ fn sync_cells(
     mut art: ResMut<ArtCache>,
     assets: Res<AssetServer>,
     metrics: Res<BoardMetrics>,
+    symbols: Res<SymbolFont>,
     mut cells: Query<(Entity, &CellNode, &mut CellCache)>,
     mut tints: Query<(&mut BorderColor, &mut BackgroundColor)>,
+    mut boxes: Query<&mut Node>,
 ) {
-    if !cache.is_changed() {
+    // A resize re-fits every box, so the chrome inside a tile (badges, HP bar
+    // inset, dashes) has to be repainted even though the *content* is the same.
+    let refit = metrics.is_changed();
+    if !(cache.is_changed() || refit) {
         return;
     }
     let Some(view) = cache.view() else { return };
@@ -821,6 +953,7 @@ fn sync_cells(
         commands: &mut commands,
         palette,
         fonts: &fonts,
+        symbols: &symbols.0,
         art: &mut art,
         assets: &assets,
         metrics: metrics.0,
@@ -830,8 +963,9 @@ fn sync_cells(
         let Some(next) = view.half(node.is_you).cell(node.slot) else {
             continue;
         };
-        let content_changed = cached.0.as_ref().is_none_or(|c| c.content != next.content);
-        let decor_changed = cached.0.as_ref().is_none_or(|c| c.decor != next.decor);
+        let content_changed =
+            refit || cached.0.as_ref().is_none_or(|c| c.content != next.content);
+        let decor_changed = refit || cached.0.as_ref().is_none_or(|c| c.decor != next.decor);
         if content_changed {
             painter
                 .commands
@@ -840,19 +974,31 @@ fn sync_cells(
             painter.cell_content(node.content, next);
         }
         if content_changed || decor_changed {
-            let resting = match &next.content {
-                CellContent::Unit(unit) => unit.border,
-                CellContent::Captain(_) => palette.foe,
-                CellContent::Empty => palette.ink,
+            let (resting, resting_w) = match &next.content {
+                CellContent::Unit(unit) => (unit.border, CELL_BORDER),
+                CellContent::Captain(_) => (palette.foe, CELL_BORDER),
+                // Mock-up `.slot.empty` is dashed and nothing else: the solid
+                // frame would fight the dashes `empty_cell` draws, and its box
+                // would inset them by a border the mock-up has no room for.
+                CellContent::Empty => (Color::NONE, CELL_BORDER_EMPTY),
+            };
+            // A ring is the mock-up's `.slot.sel` weight; everything else rests
+            // on the hairline (or on nothing at all).
+            let weight = if next.decor.ring == Ring::None {
+                resting_w
+            } else {
+                CELL_BORDER_RING
             };
             paint_decor(
                 painter.commands,
                 &mut tints,
+                &mut boxes,
                 entity,
                 node.veil,
                 next.decor.ring,
                 next.decor.dimmed,
                 resting,
+                Some(metrics.0.chrome(weight)),
                 palette,
             );
         }
@@ -871,12 +1017,15 @@ fn sync_command(
     mut art: ResMut<ArtCache>,
     assets: Res<AssetServer>,
     metrics: Res<BoardMetrics>,
+    symbols: Res<SymbolFont>,
     mut captains: Query<(Entity, &CaptainNode, &mut CaptainCache)>,
-    mut ships: Query<(&ShipNode, &mut ShipCache)>,
+    mut ships: Query<(Entity, &ShipNode, &mut ShipCache)>,
     mut resources: Query<(&ResourceNode, &mut ResourceCache)>,
     mut tints: Query<(&mut BorderColor, &mut BackgroundColor)>,
+    mut boxes: Query<&mut Node>,
 ) {
-    if !cache.is_changed() {
+    let refit = metrics.is_changed();
+    if !(cache.is_changed() || refit) {
         return;
     }
     let Some(view) = cache.view() else { return };
@@ -885,6 +1034,7 @@ fn sync_command(
         commands: &mut commands,
         palette,
         fonts: &fonts,
+        symbols: &symbols.0,
         art: &mut art,
         assets: &assets,
         metrics: metrics.0,
@@ -892,13 +1042,14 @@ fn sync_command(
 
     for (entity, node, mut cached) in &mut captains {
         let next = &view.half(node.is_you).command.captain;
-        if cached.0.as_ref() == Some(next) {
+        if !refit && cached.0.as_ref() == Some(next) {
             continue;
         }
-        let content_changed = cached
-            .0
-            .as_ref()
-            .is_none_or(|c| CaptainCardView { decor: next.decor, ..c.clone() } != *next);
+        let content_changed = refit
+            || cached
+                .0
+                .as_ref()
+                .is_none_or(|c| CaptainCardView { decor: next.decor, ..c.clone() } != *next);
         if content_changed {
             painter
                 .commands
@@ -909,19 +1060,21 @@ fn sync_command(
         paint_decor(
             painter.commands,
             &mut tints,
+            &mut boxes,
             entity,
             node.veil,
             next.decor.ring,
             next.decor.dimmed,
             palette.side(node.is_you),
+            None,
             palette,
         );
         cached.0 = Some(next.clone());
     }
 
-    for (node, mut cached) in &mut ships {
+    for (entity, node, mut cached) in &mut ships {
         let next = &view.half(node.is_you).command.ship;
-        if cached.0.as_ref() == Some(next) {
+        if !refit && cached.0.as_ref() == Some(next) {
             continue;
         }
         painter
@@ -929,12 +1082,34 @@ fn sync_command(
             .entity(node.content)
             .despawn_related::<Children>();
         painter.ship_content(node.content, next);
+        // Mock-up `.shipslot.empty{border-style:dashed}` — the empty slot
+        // *swaps* the solid cyan edge for dashes, it does not wear both. Bevy
+        // has no dashed border, so `ship_content` paints the ticks and the
+        // solid box is collapsed here, exactly like an empty cell's.
+        let occupied = next.name.is_some();
+        if let Ok((mut border, _)) = tints.get_mut(entity) {
+            let color = if occupied {
+                palette.def.with_alpha(0.45)
+            } else {
+                Color::NONE
+            };
+            let want = BorderColor::all(color);
+            if *border != want {
+                *border = want;
+            }
+        }
+        if let Ok(mut box_) = boxes.get_mut(entity) {
+            let want = UiRect::all(px(if occupied { metrics.0.chrome(1.0) } else { 0.0 }));
+            if box_.border != want {
+                box_.border = want;
+            }
+        }
         cached.0 = Some(next.clone());
     }
 
     for (node, mut cached) in &mut resources {
         let next = view.half(node.is_you).command.resources;
-        if cached.0 == Some(next) {
+        if !refit && cached.0 == Some(next) {
             continue;
         }
         painter
@@ -952,13 +1127,14 @@ fn sync_header(
     cache: Res<BoardViewCache>,
     palette: Res<Palette>,
     fonts: Res<Fonts>,
+    symbols: Res<SymbolFont>,
     mut art: ResMut<ArtCache>,
     assets: Res<AssetServer>,
     metrics: Res<BoardMetrics>,
     mut headers: Query<(&HeaderNode, &mut HeaderCache)>,
-    mut buttons: Query<(&HeaderButton, &mut Node, &mut BackgroundColor)>,
 ) {
-    if !cache.is_changed() {
+    let refit = metrics.is_changed();
+    if !(cache.is_changed() || refit) {
         return;
     }
     let Some(view) = cache.view() else { return };
@@ -967,13 +1143,14 @@ fn sync_header(
         commands: &mut commands,
         palette,
         fonts: &fonts,
+        symbols: &symbols.0,
         art: &mut art,
         assets: &assets,
         metrics: metrics.0,
     };
 
     for (node, mut cached) in &mut headers {
-        if cached.0.as_ref() == Some(&view.header) {
+        if !refit && cached.0.as_ref() == Some(&view.header) {
             continue;
         }
         painter
@@ -983,43 +1160,81 @@ fn sync_header(
         painter.header_content(node.content, &view.header);
         cached.0 = Some(view.header.clone());
     }
+}
 
-    for (kind, mut node, mut background) in &mut buttons {
+/// Re-fit the whole terrain when the window is resized.
+///
+/// Every box whose size comes from [`BoardMetrics`] carries a [`BoardBox`], so
+/// one pass over that query is the entire relayout; bumping `BoardMetrics`
+/// itself is what makes the sync systems repaint the content whose fixed-pixel
+/// chrome (badges, HP-bar inset, dashes) is scaled too.
+fn relayout_on_resize(
+    mut resized: MessageReader<WindowResized>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut metrics: ResMut<BoardMetrics>,
+    boxes: Query<(&BoardBox, &mut Node)>,
+) {
+    if resized.read().count() == 0 {
+        return;
+    }
+    let window = window_size(&windows);
+    // A minimised window reports (0, 0), which `half_metrics` reads as "no
+    // constraint" and answers at scale 1 — a full repaint on the way down and
+    // another on the way back up, for a board nobody can see. Keep what we had.
+    if !(window.x > 0.0 && window.y > 0.0) {
+        return;
+    }
+    let next = fit(window.x, window.y);
+    if next == metrics.0 {
+        return;
+    }
+    metrics.0 = next;
+    apply_metrics(next, boxes);
+}
+
+/// Write the resolved metrics onto every [`BoardBox`].
+fn apply_metrics(m: HalfMetrics, boxes: Query<(&BoardBox, &mut Node)>) {
+    for (kind, mut node) in boxes {
         match kind {
-            HeaderButton::EndTurn => {
-                let color = if view.header.can_end_turn {
-                    palette.gold
-                } else {
-                    palette.gold.with_alpha(0.28)
-                };
-                if background.0 != color {
-                    background.0 = color;
-                }
+            BoardBox::Column => {
+                node.width = px(m.battle_w);
+                node.row_gap = px(m.gap);
+                node.padding = UiRect::vertical(px(m.pad_y));
             }
-            HeaderButton::Cancel => {
-                let display = if view.header.can_cancel {
-                    Display::Flex
-                } else {
-                    Display::None
-                };
-                if node.display != display {
-                    node.display = display;
-                }
+            BoardBox::Row => {
+                node.height = px(m.slot_h);
+                node.column_gap = px(m.gap_x());
             }
+            BoardBox::Label => node.height = px(m.label_h),
+            BoardBox::Command => {
+                node.height = px(m.cmd_h);
+                node.column_gap = px(m.chrome(l::CMD_GAP));
+            }
+            BoardBox::Cell => {
+                node.width = px(m.slot_w);
+                node.border_radius = BorderRadius::all(px(m.chrome(l::SLOT_RADIUS)));
+            }
+            BoardBox::Captain => node.width = px(m.captain_w),
+            BoardBox::Ship => node.width = px(m.ship_w),
         }
     }
 }
 
 /// Re-tint a cell / captain card: ring, resting border and dim veil.
+///
+/// `weight` is the border *width* the state asks for, in design pixels, or
+/// `None` to leave the box alone (the captain card's frame is constant).
 #[allow(clippy::too_many_arguments)]
 fn paint_decor(
     commands: &mut Commands,
     tints: &mut Query<(&mut BorderColor, &mut BackgroundColor)>,
+    boxes: &mut Query<&mut Node>,
     entity: Entity,
     veil: Entity,
     ring: Ring,
     dimmed: bool,
     resting: Color,
+    weight: Option<f32>,
     palette: &Palette,
 ) {
     let border = ring.color(palette).unwrap_or(resting);
@@ -1027,6 +1242,12 @@ fn paint_decor(
         let next = BorderColor::all(border);
         if *color != next {
             *color = next;
+        }
+    }
+    if let (Some(weight), Ok(mut node)) = (weight, boxes.get_mut(entity)) {
+        let next = UiRect::all(px(weight));
+        if node.border != next {
+            node.border = next;
         }
     }
     if let Ok((_, mut background)) = tints.get_mut(veil) {
@@ -1051,11 +1272,28 @@ fn paint_decor(
 // ============================================================
 
 /// Attack / impact rings breathe.
-fn pulse_rings(time: Res<Time>, mut rings: Query<(&RingPulse, &mut BorderColor)>) {
-    let phase = (time.elapsed_secs() * 5.0).sin() * 0.5 + 0.5;
-    let alpha = 0.45 + 0.55 * phase;
+///
+/// Reduced motion parks them at full strength: this and the hand's playable
+/// pips are the two never-ending loops on screen, so leaving them flashing
+/// would make the module's promise ("shorten every animation and drop the ones
+/// that move the whole screen") false in the one place it matters most.
+fn pulse_rings(
+    time: Res<Time>,
+    reduced: Res<crate::vfx::ReducedMotion>,
+    mut rings: Query<(&RingPulse, &mut BorderColor)>,
+) {
+    let alpha = if reduced.enabled {
+        1.0
+    } else {
+        0.45 + 0.55 * ((time.elapsed_secs() * 5.0).sin() * 0.5 + 0.5)
+    };
     for (pulse, mut border) in &mut rings {
-        *border = BorderColor::all(pulse.color.with_alpha(alpha));
+        // An unchanged write would still trip change detection every frame,
+        // which is exactly the cost reduced motion is asked to remove.
+        let next = BorderColor::all(pulse.color.with_alpha(alpha));
+        if *border != next {
+            *border = next;
+        }
     }
 }
 
@@ -1100,16 +1338,14 @@ fn apply_cover_fit(
 /// Publish where every tile is, for popovers and vfx.
 fn update_anchors(
     mut anchors: ResMut<BoardAnchors>,
-    cells: Query<(&CellNode, &CellCache, &ComputedNode, &UiGlobalTransform)>,
+    cells: Query<(&CellCache, &ComputedNode, &UiGlobalTransform)>,
     captains: Query<(&CaptainNode, &ComputedNode, &UiGlobalTransform)>,
 ) {
     let anchors = anchors.bypass_change_detection();
     anchors.by_instance.clear();
-    anchors.by_slot.clear();
 
-    for (node, cached, computed, transform) in &cells {
+    for (cached, computed, transform) in &cells {
         let rect = logical_rect(computed, transform);
-        anchors.by_slot.insert((node.is_you, node.slot), rect);
         if let Some(view) = &cached.0 {
             match &view.content {
                 CellContent::Unit(unit) => {
@@ -1147,10 +1383,17 @@ fn logical_rect(computed: &ComputedNode, transform: &UiGlobalTransform) -> Rect 
 // Clicks
 // ============================================================
 
+/// Every board observer takes `Option<Res<Session>>` and returns early when it
+/// is gone, exactly like the hand's `end_turn_clicked`.
+///
+/// A missing resource in an observer's parameters is a **system-param
+/// validation error**, not a skip, so a non-optional `Res<Session>` would turn
+/// a click that lands after the session was dropped into a crash on one side
+/// and a silent no-op on the other — for the very same gesture.
 fn on_cell_clicked(
     click: On<Pointer<Click>>,
     cells: Query<&CellNode>,
-    session: Res<Session>,
+    session: Option<Res<Session>>,
     mut mode: ResMut<UiMode>,
     mut selected: ResMut<SelectedHandCard>,
     mut dispatch: MessageWriter<DispatchAction>,
@@ -1158,6 +1401,7 @@ fn on_cell_clicked(
     if click.button != PointerButton::Primary {
         return;
     }
+    let Some(session) = session else { return };
     let Ok(cell) = cells.get(click.entity) else {
         return;
     };
@@ -1189,7 +1433,7 @@ fn on_cell_clicked(
 fn on_captain_clicked(
     click: On<Pointer<Click>>,
     captains: Query<&CaptainNode>,
-    session: Res<Session>,
+    session: Option<Res<Session>>,
     mut mode: ResMut<UiMode>,
     mut selected: ResMut<SelectedHandCard>,
     mut dispatch: MessageWriter<DispatchAction>,
@@ -1197,6 +1441,7 @@ fn on_captain_clicked(
     if click.button != PointerButton::Primary {
         return;
     }
+    let Some(session) = session else { return };
     let Ok(captain) = captains.get(click.entity) else {
         return;
     };
@@ -1208,12 +1453,13 @@ fn on_captain_clicked(
 fn on_ship_clicked(
     click: On<Pointer<Click>>,
     ships: Query<&ShipNode>,
-    session: Res<Session>,
+    session: Option<Res<Session>>,
     mut mode: ResMut<UiMode>,
 ) {
     if click.button != PointerButton::Primary {
         return;
     }
+    let Some(session) = session else { return };
     let Ok(ship) = ships.get(click.entity) else {
         return;
     };
@@ -1230,37 +1476,61 @@ fn on_ship_clicked(
     }
 }
 
-fn on_end_turn_clicked(
-    click: On<Pointer<Click>>,
-    session: Res<Session>,
+/// A hand card was dropped on a cell — TS `BoardSlot.onDrop` → `act()`.
+///
+/// The drag already put the [`UiMode`] in `SelectingSlot` /
+/// `SelectingEquipTarget` (`hand_card_drag_started`), so finishing the gesture
+/// is literally the click path: the drop is routed through the exact same
+/// [`on_cell_click`] the pointer would have reached, which is why a drop onto
+/// an illegal cell is swallowed rather than dispatched.
+///
+/// **Which** card was released matters. In the DOM the gesture cannot even
+/// begin anywhere but a playable character / object
+/// (`draggable={canPlay && dragType}`, and board slots carry no `draggable` at
+/// all), so `onDrop` can only ever run after a legal hand drag. Bevy makes
+/// every observed node a drag source, so the check is explicit:
+/// [`HandDrag::carries`] must recognise the dropped entity, or the release is
+/// not the gesture the armed selection belongs to and completing it would
+/// deploy — or attack with — something else entirely.
+fn on_cell_dropped(
+    drop: On<Pointer<DragDrop>>,
+    cells: Query<&CellNode>,
+    session: Option<Res<Session>>,
+    mut drag: ResMut<crate::hand::HandDrag>,
     mut mode: ResMut<UiMode>,
     mut selected: ResMut<SelectedHandCard>,
     mut dispatch: MessageWriter<DispatchAction>,
 ) {
-    if click.button != PointerButton::Primary {
+    if drop.button != PointerButton::Primary {
         return;
     }
-    if session.is_ai_turn() || session.in_counter_window() {
+    if !drag.carries(drop.dropped) {
         return;
     }
-    submit(
-        UiCommand::Dispatch(GameAction::EndTurn),
-        &mut mode,
-        &mut selected,
-        &mut dispatch,
+    let Some(session) = session else { return };
+    let Ok(cell) = cells.get(drop.entity) else {
+        return;
+    };
+    // Whatever the cell makes of it, the gesture ended here: `DragEnd` (which
+    // fires straight after) must not also cancel the selection.
+    drag.consumed = true;
+    let ai = session.ai_player();
+    let player = if cell.is_you { session.human } else { ai };
+    let ps = session.state.player(player);
+    let occupant = ps
+        .board
+        .get(cell.slot)
+        .and_then(|id| session.state.card(id))
+        .map(|card| (card.instance_id.as_str(), card.def_id.as_str()));
+    let command = on_cell_drop(
+        &mode,
+        &session.valid,
+        ai,
+        cell.slot,
+        cell.is_you,
+        occupant,
     );
-}
-
-fn on_cancel_clicked(
-    click: On<Pointer<Click>>,
-    mut mode: ResMut<UiMode>,
-    mut selected: ResMut<SelectedHandCard>,
-    mut dispatch: MessageWriter<DispatchAction>,
-) {
-    if click.button != PointerButton::Primary {
-        return;
-    }
-    submit(UiCommand::Reset, &mut mode, &mut selected, &mut dispatch);
+    submit(command, &mut mode, &mut selected, &mut dispatch);
 }
 
 /// Apply a [`UiCommand`] and forward the action it produced to the bridge.
@@ -1283,6 +1553,7 @@ fn submit(
 mod tests {
     use super::*;
     use crate::selection::SelectionPlugin;
+    use tcgop_engine::types::GameAction;
 
     /// The plugin must build, and every one of its systems must *initialise*,
     /// in an app with no window, no assets and no game — that is what catches a
@@ -1455,5 +1726,102 @@ mod tests {
         let metrics = BoardMetrics::default().0;
         assert!(metrics.slot_h > 0.0 && metrics.cmd_h > 0.0);
         assert!(metrics.total_h() <= half_available_h(l::WINDOW_H) + 0.01);
+    }
+
+    /// The terrain and the footer must tile the window exactly: the reserve the
+    /// board leaves for the hand is the footer's own height, so YOUR command
+    /// bar is never behind the cards.
+    ///
+    /// The mock-up's `footer` is `.hand` + `.cta` and nothing else — the log
+    /// and the hints float above it — so the reserve is those two boxes plus
+    /// the padding, and no more.
+    #[test]
+    fn the_footer_reserve_is_exactly_the_footer_height() {
+        let footer = l::FOOTER_PAD_TOP
+            + (l::HAND_CARD_H + l::HAND_FAN_LIFT_MAX)
+            + l::FOOTER_ROW_GAP
+            + l::BUTTON_H
+            + l::FOOTER_PAD_BOTTOM;
+        assert!((l::HAND_H - footer).abs() < 1e-3, "{} vs {footer}", l::HAND_H);
+
+        // …and it leaves the terrain the lion's share of the window, the way
+        // the mock-up's 160 px footer does on an 840 px phone.
+        let share = std::hint::black_box(l::HAND_H) / l::WINDOW_H;
+        assert!(share < 0.28, "the footer eats {:.0}% of the window", share * 100.0);
+
+        // …and there is still room for two halves above it.
+        assert!(half_available_h(l::WINDOW_H) > 0.0);
+        let metrics = BoardMetrics::default().0;
+        assert!(l::HEADER_H + 2.0 * metrics.total_h() + l::WATERLINE_H + l::HAND_H <= l::WINDOW_H + 0.01);
+    }
+
+    /// Exactly one "Fin de tour" and one "Annuler": the mock-up has a single
+    /// `.cta` row, in the footer, and the header carries no button at all.
+    #[test]
+    fn the_header_spawns_no_buttons() {
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins)
+            .add_plugins(bevy::state::app::StatesPlugin)
+            .add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<Image>()
+            .init_state::<AppScreen>()
+            .insert_resource(Palette::default())
+            .insert_resource(Fonts::default())
+            .init_resource::<ArtCache>()
+            .add_plugins((crate::bridge::BridgePlugin, SelectionPlugin, BoardPlugin))
+            .insert_resource(crate::bridge::testkit::session(5));
+        app.world_mut()
+            .resource_mut::<NextState<AppScreen>>()
+            .set(AppScreen::Board);
+        app.update();
+        app.update();
+
+        assert_eq!(
+            count::<Button>(&mut app),
+            0,
+            "the board layer owns no button — the footer's CTA row is the only one"
+        );
+    }
+
+    /// Resizing re-fits every box that came from the metrics.
+    #[test]
+    fn a_resize_refits_the_terrain() {
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins)
+            .add_plugins(bevy::state::app::StatesPlugin)
+            .add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<Image>()
+            .init_state::<AppScreen>()
+            .insert_resource(Palette::default())
+            .insert_resource(Fonts::default())
+            .init_resource::<ArtCache>()
+            .add_plugins((crate::bridge::BridgePlugin, SelectionPlugin, BoardPlugin))
+            .insert_resource(crate::bridge::testkit::session(5));
+        app.world_mut()
+            .resource_mut::<NextState<AppScreen>>()
+            .set(AppScreen::Board);
+        app.update();
+        app.update();
+
+        let before = app.world().resource::<BoardMetrics>().0;
+        // No window in a head-less app, so `fit` falls back to the design size:
+        // apply a taller one directly, the way the resize handler would.
+        let taller = fit(l::WINDOW_W, l::WINDOW_H * 1.4);
+        assert!(taller.slot_h > before.slot_h);
+        assert!(taller.battle_w > before.battle_w);
+
+        app.world_mut().resource_mut::<BoardMetrics>().0 = taller;
+        let mut boxes = app.world_mut().query::<(&BoardBox, &mut Node)>();
+        let query = boxes.query_mut(app.world_mut());
+        apply_metrics(taller, query);
+
+        let mut cells = app.world_mut().query::<(&BoardBox, &Node)>();
+        let widths: Vec<Val> = cells
+            .iter(app.world())
+            .filter(|(kind, _)| **kind == BoardBox::Cell)
+            .map(|(_, node)| node.width)
+            .collect();
+        assert_eq!(widths.len(), 12);
+        assert!(widths.iter().all(|w| *w == px(taller.slot_w)));
     }
 }

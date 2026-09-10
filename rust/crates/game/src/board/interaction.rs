@@ -23,6 +23,9 @@ pub fn apply_ui_command(
             selected.0 = None;
             Some(action)
         }
+        // The counter window's four buttons: the TS dispatches without calling
+        // `resetUI()`, so whatever the player had open survives answering.
+        UiCommand::DispatchKeepUi(action) => Some(action),
         UiCommand::SetMode(next) => {
             *mode = next;
             None
@@ -65,6 +68,22 @@ mod tests {
         assert_eq!(out, Some(action));
         assert_eq!(mode, UiMode::Idle);
         assert_eq!(selected.0, None);
+    }
+
+    /// The counter window answers an attack without destroying the panel or
+    /// the half-finished selection the player had open.
+    #[test]
+    fn dispatching_from_the_counter_window_leaves_the_ui_alone() {
+        let (mut mode, mut selected) = state();
+        let before = (mode.clone(), selected.clone());
+        let action = GameAction::PassCounter;
+        let out = apply_ui_command(
+            UiCommand::DispatchKeepUi(action.clone()),
+            &mut mode,
+            &mut selected,
+        );
+        assert_eq!(out, Some(action));
+        assert_eq!((mode, selected), before);
     }
 
     #[test]

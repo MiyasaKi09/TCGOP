@@ -109,6 +109,8 @@ impl UiMode {
     }
 
     /// `true` for the modal modes (a panel is open above the board).
+    // Used by the mode-partition test, the mirror of `is_selecting`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_modal(&self) -> bool {
         matches!(
             self,
@@ -232,8 +234,11 @@ pub fn support_needs_target(valid: &[GameAction], instance_id: &str) -> bool {
 /// TS `attackTargets` — every legal target of the attack being aimed, as a set
 /// of ids where the enemy captain is the synthetic `captain_<ai>` key.
 ///
-/// Faithful to the TS: when the attacker is a captain the filter is the
-/// `captainAttack` action type and `isSpecial` is **not** used to narrow it.
+/// A captain's targets are the `captainAttack` entries whose `isSpecial`
+/// matches the ability being aimed. The TS never narrowed on that flag because
+/// its engine had no captain special attack at all; the Rust engine does
+/// (§8.2 item 34(a)) and only offers it while it is affordable and unused, so
+/// the base and the ★ ability genuinely have different target lists.
 pub fn attack_targets(mode: &UiMode, valid: &[GameAction], ai_player: PlayerId) -> BTreeSet<String> {
     let mut targets = BTreeSet::new();
     let UiMode::SelectingTarget {
@@ -249,9 +254,12 @@ pub fn attack_targets(mode: &UiMode, valid: &[GameAction], ai_player: PlayerId) 
             if let GameAction::CaptainAttack {
                 target_instance_id,
                 target_is_captain,
-                ..
+                is_special: action_special,
             } = a
             {
+                if action_special.unwrap_or(false) != *is_special {
+                    continue;
+                }
                 if target_is_captain.unwrap_or(false) {
                     targets.insert(captain_key(ai_player));
                 } else {
@@ -444,6 +452,13 @@ pub enum UiCommand {
     Ignore,
     /// Send this action to the engine, then reset the UI.
     Dispatch(GameAction),
+    /// Send this action to the engine and **leave the UI as it is**.
+    ///
+    /// Every TS dispatch site pairs `dispatch(...)` with `resetUI()` — except
+    /// the four counter-window buttons (`Game.tsx:503,511,518,525`), which
+    /// deliberately do not: a panel or a half-finished selection the player had
+    /// open when the AI's attack arrived must survive answering it.
+    DispatchKeepUi(GameAction),
     /// Move the state machine to this mode.
     SetMode(UiMode),
     /// Move to this mode and remember the hand card that started it.
@@ -512,7 +527,18 @@ pub fn on_slot_click(
             let targets = attack_targets(mode, valid, ai_player);
             match occupant {
                 Some(target) if targets.contains(target) => {
-                    UiCommand::Dispatch(attack_action(attacker_id, *is_special, target, false))
+                    // TS `handleSlotClick` has **no** captain branch: it always
+                    // emits baseAttack / specialAttack, carrying the synthetic
+                    // `captain_<player>` id as `attackerInstanceId`. The engine
+                    // decodes that prefix itself (`get_attacker_owner`), so the
+                    // action is legal; only `handleBoardCharClick` re-routes to
+                    // `captainAttack`, and [`on_board_char_click`] mirrors that.
+                    UiCommand::Dispatch(unit_attack_action(
+                        attacker_id,
+                        *is_special,
+                        target,
+                        false,
+                    ))
                 }
                 _ => UiCommand::Ignore,
             }
@@ -629,21 +655,80 @@ pub fn on_cell_click(
     }
 }
 
-/// Build the right attack action for an attacker id (card or captain key).
+/// TS `BoardSlot.onDrop` — the drop end of a hand-to-board drag.
+///
+/// ```tsx
+/// onDragOver={e => e.preventDefault()}
+/// onDrop={e => { e.preventDefault(); onDrop?.(); }}   // onDrop={act}
+/// ```
+///
+/// `handleHandDragStart` already put the UI in `selectingSlot` /
+/// `selectingEquipTarget`, so finishing the gesture is exactly the click path:
+/// the same `act()` the pointer would have reached. Anything else is swallowed.
+///
+/// "Anything else" is narrower than "not selecting": a drop only ever finishes
+/// the **two** modes a hand drag can arm. `selectingTarget` and its siblings
+/// are reached by clicking the board, never by dragging, so forwarding a drop
+/// while one of them is armed would fire an attack with a gesture the web
+/// cannot even begin. (Whose card was released is checked one level up, by
+/// [`HandDrag::carries`](crate::hand::HandDrag::carries) — this function only
+/// sees the mode.)
+pub fn on_cell_drop(
+    mode: &UiMode,
+    valid: &[GameAction],
+    ai_player: PlayerId,
+    slot: Slot,
+    is_player_side: bool,
+    occupant: Option<(&str, &str)>,
+) -> UiCommand {
+    if !matches!(
+        mode,
+        UiMode::SelectingSlot { .. } | UiMode::SelectingEquipTarget { .. }
+    ) {
+        return UiCommand::Ignore;
+    }
+    on_cell_click(mode, valid, ai_player, slot, is_player_side, occupant)
+}
+
+/// Build the right attack action for an attacker id (card **or** captain key)
+/// — TS `handleBoardCharClick`, which branches on
+/// `uiMode.attackerId.startsWith("captain_")`.
 fn attack_action(
     attacker_id: &str,
     is_special: bool,
     target: &str,
     target_is_captain: bool,
 ) -> GameAction {
-    let captain_flag = if target_is_captain { Some(true) } else { None };
     if is_captain_key(attacker_id) {
-        GameAction::CaptainAttack {
+        return GameAction::CaptainAttack {
             target_instance_id: target.to_string(),
-            target_is_captain: captain_flag,
-            is_special: None,
-        }
-    } else if is_special {
+            target_is_captain: if target_is_captain { Some(true) } else { None },
+            // The Rust engine enumerates the captain's ★ special on the same
+            // `captainAttack` action with `isSpecial: true` (§8.2 item 34(a)) —
+            // a rule the TS engine never had, and the reason this cannot simply
+            // mirror `handleBoardCharClick`'s hard-coded base variant. The
+            // CaptainMenu prices that ability and offers a button for it; the
+            // flag is what makes the button reach the engine.
+            is_special: if is_special { Some(true) } else { None },
+        };
+    }
+    unit_attack_action(attacker_id, is_special, target, target_is_captain)
+}
+
+/// Build a `baseAttack` / `specialAttack` for `attacker_id` **whatever it is**
+/// — TS `handleSlotClick`, which has no captain branch.
+///
+/// A `captain_<player>` id is a legal `attackerInstanceId`: the engine strips
+/// the prefix in `get_attacker_owner` rather than looking the id up in
+/// `state.cards`.
+fn unit_attack_action(
+    attacker_id: &str,
+    is_special: bool,
+    target: &str,
+    target_is_captain: bool,
+) -> GameAction {
+    let captain_flag = if target_is_captain { Some(true) } else { None };
+    if is_special {
         GameAction::SpecialAttack {
             attacker_instance_id: attacker_id.to_string(),
             target_instance_id: target.to_string(),
@@ -685,13 +770,24 @@ pub enum StatusTone {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusHint {
     pub text: &'static str,
+    /// A glyph drawn before the label, in the symbol face.
+    ///
+    /// Mock-up `<span class="you-turn">✦ À toi</span>`: the pill carries the
+    /// mark, and it has to be a separate run because the label's family
+    /// (Poppins) has no coverage past Latin-1.
+    pub glyph: Option<&'static str>,
     pub tone: StatusTone,
     pub pulse: bool,
 }
 
 /// TS `statusText` IIFE.
 pub fn status_hint(mode: &UiMode, is_ai_turn: bool, in_counter_window: bool) -> StatusHint {
-    let hint = |text, tone, pulse| StatusHint { text, tone, pulse };
+    let hint = |text, tone, pulse| StatusHint {
+        text,
+        glyph: None,
+        tone,
+        pulse,
+    };
     if is_ai_turn {
         return hint("Tour de l'adversaire…", StatusTone::Waiting, true);
     }
@@ -710,7 +806,13 @@ pub fn status_hint(mode: &UiMode, is_ai_turn: bool, in_counter_window: bool) -> 
         UiMode::SelectingEquipTarget { .. } => {
             hint("Équipez un personnage", StatusTone::Captain, true)
         }
-        _ => hint("Votre tour", StatusTone::Ready, false),
+        // Mock-up `.you-turn`: "✦ À toi", glyph included.
+        _ => StatusHint {
+            text: "À toi",
+            glyph: Some(crate::hand::card_face::READY_MARK),
+            tone: StatusTone::Ready,
+            pulse: false,
+        },
     }
 }
 
@@ -877,13 +979,17 @@ mod tests {
         );
     }
 
+    /// The engine offers the captain's base and ★ attacks as the *same* action
+    /// with different `isSpecial`, and only offers the ★ one while it is
+    /// affordable and unused — so the two have genuinely different target
+    /// lists and the mode's flag has to narrow them.
     #[test]
-    fn captain_attacks_ignore_the_is_special_flag() {
+    fn a_captain_aims_the_ability_that_was_armed() {
         let valid = vec![
             GameAction::CaptainAttack {
                 target_instance_id: "coby".into(),
                 target_is_captain: None,
-                is_special: Some(false),
+                is_special: None,
             },
             GameAction::CaptainAttack {
                 target_instance_id: "captain_player2".into(),
@@ -892,17 +998,111 @@ mod tests {
             },
             base_attack("zoro", "smoker", false),
         ];
-        for is_special in [false, true] {
-            let mode = UiMode::SelectingTarget {
-                attacker_id: captain_key(PlayerId::Player1),
-                is_special,
-            };
+        let aiming = |is_special| UiMode::SelectingTarget {
+            attacker_id: captain_key(PlayerId::Player1),
+            is_special,
+        };
+        assert_eq!(
+            attack_targets(&aiming(false), &valid, AI),
+            BTreeSet::from(["coby".to_string()]),
+            "the base attack only reaches what the base attack was offered on"
+        );
+        assert_eq!(
+            attack_targets(&aiming(true), &valid, AI),
+            BTreeSet::from([captain_key(AI)]),
+            "the ★ special only reaches its own targets"
+        );
+    }
+
+    /// …and picking one of those targets dispatches `captainAttack` with the
+    /// flag set, which is the only path the engine's §8.2 item 34(a) special
+    /// attack has to the board.
+    #[test]
+    fn a_captain_special_attack_carries_its_flag() {
+        let valid = vec![GameAction::CaptainAttack {
+            target_instance_id: "coby".into(),
+            target_is_captain: None,
+            is_special: Some(true),
+        }];
+        let mode = UiMode::SelectingTarget {
+            attacker_id: captain_key(PlayerId::Player1),
+            is_special: true,
+        };
+        assert_eq!(
+            on_board_char_click(&mode, &valid, AI, "coby", false, "MG-002"),
+            UiCommand::Dispatch(GameAction::CaptainAttack {
+                target_instance_id: "coby".into(),
+                target_is_captain: None,
+                is_special: Some(true),
+            })
+        );
+
+        // The base attack keeps answering with the base variant.
+        let base = vec![GameAction::CaptainAttack {
+            target_instance_id: "coby".into(),
+            target_is_captain: None,
+            is_special: None,
+        }];
+        let mode = UiMode::SelectingTarget {
+            attacker_id: captain_key(PlayerId::Player1),
+            is_special: false,
+        };
+        assert_eq!(
+            on_board_char_click(&mode, &base, AI, "coby", false, "MG-002"),
+            UiCommand::Dispatch(GameAction::CaptainAttack {
+                target_instance_id: "coby".into(),
+                target_is_captain: None,
+                is_special: None,
+            })
+        );
+    }
+
+    /// A drop only ever finishes a gesture a hand drag can start. Forwarding
+    /// it while a *targeting* mode is armed would fire an attack with a
+    /// gesture the web cannot even begin (board tiles carry no `draggable`).
+    #[test]
+    fn a_drop_only_finishes_the_two_modes_a_drag_can_arm() {
+        let valid = vec![
+            deploy("c1", Slot::V1),
+            base_attack("zoro", "smoker", false),
+        ];
+        let deploying = UiMode::SelectingSlot {
+            card_id: "c1".into(),
+        };
+        assert_eq!(
+            on_cell_drop(&deploying, &valid, AI, Slot::V1, true, None),
+            UiCommand::Dispatch(deploy("c1", Slot::V1))
+        );
+
+        for mode in [
+            UiMode::SelectingTarget {
+                attacker_id: "zoro".into(),
+                is_special: false,
+            },
+            UiMode::SelectingSupportTarget {
+                instance_id: "zoro".into(),
+            },
+            UiMode::SelectingCaptainSlot,
+            UiMode::Idle,
+        ] {
             assert_eq!(
-                attack_targets(&mode, &valid, AI),
-                BTreeSet::from(["coby".to_string(), captain_key(AI)]),
-                "is_special = {is_special}"
+                on_cell_drop(&mode, &valid, AI, Slot::V1, false, Some(("smoker", "MG-002"))),
+                UiCommand::Ignore,
+                "{mode:?} must not be completable by a drop"
             );
         }
+    }
+
+    /// Mock-up `<span class="you-turn">✦ À toi</span>`.
+    #[test]
+    fn the_ready_pill_is_the_mock_ups() {
+        let hint = status_hint(&UiMode::Idle, false, false);
+        assert_eq!(hint.text, "À toi");
+        assert_eq!(hint.glyph, Some("\u{2726}"));
+        assert_eq!(hint.tone, StatusTone::Ready);
+        assert!(!hint.pulse);
+        // Every other state keeps its bare label.
+        assert_eq!(status_hint(&UiMode::Idle, true, false).glyph, None);
     }
 
     // --- highlighting ---------------------------------------
@@ -1225,5 +1425,123 @@ mod tests {
             is_special: true,
         };
         let _ = attack_is_zone(&cap, &session.state, &session.registry);
+    }
+
+    // --- drag & drop ------------------------------------------
+
+    /// Dropping a dragged character on a lit slot **dispatches**, exactly like
+    /// clicking it: the drag is only the way the mode was armed.
+    #[test]
+    fn dropping_a_character_on_a_lit_slot_deploys_it() {
+        let valid = vec![GameAction::DeployCharacter {
+            instance_id: "c1".into(),
+            slot: Slot::V2,
+        }];
+        let mode = UiMode::SelectingSlot {
+            card_id: "c1".into(),
+        };
+        assert_eq!(
+            on_cell_drop(&mode, &valid, PlayerId::Player2, Slot::V2, true, None),
+            UiCommand::Dispatch(GameAction::DeployCharacter {
+                instance_id: "c1".into(),
+                slot: Slot::V2,
+            })
+        );
+    }
+
+    /// …and on an equip holder.
+    #[test]
+    fn dropping_an_object_on_a_holder_equips_it() {
+        let valid = vec![GameAction::EquipObject {
+            object_instance_id: "o1".into(),
+            target_instance_id: "u1".into(),
+        }];
+        let mode = UiMode::SelectingEquipTarget {
+            object_id: "o1".into(),
+        };
+        assert_eq!(
+            on_cell_drop(
+                &mode,
+                &valid,
+                PlayerId::Player2,
+                Slot::A1,
+                true,
+                Some(("u1", "MG-001"))
+            ),
+            UiCommand::Dispatch(GameAction::EquipObject {
+                object_instance_id: "o1".into(),
+                target_instance_id: "u1".into(),
+            })
+        );
+    }
+
+    /// A drop with nothing armed, or onto an illegal cell, is swallowed — it
+    /// must never open a menu the player did not ask for.
+    #[test]
+    fn a_drop_with_nothing_armed_is_swallowed() {
+        let valid = vec![GameAction::DeployCharacter {
+            instance_id: "c1".into(),
+            slot: Slot::V2,
+        }];
+        assert_eq!(
+            on_cell_drop(&UiMode::Idle, &valid, PlayerId::Player2, Slot::V2, true, None),
+            UiCommand::Ignore
+        );
+        let mode = UiMode::SelectingSlot {
+            card_id: "c1".into(),
+        };
+        assert_eq!(
+            on_cell_drop(&mode, &valid, PlayerId::Player2, Slot::V3, true, None),
+            UiCommand::Ignore,
+            "V3 is not a legal slot for c1"
+        );
+    }
+
+    // --- attack routing ---------------------------------------
+
+    /// `handleSlotClick` has no captain branch: a captain attacker rides in the
+    /// `attackerInstanceId` of a plain baseAttack / specialAttack, which the
+    /// engine decodes by prefix. `handleBoardCharClick` is the one that routes
+    /// to `captainAttack`.
+    #[test]
+    fn the_two_handlers_build_the_attack_the_typescript_builds() {
+        let key = captain_key(PlayerId::Player1);
+        // What the engine actually offers when a captain is the attacker.
+        let valid = vec![GameAction::CaptainAttack {
+            target_instance_id: "foe1".into(),
+            target_is_captain: None,
+            is_special: None,
+        }];
+        let mode = UiMode::SelectingTarget {
+            attacker_id: key.clone(),
+            is_special: false,
+        };
+
+        // Slot handler → baseAttack carrying the synthetic id.
+        assert_eq!(
+            on_slot_click(
+                &mode,
+                &valid,
+                PlayerId::Player2,
+                Slot::V1,
+                false,
+                Some("foe1")
+            ),
+            UiCommand::Dispatch(GameAction::BaseAttack {
+                attacker_instance_id: key.clone(),
+                target_instance_id: "foe1".into(),
+                target_is_captain: None,
+            })
+        );
+
+        // Board-character handler → captainAttack.
+        assert_eq!(
+            on_board_char_click(&mode, &valid, PlayerId::Player2, "foe1", false, "MG-001"),
+            UiCommand::Dispatch(GameAction::CaptainAttack {
+                target_instance_id: "foe1".into(),
+                target_is_captain: None,
+                is_special: None,
+            })
+        );
     }
 }

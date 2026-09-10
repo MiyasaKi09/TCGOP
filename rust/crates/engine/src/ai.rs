@@ -31,6 +31,11 @@
 //! `try` of `chooseExpert`, so a failure there is the `-Infinity` branch — but
 //! it is still fallible, because an *external* caller of the exported
 //! `evaluateState` sees the throw.
+//!
+//! Decision §8.20 narrows that: `score_equip_object` no longer propagates —
+//! an object instance the state does not know, or one whose definition is not
+//! registered, scores `0.0` so a single dangling candidate cannot abort the
+//! whole AI turn from outside `chooseExpert`'s try/catch.
 
 #![allow(clippy::collapsible_if)]
 // ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
@@ -47,7 +52,7 @@ use crate::error::EngineResult;
 use crate::execute::execute_action;
 use crate::registry::CardRegistry;
 use crate::state::GameState;
-use crate::types::{EventEffect, GameAction, HakiType, PlayerId, Row};
+use crate::types::{EventEffect, GameAction, HakiType, ModifierStat, PlayerId, Row};
 
 /// TS `Difficulty = "beginner" | "intermediate" | "expert"` — `src/engine/ai.ts:12`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -299,7 +304,13 @@ pub fn score_action(
         GameAction::BaseAttack { .. } | GameAction::SpecialAttack { .. } => {
             score_attack(state, registry, player_id, action)?
         }
-        GameAction::CaptainAttack { .. } => score_attack(state, registry, player_id, action)?,
+        GameAction::CaptainAttack { .. } | GameAction::UseSurcharge { .. } => {
+            score_attack(state, registry, player_id, action)?
+        }
+        // Decision §8.19: an awakened-fruit swing is one of the strongest
+        // attacks in the game; the TS switch omitted it, so it scored 0 —
+        // below `moveCharacter`. It is scored like any other special attack.
+        GameAction::FruitSpecialAttack { .. } => score_attack(state, registry, player_id, action)?,
         GameAction::PlayEvent { .. } => score_event(state, registry, player_id, action)?,
         // Counters during enemy turn are almost always good
         GameAction::PlayCounter { .. } => 50.0,
@@ -373,7 +384,13 @@ pub fn score_deploy_character(
 ///
 /// The TS reads `state.cards[objectInstanceId].defId` unguarded, so a missing
 /// instance throws a TypeError and an unregistered def id throws from
-/// `getCardDef`; both surface here as an `Err`.
+/// `getCardDef`.
+///
+/// Decision §8.20: both are `0.0` here instead. Scoring is a heuristic, never a
+/// legality check, and [`choose_expert`] calls [`score_action`] *outside* its
+/// try/catch — a dangling instance behind one candidate must score badly, not
+/// abort the whole AI turn. Same shape as [`score_deploy_character`], which
+/// already returns 0 for a missing instance.
 pub fn score_equip_object(
     state: &GameState,
     registry: &CardRegistry,
@@ -385,8 +402,12 @@ pub fn score_equip_object(
     else {
         return Ok(0.0);
     };
-    let obj_card = state.get_card(object_instance_id)?;
-    let obj_def = registry.get_card_def(&obj_card.def_id)?;
+    let Some(obj_card) = state.cards.get(object_instance_id) else {
+        return Ok(0.0);
+    };
+    let Ok(obj_def) = registry.get_card_def(&obj_card.def_id) else {
+        return Ok(0.0);
+    };
     let mut score = 8.0_f64;
     score += obj_def.bonus_atk.unwrap_or(0) as f64 * 3.0;
     Ok(score)
@@ -397,9 +418,16 @@ pub fn score_equip_object(
 /// `5`, `+15` against a captain, and against a character `+20` for a lethal hit
 /// plus `max(0, 5 - target.currentPv)`; `+5` more for a `specialAttack`.
 ///
-/// Quirk: the KO block is guarded by `"attackerInstanceId" in action &&
-/// "targetInstanceId" in action`, so a `captainAttack` (which carries no
-/// `attackerInstanceId`) skips it entirely and scores 5 / 20 flat.
+/// TS quirk (fixed here, decision §8.19): the KO block was guarded by
+/// `"attackerInstanceId" in action && "targetInstanceId" in action`, so a
+/// `captainAttack` — which carries no `attackerInstanceId` — skipped it
+/// entirely and scored 5 / 20 flat, below `moveCharacter`'s 2 once the lethal
+/// bonus is what should have decided it. The attacker's ATK for a
+/// `captainAttack` / `useSurcharge` is now resolved from the captain's **active
+/// face** (verso when flipped, recto otherwise) plus the captain's `Atk`
+/// modifiers, so the KO block runs for captain swings too. This is a heuristic:
+/// it deliberately ignores per-attack `atkBonus` / `conditionalBonus`, which
+/// only make the estimate conservative.
 pub fn score_attack(
     state: &GameState,
     registry: &CardRegistry,
@@ -417,31 +445,71 @@ pub fn score_attack(
         score += 15.0;
     }
 
+    // Decision §8.19: a captain attack has no `attackerInstanceId`, so the
+    // attacker side of the KO block comes from the captain instead.
+    let is_captain_attack = matches!(
+        action,
+        GameAction::CaptainAttack { .. } | GameAction::UseSurcharge { .. }
+    );
+
     // Check if we can KO the target
-    if let (Some(attacker_id), Some(target_id)) = (attacker_id, target_id) {
-        if !target_is_captain {
-            if let Some(target) = state.cards.get(target_id) {
-                let target_current_pv = target.current_pv;
-                let attacker_atk = get_effective_atk(state, registry, attacker_id)?;
-                let target_def_val = get_effective_def(state, registry, target_id)?;
-                let damage = (attacker_atk - target_def_val).max(0);
-                if damage >= target_current_pv {
-                    // Can KO!
-                    score += 20.0;
+    if let Some(target_id) = target_id {
+        if attacker_id.is_some() || is_captain_attack {
+            if !target_is_captain {
+                if let Some(target) = state.cards.get(target_id) {
+                    let target_current_pv = target.current_pv;
+                    let attacker_atk = match attacker_id {
+                        Some(id) => get_effective_atk(state, registry, id)?,
+                        None => captain_effective_atk(state, registry, player_id)?,
+                    };
+                    let target_def_val = get_effective_def(state, registry, target_id)?;
+                    let damage = (attacker_atk - target_def_val).max(0);
+                    if damage >= target_current_pv {
+                        // Can KO!
+                        score += 20.0;
+                    }
+                    // Prefer targets with low PV
+                    score += (5 - target_current_pv).max(0) as f64;
                 }
-                // Prefer targets with low PV
-                score += (5 - target_current_pv).max(0) as f64;
             }
         }
     }
 
     // Special attacks are big commitments — slightly lower base score
-    if matches!(action, GameAction::SpecialAttack { .. }) {
+    // (§8.19: `fruitSpecialAttack` is a special attack too).
+    if matches!(
+        action,
+        GameAction::SpecialAttack { .. } | GameAction::FruitSpecialAttack { .. }
+    ) {
         // But they do more damage
         score += 5.0;
     }
 
     Ok(score)
+}
+
+/// The attacker-side ATK [`score_attack`] uses for a `captainAttack` /
+/// `useSurcharge` (decision §8.19): the **active** face's printed ATK plus the
+/// captain's `Atk` modifiers, mirroring what `declare_captain_special_attack`
+/// computes before the attack's own bonuses.
+fn captain_effective_atk(
+    state: &GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+) -> EngineResult<i32> {
+    let captain = &state.players.get(player_id).captain;
+    let def = registry.get_captain_def(&captain.def_id)?;
+    let mut atk = if captain.flipped {
+        def.verso.atk
+    } else {
+        def.recto.atk
+    };
+    for m in &captain.modifiers {
+        if m.stat == ModifierStat::Atk {
+            atk += m.amount;
+        }
+    }
+    Ok(atk)
 }
 
 /// The JS `"attackerInstanceId" in action` / `"targetInstanceId" in action` /
@@ -478,6 +546,10 @@ fn attack_operands(action: &GameAction) -> (Option<&str>, Option<&str>, bool) {
             target_instance_id,
             target_is_captain,
             ..
+        }
+        | GameAction::UseSurcharge {
+            target_instance_id,
+            target_is_captain,
         } => (
             None,
             Some(target_instance_id.as_str()),
@@ -625,7 +697,8 @@ mod tests {
     use crate::state::{PendingAttack, create_initial_state};
     use crate::types::{
         AtkDefStat, BaseAction, BuffDuration, CaptainDef, CaptainRecto, CaptainVerso, CardDef,
-        DamageTarget, EntryEffect, FlipCondition, PassiveDef, SpecialAttack, TurnDuration,
+        DamageTarget, EntryEffect, FlipCondition, Modifier, ModifierDuration, PassiveDef,
+        SpecialAttack, TurnDuration,
     };
     use crate::types::{CardType, Faction, Rarity, Slot, Zone};
 
@@ -961,7 +1034,10 @@ mod tests {
             }),
             0.0
         );
-        // fruitSpecialAttack is NOT in the switch either — 0, not scoreAttack.
+        // Decision §8.19 (was: `fruitSpecialAttack` is not in the TS switch, so
+        // it scored 0 — below `moveCharacter`'s 2). It now goes through
+        // `score_attack` and is scored as a special: 5 base + 5. The instances
+        // here are unknown, so the KO block contributes nothing.
         assert_eq!(
             s(&GameAction::FruitSpecialAttack {
                 attacker_instance_id: "x".into(),
@@ -969,7 +1045,35 @@ mod tests {
                 target_instance_id: "t".into(),
                 target_is_captain: None
             }),
-            0.0
+            10.0
+        );
+    }
+
+    /// Decision §8.19 — `fruitSpecialAttack` must outrank `moveCharacter`.
+    #[test]
+    fn fruit_special_attack_outscores_move_character() {
+        let reg = registry();
+        let mut state = base_state(&reg);
+        let p = PlayerId::Player1;
+        let attacker = place(&mut state, p, "T-FIGHT", Slot::V1, 5);
+        let target = place(&mut state, PlayerId::Player2, "T-SUPP", Slot::V1, 1);
+        let fruit = to_hand(&mut state, p, "T-SWORD");
+
+        let fruit_attack = GameAction::FruitSpecialAttack {
+            attacker_instance_id: attacker.clone(),
+            fruit_instance_id: fruit,
+            target_instance_id: target,
+            target_is_captain: None,
+        };
+        let mv = GameAction::MoveCharacter {
+            instance_id: attacker,
+            target_slot: Slot::V2,
+        };
+        // 5 base + 20 KO (atk 4 − def 3 = 1 ≥ 1 PV) + max(0, 5 − 1) + 5 special.
+        assert_eq!(score_action(&state, &reg, p, &fruit_attack).unwrap(), 34.0);
+        assert!(
+            score_action(&state, &reg, p, &fruit_attack).unwrap()
+                > score_action(&state, &reg, p, &mv).unwrap()
         );
     }
 
@@ -1036,6 +1140,32 @@ mod tests {
         assert_eq!(score_equip_object(&state, &reg, &eq).unwrap(), 17.0);
     }
 
+    /// Decision §8.20 — a dangling `equipObject` scores 0 and, because
+    /// `score_action` runs outside `choose_expert`'s try/catch, the chooser
+    /// still returns an action instead of aborting the AI turn.
+    #[test]
+    fn dangling_equip_object_scores_zero_and_never_aborts_the_chooser() {
+        let reg = registry();
+        let state = base_state(&reg);
+        let p = PlayerId::Player1;
+        let equip = GameAction::EquipObject {
+            object_instance_id: "nowhere".into(),
+            target_instance_id: "nowhere-either".into(),
+        };
+        assert_eq!(score_action(&state, &reg, p, &equip).unwrap(), 0.0);
+
+        let mut ctx = EngineContext::seeded(11);
+        let actions = [equip, GameAction::EndTurn];
+        assert_eq!(
+            choose_expert(&state, &reg, &mut ctx, p, &actions).unwrap(),
+            GameAction::EndTurn
+        );
+        assert_eq!(
+            choose_by_score(&state, &reg, &mut ctx, p, &actions, 0.0).unwrap(),
+            actions[0]
+        );
+    }
+
     #[test]
     fn score_attack_ko_block_skips_captain_attacks() {
         let reg = registry();
@@ -1083,8 +1213,11 @@ mod tests {
             20.0
         );
 
-        // Quirk: captainAttack has no attackerInstanceId, so the whole KO block
-        // is skipped even against a character — 5, not 5 + 20 + 4.
+        // Decision §8.19 (was: captainAttack carries no attackerInstanceId, so
+        // the whole KO block was skipped even against a character and it scored
+        // a flat 5). The attacker's ATK now comes from the captain's *active*
+        // face: recto atk 3 − target def 3 = 0 damage, so no KO bonus yet, but
+        // the low-PV term does apply — 5 + max(0, 5 − 1) = 9.
         let cap = GameAction::CaptainAttack {
             target_instance_id: target.clone(),
             target_is_captain: None,
@@ -1092,8 +1225,36 @@ mod tests {
         };
         assert_eq!(
             score_attack(&state, &reg, PlayerId::Player1, &cap).unwrap(),
-            5.0
+            9.0
         );
+        // Flipped: the verso's atk 5 − def 3 = 2 ≥ 1 PV → the KO bonus lands.
+        state.players.player1.captain.flipped = true;
+        assert_eq!(
+            score_attack(&state, &reg, PlayerId::Player1, &cap).unwrap(),
+            5.0 + 20.0 + 4.0
+        );
+        // ATK modifiers on the captain count too — and so does `useSurcharge`,
+        // which resolves through the same captain face.
+        state.players.player1.captain.flipped = false;
+        state.players.player1.captain.modifiers.push(Modifier {
+            id: "test-atk".into(),
+            stat: ModifierStat::Atk,
+            amount: 2,
+            source: "test".into(),
+            duration: ModifierDuration::Permanent,
+            turns_remaining: None,
+        });
+        let surcharge = GameAction::UseSurcharge {
+            target_instance_id: target.clone(),
+            target_is_captain: None,
+        };
+        assert_eq!(
+            score_attack(&state, &reg, PlayerId::Player1, &surcharge).unwrap(),
+            5.0 + 20.0 + 4.0
+        );
+        state.players.player1.captain.modifiers.clear();
+
+        // Against a captain the KO block is still skipped: 5 + 15.
         let cap_on_cap = GameAction::CaptainAttack {
             target_instance_id: target,
             target_is_captain: Some(true),
@@ -1102,6 +1263,41 @@ mod tests {
         assert_eq!(
             score_attack(&state, &reg, PlayerId::Player1, &cap_on_cap).unwrap(),
             20.0
+        );
+    }
+
+    /// Decision §8.19 — the intermediate AI must see a lethal captain swing.
+    #[test]
+    fn intermediate_ai_takes_the_lethal_captain_attack() {
+        let reg = registry();
+        let mut state = base_state(&reg);
+        let p = PlayerId::Player1;
+        let fighter = place(&mut state, p, "T-FIGHT", Slot::V1, 5);
+        // Lethal for the flipped captain (atk 5 − def 3 = 2 ≥ 1 PV).
+        let dying = place(&mut state, PlayerId::Player2, "T-SUPP", Slot::V1, 1);
+        // Survives the fighter (atk 4 − def 3 = 1 < 4 PV): that attack scores
+        // 5 + max(0, 5 − 4) = 6, which used to beat the captain's flat 5.
+        let healthy = place(&mut state, PlayerId::Player2, "T-SUPP", Slot::V2, 4);
+        state.players.player1.captain.flipped = true;
+
+        let cap = GameAction::CaptainAttack {
+            target_instance_id: dying,
+            target_is_captain: None,
+            is_special: None,
+        };
+        let actions = [
+            GameAction::BaseAttack {
+                attacker_instance_id: fighter,
+                target_instance_id: healthy,
+                target_is_captain: None,
+            },
+            cap.clone(),
+            GameAction::EndTurn,
+        ];
+        let mut ctx = EngineContext::seeded(3);
+        assert_eq!(
+            choose_by_score(&state, &reg, &mut ctx, p, &actions, 0.0).unwrap(),
+            cap
         );
     }
 
@@ -1172,6 +1368,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         };
 
         // Saves a KO (victim pv 2 ≤ raw 3) and the blocker survives
@@ -1349,6 +1550,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         });
         let mut ctx2 = EngineContext::seeded(11);
         let _ = choose_beginner(&state, &reg, &mut ctx2, PlayerId::Player1, &actions).unwrap();
@@ -1427,7 +1633,10 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
+        // Decision §8.20 (was: `is_err()` — the TS `getCardDef` throw): an
+        // object whose definition is unknown scores 0 instead of aborting the
+        // AI turn from outside `chooseExpert`'s try/catch.
+        assert_eq!(
             score_action(
                 &state,
                 &reg,
@@ -1437,7 +1646,8 @@ mod tests {
                     target_instance_id: ghost.clone(),
                 }
             )
-            .is_err()
+            .unwrap(),
+            0.0
         );
         assert!(
             score_action(
@@ -1452,8 +1662,9 @@ mod tests {
             )
             .is_err()
         );
-        // A missing instance behind an `equipObject` is the TS TypeError.
-        assert!(
+        // Decision §8.20 (was: `is_err()` — the TS TypeError on
+        // `state.cards[objectInstanceId].defId`): a missing instance scores 0.
+        assert_eq!(
             score_equip_object(
                 &state,
                 &reg,
@@ -1462,7 +1673,8 @@ mod tests {
                     target_instance_id: ghost.clone(),
                 }
             )
-            .is_err()
+            .unwrap(),
+            0.0
         );
 
         // `scoreAction` sits outside `chooseExpert`'s try/catch (ai.ts:70), so

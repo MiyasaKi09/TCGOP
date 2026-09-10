@@ -29,6 +29,7 @@ pub fn status_color(effect: StatusEffectType) -> Color {
         StatusEffectType::SelfKo => rgb(0xE0, 0x46, 0x3F),
         StatusEffectType::NoStealth => rgb(0x7F, 0xB0, 0xE8),
         StatusEffectType::NoHeal => rgb(0xFF, 0x8A, 0x80),
+        StatusEffectType::Taunt => rgb(0xE8, 0x9A, 0x3C),
     }
 }
 
@@ -44,12 +45,6 @@ pub fn tone_color(palette: &Palette, tone: StatusTone) -> Color {
         StatusTone::Captain => palette.amber,
     }
 }
-
-/// Same colour, faded — used for the tag's pill background.
-pub fn washed(color: Color, alpha: f32) -> Color {
-    color.with_alpha(alpha)
-}
-
 // ============================================================
 // Bundles
 // ============================================================

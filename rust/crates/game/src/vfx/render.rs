@@ -27,13 +27,11 @@ use crate::board::widgets::CoverFit;
 use crate::board::{BoardAnchors, BoardRoot};
 use crate::bridge::Session;
 use crate::selection::captain_key;
-use crate::vfx::announce::{PlayAnnouncement, Side};
-use crate::vfx::detect::{CombatEvent, Flash, VfxKind};
 use crate::vfx::element::{HEAL_COLOR, HEAL_GLYPH, KO_GLYPH};
-use crate::vfx::tween::{Tween, TweenState};
 use crate::vfx::{
-    CaptainFlipped, CombatVfx, ReducedMotion, RevealQueue, ScreenShake, SkipReveal, VfxSet,
-    VfxSymbolFont, reset_vfx_state, vfx_ready,
+    CaptainFlipped, CombatEvent, CombatVfx, Flash, PlayAnnouncement, ReducedMotion, RevealQueue,
+    ScreenShake, Side, SkipReveal, Tween, TweenState, VfxKind, VfxSet, VfxSymbolFont,
+    reset_vfx_state, vfx_ready,
 };
 
 // ============================================================
@@ -133,6 +131,12 @@ impl PendingCombat {
     pub const MAX_TRIES: u8 = 3;
 }
 
+/// The shimmer band sitting on the waterline. Its `top` is derived from the
+/// window height, so it has to be re-derived whenever the window changes —
+/// otherwise it drifts away from the terrain, which *is* re-laid out.
+#[derive(Component)]
+struct WaterlineBand;
+
 /// Dismiss the cut-in currently on screen.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SkipCutIn;
@@ -141,6 +145,10 @@ pub struct SkipCutIn;
 // Plugin
 // ============================================================
 
+/// The ambient root, so a missed `OnEnter` can be retried.
+#[derive(Component)]
+struct VfxLayers;
+
 /// Spawning, tweening and cleaning up every visual layer.
 pub struct RenderPlugin;
 
@@ -148,15 +156,38 @@ impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SkipCutIn>()
             .init_resource::<PendingCombat>()
+            // `board_ready`, the same condition the terrain and the footer
+            // use: `OnEnter` runs once and nothing retries, so three spawners
+            // disagreeing is how a screen comes up half-built — vfx layers and
+            // an entrance black-out over a terrain that was never drawn.
             .add_systems(
                 OnEnter(AppScreen::Board),
-                spawn_layers.run_if(resource_exists::<AssetServer>),
+                spawn_layers.run_if(crate::app::board_ready),
             )
-            .add_systems(OnExit(AppScreen::Board), (clear_reveal, reset_vfx_state))
+            // …retried like the terrain and the footer: `OnEnter` fires once.
+            .add_systems(
+                Update,
+                spawn_layers
+                    .in_set(AppSet::Vfx)
+                    .run_if(in_state(AppScreen::Board))
+                    .run_if(crate::app::board_ready)
+                    .run_if(|layers: Query<(), With<VfxLayers>>| layers.is_empty()),
+            )
+            // Both edges: entering wipes whatever the previous game left, and
+            // leaving stops the current one from bleeding into the next.
+            .add_systems(
+                OnEnter(AppScreen::Board),
+                (clear_reveal, reset_vfx_state, reset_pending_combat),
+            )
+            .add_systems(
+                OnExit(AppScreen::Board),
+                (clear_reveal, reset_vfx_state, reset_pending_combat),
+            )
             .add_systems(
                 Update,
                 (
                     render_combat_events,
+                    keep_waterline_aligned,
                     play_cut_ins,
                     play_captain_flip,
                     drive_reveals,
@@ -259,9 +290,10 @@ fn spawn_layers(
     let ambient = commands
         .spawn((
             full_screen(),
-            GlobalZIndex(-1),
+            GlobalZIndex(crate::app::layout::Z_AMBIENT),
             Pickable::IGNORE,
             DespawnOnExit(AppScreen::Board),
+            VfxLayers,
             Name::new("VfxAmbient"),
         ))
         .id();
@@ -289,6 +321,7 @@ fn spawn_layers(
                 overflow: Overflow::clip(),
                 ..default()
             },
+            WaterlineBand,
             GlobalZIndex(l::Z_COMMAND),
             Pickable::IGNORE,
             DespawnOnExit(AppScreen::Board),
@@ -1415,6 +1448,34 @@ fn spawn_reveal(
     card
 }
 
+/// Keep the waterline shimmer on the waterline when the window is resized.
+///
+/// Combat vfx recompute `window_size` every frame; this band was the one piece
+/// baked at spawn time, so the two used to drift apart.
+fn keep_waterline_aligned(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut bands: Query<&mut Node, With<WaterlineBand>>,
+) {
+    let Ok(mut node) = bands.single_mut() else {
+        return;
+    };
+    let band_h = l::WATERLINE_H * 3.0;
+    let top = px(waterline_y(window_size(&windows).y) - band_h * 0.5);
+    if node.top != top {
+        node.top = top;
+    }
+}
+
+/// Drop the retry queue.
+///
+/// `render_combat_events` is the only other place that clears it, and it only
+/// runs while the board is up (`vfx_ready`), so without this the events left
+/// waiting for an anchor when a game ends would be re-attempted against the
+/// *next* game's tiles.
+fn reset_pending_combat(mut pending: ResMut<PendingCombat>) {
+    pending.0.clear();
+}
+
 /// Drop whatever reveal was on screen (leaving the board, or a new game).
 fn clear_reveal(mut commands: Commands, mut active: ResMut<ActiveReveal>) {
     if let Some(entity) = active.entity {
@@ -1428,12 +1489,26 @@ fn clear_reveal(mut commands: Commands, mut active: ResMut<ActiveReveal>) {
 // ============================================================
 
 /// Offset the whole board while a shake is running.
+///
+/// Turning reduced motion on **settles** a shake that is already in flight
+/// rather than letting it run to completion: `ScreenShake::hit` refuses to
+/// start new ones, so a shake that kept offsetting `BoardRoot` after the key
+/// was pressed would be the one piece of screen-wide motion the switch does
+/// not reach.
 fn apply_screen_shake(
     time: Res<Time>,
+    reduced: Res<ReducedMotion>,
     mut shake: ResMut<ScreenShake>,
     mut boards: Query<&mut UiTransform, With<BoardRoot>>,
 ) {
-    let offset = shake.advance(time.delta_secs());
+    let offset = if reduced.allows_screen_motion() {
+        shake.advance(time.delta_secs())
+    } else {
+        if shake.is_active() {
+            *shake = ScreenShake::default();
+        }
+        Vec2::ZERO
+    };
     let target = Val2::px(offset.x, offset.y);
     for mut transform in &mut boards {
         if transform.translation != target {
@@ -1443,12 +1518,23 @@ fn apply_screen_shake(
 }
 
 /// Scroll and bob the sea plates.
+///
+/// Reduced motion parks them at the seam (phase 0) instead of returning early:
+/// bailing out before touching `UiTransform` freezes the two stretched copies
+/// wherever they happened to be when the switch was flipped, leaving the mirror
+/// seam mid-plate for the rest of the game.
 fn animate_ambient(
     time: Res<Time>,
     reduced: Res<ReducedMotion>,
     mut plates: Query<(&SeaScroll, &mut UiTransform)>,
 ) {
     if !reduced.allows_screen_motion() {
+        let parked = Val2::new(Val::Percent(0.0), Val::Px(0.0));
+        for (_, mut transform) in &mut plates {
+            if transform.translation != parked {
+                transform.translation = parked;
+            }
+        }
         return;
     }
     let elapsed = time.elapsed_secs();

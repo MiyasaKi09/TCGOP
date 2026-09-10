@@ -42,9 +42,14 @@ fn find_bearer<'a>(
 /// — `src/engine/fruits.ts:12`.
 ///
 /// Pushes the permanent `` `fruit_atk_{fruitInstanceId}` `` / `` `fruit_def_…` ``
-/// modifiers (source `` `fruit_{fruitDefId}` ``) — but note the TS **quirk**:
-/// both are inside `if (base.grantsTraits)`, so a fruit without granted traits
-/// gets no stat bonus at all. Always logs
+/// modifiers (source `` `fruit_{fruitDefId}` ``).
+///
+/// RULES-DECISIONS item 3 (§8.1): the TS nested both pushes inside
+/// `if (base.grantsTraits)`, so a fruit without granted traits got no stat bonus
+/// at all. The two effects are independent in the data model, so the bonuses are
+/// now pushed unconditionally; a `0` amount is still skipped (a real "no bonus"),
+/// and `grantsTraits` only feeds [`get_fruit_traits`] / `has_trait`. Latent on
+/// the shipped catalogue — every shipped fruit declares `grantsTraits`. Always logs
 /// `"{bearerName} mange le {fruitName} ! {base.passiveDescription ?? ""}"`
 /// (trailing space kept when the description is absent).
 /// A missing fruit instance or a fruit without `fruitEffects` is a silent no-op.
@@ -68,9 +73,8 @@ pub fn apply_fruit_base_effects(
         return Ok(());
     };
     let base = &fruit_effects.base;
-    // JS truthiness: `[]` is truthy, so an empty (but present) list still gates in.
-    let grants_traits = base.grants_traits.is_some();
-    // JS truthiness: `0` is falsy, so a zero bonus pushes no modifier.
+    // A zero bonus pushes no modifier (matches the TS `if (base.atkBonus)` and is
+    // a real "no bonus"); `grantsTraits` no longer gates the bonuses (item 3).
     let atk_bonus = base.atk_bonus.unwrap_or(0);
     let def_bonus = base.def_bonus.unwrap_or(0);
     let passive_description = base.passive_description.clone().unwrap_or_default();
@@ -85,29 +89,27 @@ pub fn apply_fruit_base_effects(
         .ok_or_else(|| EngineError::UnknownInstance(bearer_instance_id.to_string()))?;
     let bearer_name = registry.get_card_def(&bearer_card.def_id)?.name.clone();
 
-    // Apply granted traits via modifiers
-    if grants_traits {
-        if let Some(bearer) = state.cards.get_mut(bearer_instance_id) {
-            if atk_bonus != 0 {
-                bearer.modifiers.push(Modifier {
-                    id: format!("fruit_atk_{fruit_instance_id}"),
-                    stat: ModifierStat::Atk,
-                    amount: atk_bonus,
-                    source: fruit_source.clone(),
-                    duration: ModifierDuration::Permanent,
-                    turns_remaining: None,
-                });
-            }
-            if def_bonus != 0 {
-                bearer.modifiers.push(Modifier {
-                    id: format!("fruit_def_{fruit_instance_id}"),
-                    stat: ModifierStat::Def,
-                    amount: def_bonus,
-                    source: fruit_source,
-                    duration: ModifierDuration::Permanent,
-                    turns_remaining: None,
-                });
-            }
+    // Apply the base stat bonuses (item 3: no longer gated on `grantsTraits`).
+    if let Some(bearer) = state.cards.get_mut(bearer_instance_id) {
+        if atk_bonus != 0 {
+            bearer.modifiers.push(Modifier {
+                id: format!("fruit_atk_{fruit_instance_id}"),
+                stat: ModifierStat::Atk,
+                amount: atk_bonus,
+                source: fruit_source.clone(),
+                duration: ModifierDuration::Permanent,
+                turns_remaining: None,
+            });
+        }
+        if def_bonus != 0 {
+            bearer.modifiers.push(Modifier {
+                id: format!("fruit_def_{fruit_instance_id}"),
+                stat: ModifierStat::Def,
+                amount: def_bonus,
+                source: fruit_source,
+                duration: ModifierDuration::Permanent,
+                turns_remaining: None,
+            });
         }
     }
 
@@ -440,6 +442,7 @@ mod tests {
             ally_ko_ed_this_turn: None,
             char_ko_ed_this_game: None,
             haki_this_turn: None,
+            embargo_turns: None,
         }
     }
 
@@ -504,9 +507,11 @@ mod tests {
         assert_eq!(state.log.last().unwrap().player, PlayerId::Player1);
     }
 
-    /// TS quirk: both stat bonuses live inside `if (base.grantsTraits)`.
+    /// RULES-DECISIONS item 3: the TS nested both stat bonuses inside
+    /// `if (base.grantsTraits)`; they are independent, so a fruit that grants no
+    /// trait still buffs its bearer. (Was: `modifiers.is_empty()`.)
     #[test]
-    fn base_effects_without_granted_traits_skip_stat_bonuses() {
+    fn base_effects_without_granted_traits_still_apply_stat_bonuses() {
         let effects = FruitEffects {
             base: FruitBaseEffects {
                 grants_traits: None,
@@ -519,7 +524,20 @@ mod tests {
         let (mut state, reg) = setup(effects);
         apply_fruit_base_effects(&mut state, &reg, "fruit1", "char1").unwrap();
 
-        assert!(state.cards["char1"].modifiers.is_empty());
+        let mods = &state.cards["char1"].modifiers;
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].id, "fruit_atk_fruit1");
+        assert_eq!(mods[0].stat, ModifierStat::Atk);
+        assert_eq!(mods[0].amount, 5);
+        assert_eq!(mods[0].source, "fruit_obj_gomu");
+        assert_eq!(mods[0].duration, ModifierDuration::Permanent);
+        assert_eq!(mods[1].id, "fruit_def_fruit1");
+        assert_eq!(mods[1].stat, ModifierStat::Def);
+        assert_eq!(mods[1].amount, 5);
+
+        // The fruit grants no trait, though.
+        assert!(get_fruit_traits(&state, &reg, "char1").unwrap().is_empty());
+
         // `passiveDescription ?? ""` keeps the trailing space.
         assert_eq!(
             state.log.last().unwrap().message,
@@ -527,10 +545,10 @@ mod tests {
         );
     }
 
-    /// JS truthiness: an *empty* `grantsTraits` array is still truthy, a `0`
-    /// bonus is falsy.
+    /// A `0` bonus is a real "no bonus" and still pushes no modifier, whatever
+    /// `grantsTraits` says (item 3 kept that half of the TS behaviour).
     #[test]
-    fn base_effects_empty_traits_are_truthy_zero_bonus_is_falsy() {
+    fn base_effects_zero_bonus_pushes_no_modifier() {
         let effects = FruitEffects {
             base: FruitBaseEffects {
                 grants_traits: Some(Vec::new()),

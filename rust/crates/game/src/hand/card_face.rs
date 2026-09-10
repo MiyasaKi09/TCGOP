@@ -97,12 +97,6 @@ impl<'a> CardFace<'a> {
             .map(|i| i.current_pv)
             .unwrap_or_else(|| self.def.pv.unwrap_or(0))
     }
-
-    /// TS `instance?.isAwakened` — which face of a Devil Fruit to show.
-    pub fn is_flipped(&self) -> bool {
-        self.instance
-            .is_some_and(|i| i.is_awakened.unwrap_or(false))
-    }
 }
 
 /// Handles + tokens the builder needs. Kept as one struct so callers do not
@@ -158,18 +152,19 @@ pub const CROSS: &str = "\u{2715}";
 pub const CARET_RIGHT: &str = "\u{25BA}";
 /// Log marker, the opponent (U+25C4).
 pub const CARET_LEFT: &str = "\u{25C4}";
+/// Hand count — the mock-up's `.counts` uses ✋ (U+270B), which DejaVu Sans
+/// does not carry; U+261E is the hand it does have.
+pub const HAND_GLYPH: &str = "\u{261E}";
+/// Deck count — the mock-up's 🂠 (U+1F0A0), which DejaVu Sans *does* carry.
+pub const CARD_BACK: &str = "\u{1F0A0}";
+/// The "✦ À toi" pill's leading glyph (U+2726 — same as [`SPARKLE`], named for
+/// its own use so the header does not read as an ability marker).
+pub const READY_MARK: &str = SPARKLE;
 
 fn font(handle: &Handle<Font>, px: f32) -> TextFont {
     TextFont {
         font: handle.clone().into(),
         font_size: FontSize::Px(px.max(5.0)),
-        ..default()
-    }
-}
-
-fn abs() -> Node {
-    Node {
-        position_type: PositionType::Absolute,
         ..default()
     }
 }

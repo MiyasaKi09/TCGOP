@@ -60,6 +60,7 @@ pub fn status_label(effect: StatusEffectType) -> &'static str {
         StatusEffectType::SelfKo => "Sursis",
         StatusEffectType::NoStealth => "Repéré",
         StatusEffectType::NoHeal => "Soins bloqués",
+        StatusEffectType::Taunt => "Provoqué",
     }
 }
 
@@ -418,11 +419,25 @@ pub struct CaptainMenuView {
     pub show_attack: bool,
     pub can_attack: bool,
     pub attack_reason: Option<&'static str>,
+    /// The ★ special attack — engine §8.2 item 34(a), `captainAttack` with
+    /// `isSpecial: true`.
+    ///
+    /// The menu already *prices* this ability in its `AbilityRow` list, so
+    /// without a button of its own the player is shown a Volonté cost the UI
+    /// has no path to spend while the engine keeps offering the action in
+    /// `Session::valid`.
+    pub show_special_attack: bool,
+    pub can_special_attack: bool,
+    pub special_attack_name: String,
+    pub special_attack_cost: i32,
+    pub special_attack_reason: Option<&'static str>,
     pub can_king_haki: bool,
     /// *Engager* → pick the slot the verso lands on.
     pub flip_command: UiCommand,
     /// *Attaquer* → aim the human captain.
     pub attack_command: UiCommand,
+    /// *Spéciale ★* → aim the human captain's special attack.
+    pub special_attack_command: UiCommand,
     /// *Haki des Rois* → dispatch straight away.
     pub king_haki_command: UiCommand,
 }
@@ -477,9 +492,20 @@ pub fn captain_menu_view(
             .any(|a| matches!(a, GameAction::FlipCaptain { .. }));
     let can_attack = is_you
         && captain.flipped
-        && valid
-            .iter()
-            .any(|a| matches!(a, GameAction::CaptainAttack { .. }));
+        && valid.iter().any(|a| {
+            matches!(
+                a,
+                GameAction::CaptainAttack { is_special, .. } if !is_special.unwrap_or(false)
+            )
+        });
+    let can_special_attack = is_you
+        && captain.flipped
+        && valid.iter().any(|a| {
+            matches!(
+                a,
+                GameAction::CaptainAttack { is_special: Some(true), .. }
+            )
+        });
     let can_king_haki = is_you
         && valid.iter().any(|a| {
             matches!(
@@ -500,6 +526,23 @@ pub fn captain_menu_view(
         Some("Incliné")
     } else if captain.deployed_turn == Some(state.turn_number as i64) {
         Some("Vient d'être engagé")
+    } else {
+        None
+    };
+
+    // Why the ★ button is dead, in the engine's own order of tests
+    // (`actions.rs`: already used, once-per-game spent, then affordability).
+    let special = &def.verso.special_attack;
+    let special_attack_reason = if can_special_attack {
+        None
+    } else if attack_reason.is_some() {
+        attack_reason
+    } else if captain.used_special_attack {
+        Some("Déjà utilisée ce tour")
+    } else if special.once_per_game.unwrap_or(false) && captain.used_once(&special.name) {
+        Some("Une fois par partie")
+    } else if !state.can_afford(player, special.cost) {
+        Some("Volonté insuffisante")
     } else {
         None
     };
@@ -586,11 +629,20 @@ pub fn captain_menu_view(
         show_attack: captain.flipped,
         can_attack,
         attack_reason,
+        show_special_attack: captain.flipped,
+        can_special_attack,
+        special_attack_name: def.verso.special_attack.name.clone(),
+        special_attack_cost: def.verso.special_attack.cost,
+        special_attack_reason,
         can_king_haki,
         flip_command: UiCommand::SetMode(UiMode::SelectingCaptainSlot),
         attack_command: UiCommand::SetMode(UiMode::SelectingTarget {
             attacker_id: captain_key(human),
             is_special: false,
+        }),
+        special_attack_command: UiCommand::SetMode(UiMode::SelectingTarget {
+            attacker_id: captain_key(human),
+            is_special: true,
         }),
         king_haki_command: UiCommand::Dispatch(GameAction::UseHaki {
             haki_type: HakiType::King,
@@ -986,7 +1038,8 @@ pub fn counter_view(
             Some(CounterOption {
                 kind,
                 label,
-                command: UiCommand::Dispatch(action.clone()),
+                // TS `renderCounterWindow` dispatches **without** `resetUI()`.
+                command: UiCommand::DispatchKeepUi(action.clone()),
             })
         })
         .collect();
@@ -1330,6 +1383,82 @@ mod tests {
         );
     }
 
+    /// The engine offers the captain's ★ special on the same `captainAttack`
+    /// action with `isSpecial: true` (§8.2 item 34(a)); the menu prices it in
+    /// its ability list, so it must also have a way to *use* it.
+    #[test]
+    fn a_flipped_captain_can_reach_its_special_attack() {
+        let mut session = make_session(5);
+        let human = session.human;
+        let def = session
+            .registry
+            .captain_def(&session.you().captain.def_id)
+            .unwrap()
+            .clone();
+        {
+            let captain = &mut session.state.player_mut(human).captain;
+            captain.flipped = true;
+            captain.current_pv = def.verso.pv;
+            captain.slot = Some(Slot::V1);
+            captain.deployed_turn = None;
+            captain.tapped = false;
+        }
+        // Enough Volonté for the ★ ability to be enumerated.
+        session.state.player_mut(human).volonte = def.verso.special_attack.cost + 5;
+        session.refresh_valid();
+
+        let view = captain_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            human,
+            human,
+        )
+        .unwrap();
+
+        assert!(view.show_special_attack, "an engaged captain has a ★ attack");
+        assert_eq!(view.special_attack_name, def.verso.special_attack.name);
+        assert_eq!(view.special_attack_cost, def.verso.special_attack.cost);
+        assert_eq!(
+            view.special_attack_command,
+            UiCommand::SetMode(UiMode::SelectingTarget {
+                attacker_id: captain_key(human),
+                is_special: true,
+            }),
+            "the button must arm the *special* aim, not the base one"
+        );
+
+        let offered = session.valid.iter().any(|a| {
+            matches!(a, GameAction::CaptainAttack { is_special: Some(true), .. })
+        });
+        assert_eq!(
+            view.can_special_attack, offered,
+            "the button is live exactly while the engine offers the action"
+        );
+        if !offered {
+            assert!(
+                view.special_attack_reason.is_some(),
+                "a dead ★ button must say why"
+            );
+        }
+    }
+
+    /// A recto captain has no ★ button at all.
+    #[test]
+    fn a_recto_captain_has_no_special_attack_button() {
+        let session = make_session(5);
+        let view = captain_menu_view(
+            &session.state,
+            &session.registry,
+            &session.valid,
+            session.human,
+            session.human,
+        )
+        .unwrap();
+        assert!(!view.show_special_attack);
+        assert!(!view.can_special_attack);
+    }
+
     // --- card detail ----------------------------------------
 
     #[test]
@@ -1488,7 +1617,9 @@ mod tests {
             "'Subir les dégâts' is always available"
         );
         for option in &view.options {
-            assert!(matches!(option.command, UiCommand::Dispatch(_)));
+            // `DispatchKeepUi`: the TS counter buttons are the only dispatch
+            // sites that do not call `resetUI()`.
+            assert!(matches!(option.command, UiCommand::DispatchKeepUi(_)));
         }
     }
 
@@ -1552,5 +1683,54 @@ mod tests {
         let session = make_session(1);
         let _ = Slot::V1;
         assert!(counter_view(&session.state, &session.registry, &[]).is_none());
+    }
+
+    /// **Documented divergence from `ActionMenu.tsx`.**
+    ///
+    /// The TSX derives "Mal de terre" from
+    /// `instance.deployedTurn === state.turnNumber && !def.traits?.includes("rush")`,
+    /// i.e. from the *definition*'s traits alone. This client asks the engine
+    /// ([`has_summoning_sickness`]) instead, so a Rush granted at runtime — by
+    /// an equipped Devil Fruit, say — is honoured and the reason falls through
+    /// to the next one.
+    ///
+    /// The `disabled` flag itself is untouched: it comes from `validActions` in
+    /// both clients, so the two never disagree about what is *legal* — only
+    /// about the sentence explaining why.
+    #[test]
+    fn summoning_sickness_is_asked_of_the_engine_not_of_the_traits() {
+        let Some((session, id)) = deploy_one(7) else {
+            return;
+        };
+        let view = action_menu_view(&session.state, &session.registry, &session.valid, &id)
+            .expect("the unit was just deployed");
+        let engine_says =
+            has_summoning_sickness(&session.state, &session.registry, &id).unwrap_or(false);
+
+        let labelled = view
+            .base
+            .as_ref()
+            .and_then(|b| b.reason.as_deref())
+            .map(|r| r == "Mal de terre")
+            .unwrap_or(false)
+            || view.flags.contains(&"Mal de terre");
+
+        if engine_says {
+            assert!(labelled, "the engine says sick, the menu must say so too");
+        } else {
+            assert!(
+                !view.flags.contains(&"Mal de terre"),
+                "the engine says the unit may act, so no sickness pill"
+            );
+        }
+
+        // Whatever the label says, the row's own `disabled` mirrors the engine.
+        if let Some(base) = &view.base {
+            let can_act = session.valid.iter().any(|a| {
+                matches!(a, GameAction::BaseAttack { attacker_instance_id, .. } if attacker_instance_id == &id)
+                    || matches!(a, GameAction::BaseSupportAction { instance_id, .. } if instance_id == &id)
+            });
+            assert_eq!(base.disabled, !can_act);
+        }
     }
 }

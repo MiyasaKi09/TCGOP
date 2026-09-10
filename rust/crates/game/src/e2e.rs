@@ -228,6 +228,66 @@ fn every_difficulty_terminates() {
     }
 }
 
+/// A second game must start from a clean slate.
+///
+/// `Session` outlives the board — it is only dropped when *Rejouer* is pressed
+/// — and instance ids repeat verbatim from one seeded game to the next
+/// (`{def_id}_{n}_0`), so anything a module remembers across the transition
+/// diffs cleanly against the new game and fires phantom feedback: a heal on the
+/// loser's captain going from 0 PV back to full, a hover preview on a card
+/// nobody is pointing at, combat events replayed onto the wrong tiles.
+#[test]
+fn replaying_starts_from_a_clean_slate() {
+    use crate::hand::HoveredHandCard;
+    use crate::screens::ReplayRequested;
+    use crate::vfx::{RevealQueue, VfxHistory};
+
+    let mut app = headless_app();
+    start_session(&mut app, Difficulty::Expert, 20_260_910);
+    play_out(&mut app, "expert");
+    app.update();
+    assert_eq!(
+        *app.world().resource::<State<AppScreen>>().get(),
+        AppScreen::GameOver
+    );
+
+    // Pretend the player was hovering a card when the game ended.
+    let stale = app.world().resource::<Session>().you().hand.first().cloned();
+    app.world_mut().resource_mut::<HoveredHandCard>().0 = stale.clone();
+
+    // *Rejouer* → setup → a brand new session on the board.
+    app.world_mut().write_message(ReplayRequested);
+    app.update();
+    app.update();
+    assert_eq!(
+        *app.world().resource::<State<AppScreen>>().get(),
+        AppScreen::Setup
+    );
+    assert!(app.world().get_resource::<Session>().is_none());
+
+    start_session(&mut app, Difficulty::Expert, 20_260_910);
+    app.update();
+
+    let history = app.world().resource::<VfxHistory>();
+    assert!(
+        history.previous_state.is_none() || history.last_pending.is_none(),
+        "the finished game must not survive into the new one"
+    );
+    assert!(
+        app.world().resource::<RevealQueue>().is_empty(),
+        "game 2 opens with an empty reveal queue"
+    );
+    assert_eq!(
+        app.world().resource::<HoveredHandCard>().0,
+        None,
+        "a hover from game 1 must not match a card of game 2"
+    );
+
+    // And it really is playable again.
+    let out = play_out(&mut app, "expert-replay");
+    assert!(out.finished, "the second game must run to its end too");
+}
+
 /// Head-less means *no* rendering happened: without an `AssetServer` not a
 /// single UI node may be spawned, and the vfx layers must stay unbuilt.
 #[test]

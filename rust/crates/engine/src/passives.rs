@@ -12,7 +12,9 @@
 // them into let-chains would break that 1:1 reading, which is the whole point
 // of the port, so the lint is turned off for this file only.
 
-use crate::board::{get_board_characters, get_effective_atk, remove_from_board};
+use crate::board::{
+    get_board_characters, get_effective_atk, heal_unit, remove_from_board, ship_passive_scope,
+};
 use crate::context::EngineContext;
 use crate::error::EngineError;
 use crate::registry::CardRegistry;
@@ -130,12 +132,9 @@ fn resolve_start_of_turn_effect(
                 .filter_map(|s| state.players.get(player_id).board.get(*s).cloned())
                 .collect();
             for adj_id in adj_ids {
-                let Some(adj_card) = state.cards.get_mut(&adj_id) else {
-                    continue;
-                };
-                let adj_def = registry.get_card_def(&adj_card.def_id)?;
-                let max_pv = adj_def.pv.unwrap_or(adj_card.current_pv);
-                adj_card.current_pv = (adj_card.current_pv + amount).min(max_pv);
+                // Decision §8.5: the single heal path — never lowers PV and
+                // skips a `noHeal` / `desiccation` unit.
+                heal_unit(state, registry, &adj_id, amount)?;
             }
             state.add_log(
                 player_id,
@@ -172,7 +171,11 @@ fn resolve_start_of_turn_effect(
                 id: format!("vantardise_{target_id}_{}", ctx.now()),
                 stat: atk_def_stat(stat),
                 amount,
-                source: format!("passive_{source_id}"),
+                // Decision §8.1-2: the buff lasts the whole turn, so it must not
+                // share the `passive_` prefix that `recalculate_passive_buffs`
+                // strips on every deploy/equip/KO/flip. It still expires as a
+                // `Turn` modifier in `reset_turn_flags`.
+                source: format!("vantardise_{source_id}"),
                 duration: ModifierDuration::Turn,
                 turns_remaining: None,
             });
@@ -355,14 +358,13 @@ pub fn recalculate_passive_buffs(
                 let ship_def_bonus = ship_bonus(&desc, "def");
                 let ship_def_id = ship_def.id.clone();
 
-                for ch in &board_chars {
-                    // Check faction filter (e.g. "Mugiwara" or "Marines")
-                    let char_def = registry.get_card_def(&ch.def_id)?;
-                    let faction_match = (desc.contains("mugiwara") && char_def.has_tag("mugiwara"))
-                        || (desc.contains("marine") && char_def.has_tag("marine"))
-                        || (!desc.contains("mugiwara") && !desc.contains("marine"));
+                // Decision §8.10: one scope helper, shared with `deploy_cost` —
+                // "Vos Baroque Works …" buffs Baroque Works units only.
+                let scope = ship_passive_scope(&desc);
 
-                    if faction_match {
+                for ch in &board_chars {
+                    let char_def = registry.get_card_def(&ch.def_id)?;
+                    if scope.matches(char_def) {
                         if ship_atk_bonus > 0 {
                             state.get_card_mut(&ch.id)?.modifiers.push(Modifier {
                                 id: format!("ship_passive_atk_{}", ch.id),
@@ -390,6 +392,13 @@ pub fn recalculate_passive_buffs(
     }
 
     // === Synergy bonuses ===
+    // Decision §8.1-7: a synergy partner is a unit *on the board*; a recto
+    // captain is off-board (spec §4.11), so the own captain only counts once it
+    // is flipped into a slot (this is what makes `RH-004`/`CAP-SHANKS` work).
+    let board_captain_def_id: Option<String> = {
+        let cap = &state.players.get(player_id).captain;
+        (cap.flipped && cap.slot.is_some()).then(|| cap.def_id.clone())
+    };
     for ch in &board_chars {
         let def = registry.get_card_def(&ch.def_id)?;
         let Some(synergies) = &def.synergies else {
@@ -397,7 +406,8 @@ pub fn recalculate_passive_buffs(
         };
         for syn in synergies {
             // Check if partner is on the board
-            let partner_on_board = board_chars.iter().any(|c| c.def_id == syn.partner_id);
+            let partner_on_board = board_chars.iter().any(|c| c.def_id == syn.partner_id)
+                || board_captain_def_id.as_deref() == Some(syn.partner_id.as_str());
             if partner_on_board {
                 state.get_card_mut(&ch.id)?.modifiers.push(Modifier {
                     id: format!("synergy_{}_{}", ch.id, syn.partner_id),
@@ -597,18 +607,22 @@ pub fn apply_on_ko_effects(
                     .filter(|m| m.source == "captainSelfKO")
                     .map(|m| m.amount)
                     .sum();
-                if current < *max {
+                // Decision §8.1-4: `max` caps the accumulated total, so the
+                // push is clamped to the room left instead of being allowed to
+                // overshoot it (`amount` is 1 on every shipped captain).
+                let gain = (*amount).min(*max - current);
+                if gain > 0 {
                     cap.modifiers.push(Modifier {
                         id: format!("captainSelfKO_{}", ctx.now()),
                         stat: atk_stat(*stat),
-                        amount: *amount,
+                        amount: gain,
                         source: "captainSelfKO".to_string(),
                         duration: ModifierDuration::Permanent,
                         turns_remaining: None,
                     });
                     state.add_log(
                         ko_player_id,
-                        format!("{cap_def_name} : +{amount} ATK permanent (Mugiwara KO)."),
+                        format!("{cap_def_name} : +{gain} ATK permanent (Mugiwara KO)."),
                     );
                 }
             }
@@ -711,7 +725,11 @@ pub fn apply_on_ko_effects(
                     id: format!("synrage_{char_id}_{}", ctx.now()),
                     stat: ModifierStat::Atk,
                     amount: rage,
-                    source: format!("synergy_rage_{ko_def_id}"),
+                    // Decision §8.1-1: `synrage_` (not `synergy_`) so the
+                    // trailing `recalculate_passive_buffs` — which rebuilds the
+                    // *continuous* `synergy_` buffs — cannot wipe the rage buff
+                    // it was just given. It expires in `reset_turn_flags`.
+                    source: format!("synrage_{ko_def_id}"),
                     duration: ModifierDuration::Turn,
                     turns_remaining: None,
                 });
@@ -837,6 +855,7 @@ mod tests {
             ally_ko_ed_this_turn: None,
             char_ko_ed_this_game: None,
             haki_this_turn: None,
+            embargo_turns: None,
         }
     }
 
@@ -1089,12 +1108,27 @@ mod tests {
         assert_eq!(atk_bonus(&st, &weak), 0);
         let m = &st.cards[&first].modifiers[0];
         assert_eq!(m.id, format!("vantardise_{first}_7"));
-        assert_eq!(m.source, "passive_U@player1V2");
+        // Decision §8.1-2 (was `passive_U@player1V2`, which the passive strip
+        // removed on the next deploy/equip/KO/flip).
+        assert_eq!(m.source, "vantardise_U@player1V2");
         assert_eq!(m.duration, ModifierDuration::Turn);
         assert_eq!(
             last_msg(&st),
             "Usopp : Vantardise — un allié gagne +1 ATK ce tour."
         );
+
+        // It survives a later recalculation…
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!(atk_bonus(&st, &first), 1);
+        assert!(
+            st.cards[&first]
+                .modifiers
+                .iter()
+                .any(|m| m.source == "vantardise_U@player1V2")
+        );
+        // …and expires with the turn.
+        st.reset_turn_flags();
+        assert_eq!(atk_bonus(&st, &first), 0);
     }
 
     #[test]
@@ -1659,20 +1693,135 @@ mod tests {
             st.log.last().unwrap().message,
             "Mate : rage ! +3 ATK (Leader KO)"
         );
-        // TS QUIRK (do not "fix"): `applyOnKOEffects` pushes the rage modifier
-        // with `source: "synergy_rage_${koDefId}"`, then finishes by calling
-        // `recalculatePassiveBuffs`, whose filter drops every source starting
-        // with "synergy_" — so the +3 ATK is wiped on the same call and only
-        // the log line survives.
-        assert!(
-            !st.cards[&m]
+        // Decision §8.1-1: the rage modifier is pushed with `synrage_<koDefId>`,
+        // which the trailing `recalculatePassiveBuffs` no longer strips (it used
+        // to be `synergy_rage_L`, wiped on the very same call).
+        let rage = st.cards[&m]
+            .modifiers
+            .iter()
+            .find(|x| x.source == "synrage_L")
+            .expect("the rage buff survives the trailing recalculation");
+        assert_eq!(rage.amount, 3);
+        assert_eq!(rage.duration, ModifierDuration::Turn);
+        // The partner is gone from the board, so no continuous `synergy_L` buff:
+        // captain buffAlly (+1) + rage (+3).
+        assert_eq!(atk_bonus(&st, &m), 4);
+
+        // …and it lasts exactly one turn.
+        st.reset_turn_flags();
+        assert_eq!(atk_bonus(&st, &m), 1, "only the captain buffAlly remains");
+    }
+
+    #[test]
+    fn self_buff_on_ally_ko_clamps_the_last_push_to_the_max() {
+        // Decision §8.1-4: `max` caps the accumulated total. With `amount = 2`
+        // and `max = 3` the second KO may only add 1, and a third adds nothing.
+        let reg = CardRegistry::from_sets(
+            [vec![chr("V", "Victim", 1, 1, 1)]],
+            [cap(
+                "CAP",
+                "Luffy",
+                vec![PassiveEffect::SelfBuffOnAllyKo {
+                    stat: AtkStat::Atk,
+                    amount: 2,
+                    max: 3,
+                    filter: None,
+                }],
+                vec![],
+            )],
+        );
+        let ctx = EngineContext::new(1, 42);
+        let mut st = blank_state("CAP", "CAP");
+        let ko = |st: &mut GameState| {
+            apply_on_ko_effects(st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "V").unwrap()
+        };
+        let total = |st: &GameState| -> i32 {
+            st.players
+                .get(PlayerId::Player1)
+                .captain
                 .modifiers
                 .iter()
-                .any(|x| x.source == "synergy_rage_L"),
-            "recalculatePassiveBuffs strips every synergy_* modifier afterwards"
+                .filter(|m| m.source == "captainSelfKO")
+                .map(|m| m.amount)
+                .sum()
+        };
+
+        ko(&mut st);
+        assert_eq!(total(&st), 2);
+        ko(&mut st);
+        assert_eq!(total(&st), 3, "clamped to max - current == 1");
+        assert_eq!(
+            st.log.last().unwrap().message,
+            "Luffy : +1 ATK permanent (Mugiwara KO)."
         );
-        // The partner is gone from the board, so no `synergy_L` buff either.
-        assert_eq!(atk_bonus(&st, &m), 1, "only the captain buffAlly remains");
+        ko(&mut st);
+        assert_eq!(total(&st), 3, "no room left: nothing is pushed");
+        assert_eq!(st.players.get(PlayerId::Player1).captain.modifiers.len(), 2);
+    }
+
+    #[test]
+    fn synergy_partner_can_be_the_own_flipped_captain() {
+        // Decision §8.1-7 (`RH-004` + `CAP-SHANKS`): a recto captain is off-board,
+        // so the bonus only applies once the captain is flipped into a slot.
+        let mut rockstar = chr("R", "Rockstar", 2, 1, 4);
+        rockstar.synergies = Some(vec![SynergyDef {
+            partner_id: "CAP".to_string(),
+            atk_bonus: 1,
+            on_partner_ko: None,
+        }]);
+        let reg = CardRegistry::from_sets([vec![rockstar]], [cap("CAP", "Shanks", vec![], vec![])]);
+        let mut st = blank_state("CAP", "CAP");
+        let r = place(&mut st, &reg, PlayerId::Player1, Slot::V2, "R", 4);
+
+        // Recto: the captain is not on the board.
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!(atk_bonus(&st, &r), 0);
+
+        // Flipped into a slot: the synergy fires.
+        {
+            let c = &mut st.players.get_mut(PlayerId::Player1).captain;
+            c.flipped = true;
+            c.slot = Some(Slot::V1);
+        }
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!(atk_bonus(&st, &r), 1);
+        assert!(
+            st.cards[&r]
+                .modifiers
+                .iter()
+                .any(|m| m.source == "synergy_CAP")
+        );
+
+        // The opponent's Shanks is not *my* partner.
+        let mut st2 = blank_state("OTHER", "CAP");
+        let r2 = place(&mut st2, &reg, PlayerId::Player1, Slot::V2, "R", 4);
+        {
+            let c = &mut st2.players.get_mut(PlayerId::Player2).captain;
+            c.flipped = true;
+            c.slot = Some(Slot::V1);
+        }
+        let reg2 = CardRegistry::from_sets(
+            [vec![{
+                let mut d = chr("R", "Rockstar", 2, 1, 4);
+                d.synergies = Some(vec![SynergyDef {
+                    partner_id: "CAP".to_string(),
+                    atk_bonus: 1,
+                    on_partner_ko: None,
+                }]);
+                d
+            }]],
+            [
+                cap("CAP", "Shanks", vec![], vec![]),
+                cap("OTHER", "Autre", vec![], vec![]),
+            ],
+        );
+        recalculate_passive_buffs(&mut st2, &reg2, PlayerId::Player1).unwrap();
+        assert_eq!(atk_bonus(&st2, &r2), 0);
+
+        // Removed from the board again → the bonus goes away.
+        st.players.get_mut(PlayerId::Player1).captain.slot = None;
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!(atk_bonus(&st, &r), 0);
     }
 
     #[test]

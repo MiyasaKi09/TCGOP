@@ -18,7 +18,7 @@ use tcgop_engine::state::{GameState, PendingAttack};
 use tcgop_engine::types::{AttackTrait, PlayerId, Zone};
 
 use crate::selection::captain_key;
-use crate::vfx::element::VfxElement;
+use crate::vfx::VfxElement;
 
 // ============================================================
 // Events
@@ -448,6 +448,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         }
     }
 

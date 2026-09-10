@@ -16,7 +16,7 @@ use bevy::prelude::Color;
 use tcgop_engine::types::{GameAction, PlayerId, Slot, StatusEffectType};
 
 use crate::app::Palette;
-use crate::art::{self, Crest, Focus};
+use crate::art::{self, Focus};
 use crate::board::geometry::{captain_focus, tile_focus};
 use crate::bridge::Session;
 use crate::selection::{
@@ -109,6 +109,9 @@ pub struct StatusBadge {
 pub struct UnitView {
     pub instance_id: String,
     pub def_id: String,
+    /// Whose half the tile is on — the mock-up paints a wounded unit's `.dmg`
+    /// bar `var(--atk)` on your side and `var(--gd)` on the foe's.
+    pub is_you: bool,
     pub name: String,
     pub art: Option<&'static str>,
     pub focus: Focus,
@@ -128,6 +131,7 @@ pub struct UnitView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptainTokenView {
     pub player: PlayerId,
+    pub is_you: bool,
     pub def_id: String,
     pub name: String,
     pub art: Option<&'static str>,
@@ -148,6 +152,8 @@ pub enum CellContent {
 
 impl CellContent {
     /// The instance id (or captain key) a click on this cell would act on.
+    // Used by the cell tests; the click path matches on `CellContent`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn occupant(&self) -> Option<&str> {
         match self {
             CellContent::Empty => None,
@@ -235,7 +241,6 @@ pub struct HalfView {
     pub is_you: bool,
     /// Ship-deck floor art.
     pub floor: &'static str,
-    pub ambiance: Color,
     pub command: CommandView,
     /// `V1..V3`, the line at the waterline.
     pub front: Vec<CellView>,
@@ -257,12 +262,7 @@ impl HalfView {
 pub struct HeaderView {
     pub turn: u32,
     pub status: StatusHint,
-    pub foe_hand: usize,
-    pub foe_deck: usize,
-    pub foe_accent: Color,
-    pub foe_crest: Crest,
-    pub foe_ship: Option<String>,
-    /// TS: the button is disabled while the AI plays or a counter window is open.
+    /// TS: the CTA is disabled while the AI plays or a counter window is open.
     pub can_end_turn: bool,
     /// "Annuler" only shows when the UI is not idle.
     pub can_cancel: bool,
@@ -352,29 +352,14 @@ impl Ctx<'_> {
     }
 }
 
+/// Mock-up `header`: the turn, the status pill, and the two flags the footer's
+/// CTA row reads. The foe's crest, hand / deck counts and ship are **not** here
+/// — the foe command bar already draws all three, and the mock-up shows them
+/// exactly once.
 fn header_view(session: &Session, mode: &UiMode) -> HeaderView {
-    let foe = session.foe();
-    let visual = session
-        .registry
-        .captain_def(&foe.captain.def_id)
-        .map(|def| art::faction_visual(def.faction))
-        .unwrap_or_else(|| art::faction_visual(tcgop_engine::types::Faction::Marine));
-    let foe_ship = foe.active_ship.as_ref().and_then(|id| {
-        session
-            .state
-            .card(id)
-            .and_then(|c| session.registry.card_def(&c.def_id))
-            .map(|def| def.name.clone())
-    });
-
     HeaderView {
         turn: session.state.turn_number,
         status: status_hint(mode, session.is_ai_turn(), session.in_counter_window()),
-        foe_hand: foe.hand.len(),
-        foe_deck: foe.deck.len(),
-        foe_accent: visual.accent,
-        foe_crest: visual.crest,
-        foe_ship,
         can_end_turn: !session.is_ai_turn() && !session.in_counter_window(),
         can_cancel: !mode.is_idle(),
     }
@@ -401,7 +386,6 @@ fn half_view(ctx: &Ctx, player: PlayerId, is_you: bool) -> HalfView {
         player,
         is_you,
         floor: visual.ship_deck,
-        ambiance: visual.ambiance,
         command: command_view(ctx, player, is_you),
         front: line(&Slot::FRONT),
         back: line(&Slot::BACK),
@@ -425,6 +409,7 @@ fn cell_view(ctx: &Ctx, player: PlayerId, is_you: bool, slot: Slot) -> CellView 
                 let max_pv = def.verso.pv.max(1);
                 CellContent::Captain(CaptainTokenView {
                     player,
+                    is_you,
                     def_id: def.id.clone(),
                     name: def.name.clone(),
                     art: art::art_for(&def.id, true),
@@ -454,6 +439,7 @@ fn cell_view(ctx: &Ctx, player: PlayerId, is_you: bool, slot: Slot) -> CellView 
             Some(CellContent::Unit(UnitView {
                 instance_id: instance.instance_id.clone(),
                 def_id: instance.def_id.clone(),
+                is_you,
                 name: def.name.clone(),
                 art: art::art_for(&instance.def_id, instance.is_awakened.unwrap_or(false)),
                 focus: tile_focus(&instance.def_id),
@@ -726,15 +712,17 @@ mod tests {
     }
 
     #[test]
-    fn the_header_reports_the_turn_the_status_and_the_foe_counts() {
+    fn the_header_reports_the_turn_and_the_status_only() {
         let mut s = session();
         let view = board_view(&s, &UiMode::Idle);
         assert_eq!(view.header.turn, s.state.turn_number);
         assert_eq!(view.header.status.tone, StatusTone::Ready);
         assert!(view.header.can_end_turn);
         assert!(!view.header.can_cancel);
-        assert_eq!(view.header.foe_hand, s.foe().hand.len());
-        assert_eq!(view.header.foe_crest, art::Crest::Anchor);
+        // The foe's counts belong to the foe command bar, and are drawn there
+        // exactly once.
+        assert_eq!(view.foe.command.resources.hand, s.foe().hand.len());
+        assert_eq!(view.foe.command.resources.deck, s.foe().deck.len());
 
         // Handing the turn over disables the button and flips the tag.
         s.dispatch(GameAction::EndTurn).unwrap();
@@ -803,6 +791,7 @@ mod tests {
             unreachable!()
         };
         assert!(unit.damaged);
+        assert!(unit.is_you, "the tile knows whose half it is on");
         assert!(unit.hp_ratio < 1.0);
     }
 

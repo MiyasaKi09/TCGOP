@@ -134,6 +134,9 @@ pub fn cards() -> Vec<CardDef> {
                 cost: 1,
                 atk_bonus: 0,
                 is_support: Some(true),
+                // Decision §8.38/§8.54: the printed text becomes a structured
+                // field, in lockstep with `src/data/cards/redhair.ts`.
+                taunt: Some(true),
                 description: Some("Un ennemi doit cibler Rockstar à son prochain tour.".to_string()),
                 ..SpecialAttack::default()
             }),
@@ -266,6 +269,10 @@ pub fn cards() -> Vec<CardDef> {
                 cost: 2,
                 atk_bonus: 0,
                 is_support: Some(true),
+                // Decision §8.38/§8.54: the printed text becomes structured
+                // fields, in lockstep with `src/data/cards/redhair.ts`.
+                buff_ally_atk: Some(2),
+                cleanse: Some(true),
                 description: Some("Un allié gagne +2 ATK et perd gelé/immobilisé.".to_string()),
                 ..SpecialAttack::default()
             }),

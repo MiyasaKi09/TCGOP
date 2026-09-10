@@ -380,6 +380,15 @@ pub fn build_announcement(
             ann.dest_id = Some(captain_key(actor));
             Some(ann)
         }
+        // Engine §8.2 item 34(b): the captain's surcharge ability.
+        GameAction::UseSurcharge { .. } => {
+            let mut ann =
+                PlayAnnouncement::base(side, kind, "Le Capitaine utilise sa Surcharge".to_string());
+            ann.big = false;
+            ann.toast = true;
+            ann.dest_id = Some(captain_key(actor));
+            Some(ann)
+        }
         GameAction::UseHaki { haki_type, .. } => {
             let caption = match haki_type {
                 HakiType::King => "Haki des Rois !",
@@ -406,8 +415,23 @@ pub fn build_announcement(
             ann.toast = true;
             Some(ann)
         }
-        // TS `default: return null` — no reveal for a base support action.
-        GameAction::BaseSupportAction { .. } => None,
+        // Engine §8.1 item 59: the TS `default: return null` swallowed the
+        // whole support-action class, so it never paced the loop. A support
+        // action is announced as a short toast naming the card and its action.
+        GameAction::BaseSupportAction { instance_id, .. } => {
+            let def = def_of(state, registry, instance_id)?;
+            let caption = match def.base_action.as_ref() {
+                Some(base_action) => format!("{} : {}", def.name, base_action.name),
+                None => def.name.clone(),
+            };
+            let mut ann = PlayAnnouncement::base(side, kind, caption);
+            ann.big = false;
+            ann.toast = true;
+            ann.def_id = Some(def.id.clone());
+            ann.instance_id = Some(instance_id.clone());
+            ann.dest_id = Some(instance_id.clone());
+            Some(ann)
+        }
     }
 }
 
@@ -510,7 +534,7 @@ mod tests {
         assert_eq!(compact.hold_fraction(), 0.5);
         assert_eq!(captain.hold_fraction(), 0.72);
 
-        // A base support action is deliberately silent.
+        // An unknown instance is still unannounceable (nothing to name).
         assert!(
             build_announcement(
                 &GameAction::BaseSupportAction {
@@ -522,6 +546,91 @@ mod tests {
                 session.human,
             )
             .is_none()
+        );
+    }
+
+    /// Any card in the game whose base action is a support action.
+    fn a_support_card(session: &crate::bridge::Session) -> Vec<String> {
+        let mut ids: Vec<String> = session
+            .state
+            .cards
+            .iter()
+            .filter(|(_, card)| {
+                session
+                    .registry
+                    .card_def(&card.def_id)
+                    .and_then(|def| def.base_action.as_ref())
+                    .is_some_and(|base| base.is_support.unwrap_or(false))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// §8.1 item 59 — the TS `default: return null` swallowed the whole
+    /// support-action class, so it never paced the loop.
+    #[test]
+    fn a_support_action_is_announced_as_a_short_toast() {
+        let session = session(3);
+        let ids = a_support_card(&session);
+        let id = ids.first().expect("both decks hold a support action");
+        let def = session
+            .registry
+            .card_def(&session.state.cards[id].def_id)
+            .unwrap();
+
+        let ann = build_announcement(
+            &GameAction::BaseSupportAction {
+                instance_id: id.clone(),
+                target_instance_id: None,
+            },
+            &session.state,
+            &session.registry,
+            session.human,
+        )
+        .expect("a support action paces the loop like every other action");
+
+        assert!(ann.toast && !ann.big, "a short banner, not a card reveal");
+        assert_eq!(ann.kind, "baseSupportAction");
+        assert_eq!(
+            ann.caption,
+            format!("{} : {}", def.name, def.base_action.as_ref().unwrap().name)
+        );
+        assert_eq!(ann.duration(), REVEAL_TOAST);
+        assert_eq!(ann.instance_id.as_deref(), Some(id.as_str()));
+        assert_eq!(ann.def_id.as_deref(), Some(def.id.as_str()));
+    }
+
+    /// The point of the toast: two support actions in a row queue up instead of
+    /// firing back to back with no pause at all.
+    #[test]
+    fn two_support_actions_in_a_row_do_not_overlap_their_reveals() {
+        use crate::ai_driver::AiPacing;
+
+        let session = session(3);
+        let ids = a_support_card(&session);
+        assert!(ids.len() >= 2, "need two support cards to chain them");
+
+        let mut pacing = AiPacing::default();
+        let now = Duration::from_secs(2);
+        for id in ids.iter().take(2) {
+            let ann = build_announcement(
+                &GameAction::BaseSupportAction {
+                    instance_id: id.clone(),
+                    target_instance_id: None,
+                },
+                &session.state,
+                &session.registry,
+                session.human,
+            )
+            .expect("every support action is announced");
+            pacing.extend(now, ann.duration());
+        }
+        assert_eq!(
+            pacing.remaining_busy(now),
+            REVEAL_TOAST + REVEAL_TOAST,
+            "the second reveal starts where the first one ends"
         );
     }
 

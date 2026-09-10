@@ -481,15 +481,16 @@ fn end_turn_applies_crocodile_desiccation() {
     let injured = place_from_hand(&mut state, PlayerId::Player2, 0, Slot::A1);
     state.card_mut(&injured).unwrap().current_pv = 2;
 
-    // Recto captain: the passive carries endTurnDesiccation but only the flipped side applies.
-    state.end_turn(&reg).unwrap();
-    assert_eq!(state.cards[&injured].current_pv, 2);
+    // Decision §8.17: `endTurn` reads the *active* face's passive — verso when
+    // the captain is flipped, recto otherwise. The fake captain carries
+    // `endTurnDesiccation` on **both** faces, so the unflipped captain drains
+    // the first injured enemy too.
+    //
+    // This block used to assert the opposite (`currentPv` still 2, empty log):
+    // it encoded the bug, i.e. the redundant `captain.flipped &&` guard that
+    // made the recto half of the face selection unreachable.
+    assert!(!state.players.player1.captain.flipped);
     assert!(state.log.is_empty());
-    assert_eq!(state.current_player, PlayerId::Player2);
-    // Back to P1 and flip.
-    state.end_turn_switch();
-    state.players.player1.captain.flipped = true;
-
     state.end_turn(&reg).unwrap();
     assert_eq!(state.cards[&injured].current_pv, 1);
     assert_eq!(state.cards[&healthy].current_pv, 3);
@@ -504,9 +505,18 @@ fn end_turn_applies_crocodile_desiccation() {
     assert_eq!(state.phase, Phase::End);
     assert_eq!(state.current_player, PlayerId::Player2);
 
-    // Second application drops it to 0 → removeFromBoard.
+    // Back to P1 and flip: the verso side (Crocodile's own) is unchanged, and
+    // a second application drops the target to 0 → removeFromBoard.
     state.end_turn_switch();
+    state.players.player1.captain.flipped = true;
     state.end_turn(&reg).unwrap();
+    assert_eq!(
+        state.log.last().unwrap().message,
+        format!(
+            "Déshydratation : Card {} perd 1 PV permanent.",
+            state.cards[&injured].def_id
+        )
+    );
     assert_eq!(state.cards[&injured].current_pv, 0);
     assert_eq!(state.cards[&injured].zone, Zone::Graveyard);
     assert_eq!(state.player(PlayerId::Player2).board.get(Slot::A1), None);
@@ -766,7 +776,7 @@ fn passives_mirror_passives_ts() {
     assert_eq!(state.cards[&a].current_pv, 1);
     let vant = state.cards[&b].modifiers.last().unwrap();
     assert_eq!(vant.id, format!("vantardise_{b}_777"));
-    assert_eq!(vant.source, format!("passive_{d}"));
+    assert_eq!(vant.source, format!("vantardise_{d}")); // §8.1-2 (was `passive_{d}`)
     assert_eq!(vant.duration, ModifierDuration::Turn);
     assert_eq!(vant.amount, 1);
     let msgs: Vec<&str> = state.log.iter().map(|l| l.message.as_str()).collect();
@@ -795,14 +805,13 @@ fn passives_mirror_passives_ts() {
     assert_eq!(state.players.player1.char_ko_ed_this_game, Some(true));
     assert_eq!(state.cards[&a].zone, Zone::Banished);
     assert!(state.players.player1.graveyard.is_empty());
-    // TS quirk kept on purpose: the rage modifier (source `synergy_rage_A`) is
-    // pushed and logged, then immediately stripped by the trailing
-    // recalculatePassiveBuffs (`source.startsWith("synergy_")`).
+    // §8.1-1: the rage modifier now uses `synrage_<koDefId>`, so the trailing
+    // recalculatePassiveBuffs (which strips `synergy_*`) leaves it alone.
     assert!(
-        !state.cards[&b]
+        state.cards[&b]
             .modifiers
             .iter()
-            .any(|m| m.source == "synergy_rage_A")
+            .any(|m| m.source == "synrage_A")
     );
     // recalculated: A's buff and the A synergy are gone, the rest stays
     assert!(
@@ -931,6 +940,11 @@ fn game_state_round_trips_through_serde_json() {
         pushback_slots: Some(2),
         strip_stealth: None,
         survive_played: None,
+        survive_target_id: None,
+        damage_reduction: None,
+        ignore_def: None,
+        permanent_pv_loss: None,
+        no_heal: None,
     });
     state.add_log(PlayerId::Player2, "hello");
     state.players.player2.ally_ko_ed_this_turn = Some(true);
@@ -1454,4 +1468,389 @@ fn slot_constants_and_adjacency() {
     assert_eq!(Slot::A3.row(), Row::Back);
     assert_eq!(serde_json::to_value(Slot::A3).unwrap(), json!("A3"));
     assert_eq!(PlayerId::Player1.opponent(), PlayerId::Player2);
+}
+
+/// Decision §8.46 — the slot→row mapping is declared once, on the type, and
+/// everything else (`FRONT` / `BACK` / `is_front` / `is_back` /
+/// `board::is_front_slot` / `board::is_back_slot`) is derived from it.
+#[test]
+fn slot_row_mapping_is_single_sourced() {
+    // The mapping itself, for all six slots.
+    assert_eq!(Slot::V1.row(), Row::Front);
+    assert_eq!(Slot::V2.row(), Row::Front);
+    assert_eq!(Slot::V3.row(), Row::Front);
+    assert_eq!(Slot::A1.row(), Row::Back);
+    assert_eq!(Slot::A2.row(), Row::Back);
+    assert_eq!(Slot::A3.row(), Row::Back);
+
+    // The constants and the predicates agree with `row()` for every slot,
+    // and the two rows partition `ALL`.
+    for slot in Slot::ALL {
+        let front = slot.row() == Row::Front;
+        assert_eq!(slot.is_front(), front, "{}", slot.as_str());
+        assert_eq!(slot.is_back(), !front, "{}", slot.as_str());
+        assert_eq!(Slot::FRONT.contains(&slot), front, "{}", slot.as_str());
+        assert_eq!(Slot::BACK.contains(&slot), !front, "{}", slot.as_str());
+        assert_eq!(
+            crate::board::is_front_slot(slot),
+            front,
+            "{}",
+            slot.as_str()
+        );
+        assert_eq!(crate::board::is_back_slot(slot), !front, "{}", slot.as_str());
+    }
+
+    // Unchanged by construction: the derived constants are exactly the old
+    // hand-written literals, in `ALL` order.
+    assert_eq!(Slot::FRONT, [Slot::V1, Slot::V2, Slot::V3]);
+    assert_eq!(Slot::BACK, [Slot::A1, Slot::A2, Slot::A3]);
+    assert_eq!(Row::Front.slots(), Slot::FRONT);
+    assert_eq!(Row::Back.slots(), Slot::BACK);
+
+    // Adjacency stays orthogonal: neighbours are either the same row one
+    // column over, or the same column in the other row — never diagonal.
+    let coords = |s: Slot| -> (usize, usize) {
+        let col = match s {
+            Slot::V1 | Slot::A1 => 0,
+            Slot::V2 | Slot::A2 => 1,
+            Slot::V3 | Slot::A3 => 2,
+        };
+        (usize::from(s.is_back()), col)
+    };
+    for slot in Slot::ALL {
+        let (r, c) = coords(slot);
+        for other in slot.adjacency() {
+            let (r2, c2) = coords(*other);
+            let d = r.abs_diff(r2) + c.abs_diff(c2);
+            assert_eq!(d, 1, "{} -> {} is not orthogonal", slot.as_str(), other.as_str());
+        }
+    }
+}
+
+// ============================================================
+// Decisions §8.17 / §8.22 / §8.24 / §8.25 / §8.44 / §8.50 — the turn
+// lifecycle rules pinned down in `RULES-DECISIONS.md`.
+// ============================================================
+
+/// A modifier with an explicit `id`, `duration` and countdown.
+fn modifier(id: &str, duration: ModifierDuration, turns_remaining: Option<i32>) -> Modifier {
+    Modifier {
+        id: id.into(),
+        stat: ModifierStat::Atk,
+        amount: 1,
+        source: "t".into(),
+        duration,
+        turns_remaining,
+    }
+}
+
+/// The ids of `modifiers`, in order, paired with their remaining countdown.
+fn modifier_state(modifiers: &[Modifier]) -> Vec<(&str, Option<i32>)> {
+    modifiers
+        .iter()
+        .map(|m| (m.id.as_str(), m.turns_remaining))
+        .collect()
+}
+
+/// Decision §8.22: `turn` modifiers still vanish at the owner's next turn
+/// start, a `turnsRemaining` countdown ticks down there and the modifier is
+/// dropped at 0, and `nextTurn` is exactly that countdown started at 2 — it
+/// lasts one full owner turn. Modifiers of the *other* player are untouched.
+#[test]
+fn modifier_countdowns_expire_at_the_owners_turn_start() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::seeded(11);
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+    assert_eq!(state.current_player, PlayerId::Player1);
+
+    let mine = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V1);
+    let theirs = place_from_hand(&mut state, PlayerId::Player2, 0, Slot::V1);
+    let fresh = || {
+        vec![
+            modifier("turn", ModifierDuration::Turn, None),
+            modifier("perm", ModifierDuration::Permanent, None),
+            modifier("count2", ModifierDuration::Permanent, Some(2)),
+            Modifier::next_turn("next", ModifierStat::Atk, 1, "t"),
+            // A `nextTurn` modifier deserialised without a countdown behaves
+            // like one created through `Modifier::next_turn`.
+            modifier("bare-next", ModifierDuration::NextTurn, None),
+        ]
+    };
+    state.card_mut(&mine).unwrap().modifiers = fresh();
+    state.card_mut(&theirs).unwrap().modifiers = fresh();
+    state.players.player1.captain.modifiers = fresh();
+    assert_eq!(
+        state.players.player1.captain.modifiers[3].turns_remaining,
+        Some(Modifier::NEXT_TURN_COUNT)
+    );
+
+    // First turn start of the owner: `turn` is gone, every countdown ticks.
+    state.reset_turn_flags();
+    let after_one = vec![
+        ("perm", None),
+        ("count2", Some(1)),
+        ("next", Some(1)),
+        ("bare-next", Some(1)),
+    ];
+    assert_eq!(modifier_state(&state.cards[&mine].modifiers), after_one);
+    assert_eq!(
+        modifier_state(&state.players.player1.captain.modifiers),
+        after_one
+    );
+    // The opponent's copies did not move: the countdown is in owner turns.
+    assert_eq!(
+        modifier_state(&state.cards[&theirs].modifiers),
+        vec![
+            ("turn", None),
+            ("perm", None),
+            ("count2", Some(2)),
+            ("next", Some(2)),
+            ("bare-next", None),
+        ]
+    );
+
+    // Second turn start: every countdown hits 0 and is dropped; `permanent`
+    // without a countdown stays for ever.
+    state.reset_turn_flags();
+    assert_eq!(
+        modifier_state(&state.cards[&mine].modifiers),
+        vec![("perm", None)]
+    );
+    assert_eq!(
+        modifier_state(&state.players.player1.captain.modifiers),
+        vec![("perm", None)]
+    );
+
+    state.reset_turn_flags();
+    assert_eq!(
+        modifier_state(&state.cards[&mine].modifiers),
+        vec![("perm", None)]
+    );
+}
+
+fn status(
+    effect_type: StatusEffectType,
+    turns_remaining: i32,
+    damage_per_turn: i32,
+) -> StatusEffect {
+    StatusEffect {
+        effect_type,
+        turns_remaining,
+        damage_per_turn,
+        source: "t".into(),
+    }
+}
+
+/// Decision §8.24: `turnsRemaining: 0` means "already expired" — the effect
+/// deals nothing and is dropped by the tick it meets; `-1` is permanent for
+/// **every** status type, freeze included.
+#[test]
+fn a_zero_turn_status_deals_nothing_and_a_permanent_one_never_expires() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::seeded(12);
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+
+    let victim = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V1);
+    {
+        let c = state.card_mut(&victim).unwrap();
+        c.current_pv = 5;
+        c.status_effects = vec![
+            status(StatusEffectType::Burn, 0, 3),
+            status(StatusEffectType::Freeze, -1, 0),
+        ];
+    }
+    {
+        let cap = &mut state.players.player1.captain;
+        cap.current_pv = 5;
+        cap.status_effects = vec![
+            status(StatusEffectType::Burn, 0, 3),
+            status(StatusEffectType::Freeze, -1, 0),
+        ];
+    }
+
+    state.process_start_of_turn_effects();
+    let c = state.card(&victim).unwrap();
+    // The 0-turn burn dealt nothing (it was already over) and is gone.
+    assert_eq!(c.current_pv, 5);
+    assert_eq!(
+        c.status_effects
+            .iter()
+            .map(|e| e.effect_type)
+            .collect::<Vec<_>>(),
+        vec![StatusEffectType::Freeze]
+    );
+    assert_eq!(state.players.player1.captain.current_pv, 5);
+    assert_eq!(
+        state.players.player1.captain.status_effects.len(),
+        1,
+        "the captain's 0-turn burn is dropped too"
+    );
+
+    // The permanent freeze survives any number of ticks.
+    for _ in 0..5 {
+        state.process_start_of_turn_effects();
+    }
+    assert!(
+        state
+            .card(&victim)
+            .unwrap()
+            .has_status(StatusEffectType::Freeze)
+    );
+    assert_eq!(state.card(&victim).unwrap().current_pv, 5);
+    assert!(
+        state
+            .players
+            .player1
+            .captain
+            .has_status(StatusEffectType::Freeze)
+    );
+}
+
+/// Decision §8.25: the 1-PV floor belongs to the poison tick alone. It clamps
+/// the *damage*, so poison can neither kill nor heal — a unit a burn tick in
+/// the same pass has already taken to 0 stays at 0.
+#[test]
+fn poison_stops_at_one_pv_but_never_resurrects() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::seeded(13);
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+
+    // Burn first, then poison — the ordering that used to *heal* the corpse.
+    let burnt = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V1);
+    {
+        let c = state.card_mut(&burnt).unwrap();
+        c.current_pv = 2;
+        c.status_effects = vec![
+            status(StatusEffectType::Burn, 2, 2),
+            status(StatusEffectType::Poison, -1, 5),
+        ];
+    }
+    // Poison on its own: stops at 1 PV, never below.
+    let poisoned = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V2);
+    {
+        let c = state.card_mut(&poisoned).unwrap();
+        c.current_pv = 5;
+        c.status_effects = vec![status(StatusEffectType::Poison, -1, 5)];
+    }
+    // The captain follows the same rule.
+    {
+        let cap = &mut state.players.player1.captain;
+        cap.current_pv = 4;
+        cap.status_effects = vec![
+            status(StatusEffectType::Burn, 2, 4),
+            status(StatusEffectType::Poison, -1, 3),
+        ];
+    }
+
+    state.process_start_of_turn_effects();
+    assert_eq!(
+        state.card(&burnt).unwrap().current_pv,
+        0,
+        "the burn KO'd it; the poison tick must not restore it to 1"
+    );
+    assert_eq!(state.card(&poisoned).unwrap().current_pv, 1);
+    assert_eq!(state.players.player1.captain.current_pv, 0);
+
+    // A second tick on the already-dead body still adds nothing back.
+    state.process_start_of_turn_effects();
+    assert_eq!(state.card(&burnt).unwrap().current_pv, -2);
+    assert_eq!(state.card(&poisoned).unwrap().current_pv, 1);
+}
+
+/// Decision §8.44: `startTurn` ends with a win check, so a captain finished
+/// off by a burn tick loses the game there and then.
+#[test]
+fn a_captain_killed_by_a_burn_tick_loses_at_the_start_of_the_turn() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::new(5, 4242);
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+    state.end_turn(&reg).unwrap();
+    state.start_turn(&reg, &ctx).unwrap();
+    state.end_turn(&reg).unwrap();
+    assert_eq!(state.current_player, PlayerId::Player1);
+    assert!(state.winner.is_none());
+
+    state.players.player1.captain.current_pv = 2;
+    state
+        .players
+        .player1
+        .captain
+        .status_effects
+        .push(status(StatusEffectType::Burn, 2, 3));
+
+    state.start_turn(&reg, &ctx).unwrap();
+    assert_eq!(state.players.player1.captain.current_pv, -1);
+    assert_eq!(state.winner, Some(PlayerId::Player2));
+}
+
+/// Decision §8.44: a deck-out winner set mid-turn is never overwritten by a
+/// later check, and every action ends with one.
+#[test]
+fn the_win_check_runs_after_every_action_and_never_overwrites_a_winner() {
+    let reg = fake_registry();
+    let mut ctx = EngineContext::new(5, 77);
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+
+    // (a) An effect that has no win check of its own drops the enemy captain
+    // to 0: the check at the end of `execute_action` ends the game.
+    let mover = place_from_hand(&mut state, PlayerId::Player1, 0, Slot::V1);
+    state.players.player2.captain.current_pv = 0;
+    execute_action(
+        &mut state,
+        &reg,
+        &mut ctx,
+        &GameAction::MoveCharacter {
+            instance_id: mover.clone(),
+            target_slot: Slot::V2,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        state.player(PlayerId::Player1).board.get(Slot::V2),
+        Some(&mover)
+    );
+    assert_eq!(state.winner, Some(PlayerId::Player1));
+
+    // (b) A deck-out verdict survives everything that follows, even a board
+    // state that would name the other player.
+    let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+    state.player_mut(PlayerId::Player1).deck.clear();
+    state.draw_card(PlayerId::Player1);
+    assert_eq!(state.winner, Some(PlayerId::Player2));
+    state.players.player2.captain.current_pv = 0;
+    assert_eq!(state.check_win_condition(), Some(PlayerId::Player2));
+    state.start_turn(&reg, &ctx).unwrap();
+    assert_eq!(state.winner, Some(PlayerId::Player2));
+}
+
+/// Decision §8.50: the `usedOnceAbilities` sentinels keep the exact strings
+/// the UI (and the TypeScript engine) wrote — the constants only remove the
+/// copy-paste risk.
+#[test]
+fn used_once_ability_keys_keep_their_exact_strings() {
+    assert_eq!(ONCE_SURVIVED, "survived");
+    assert_eq!(ONCE_STRAWHAT, "strawhat");
+    assert_eq!(ONCE_SURCHARGE_PREFIX, "surcharge_");
+    assert_eq!(
+        once_surcharge("Sables Mouvants"),
+        "surcharge_Sables Mouvants"
+    );
+
+    let mut card = CardInstance::new("i1".into(), "MG-001".into(), PlayerId::Player1, 3);
+    card.used_once_abilities = vec![
+        ONCE_SURVIVED.to_string(),
+        ONCE_STRAWHAT.to_string(),
+        once_surcharge("Gomu Gomu"),
+    ];
+    let json = serde_json::to_value(&card).unwrap();
+    assert_eq!(
+        json["usedOnceAbilities"],
+        json!(["survived", "strawhat", "surcharge_Gomu Gomu"])
+    );
+    let back: CardInstance = serde_json::from_value(json).unwrap();
+    assert_eq!(back, card);
+    assert!(back.used_once(ONCE_SURVIVED));
+    assert!(back.used_once(ONCE_STRAWHAT));
+    assert!(back.used_once(&once_surcharge("Gomu Gomu")));
+    assert!(!back.used_once("nope"));
 }

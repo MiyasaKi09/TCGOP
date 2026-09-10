@@ -33,6 +33,16 @@
 //! [`StateChanged`](crate::bridge::StateChanged), and an armed timer whose
 //! kind or version is stale is thrown away and replaced.
 //!
+//! **Dead ends** (decision §8.21). A refused action does *not* change the
+//! state, so nothing invalidates the version and the TS loop would re-arm on
+//! the very same choice for ever. [`AiPacing::refused`] remembers every action
+//! the engine turned down for the current `state_version` and the loop never
+//! offers one of them again for that version: the first refusal falls back to
+//! `passCounter` / `endTurn`, and if *that* is refused too the loop
+//! [`stall`](AiPacing::stall)s — it disarms, stops dispatching, and raises one
+//! [`EngineErrorEvent`] instead of livelocking. A [`StateChanged`] clears the
+//! memory and gives the loop another go.
+//!
 //! Everything here ticks off `Res<Time>` and talks to the world only through
 //! messages, so a whole AI-vs-AI game runs inside an `App` built with
 //! `MinimalPlugins` and `TimeUpdateStrategy::ManualDuration` (see the tests).
@@ -41,6 +51,7 @@ use core::time::Duration;
 
 use bevy::prelude::*;
 use tcgop_engine::ai::ai_choose_action;
+use tcgop_engine::error::EngineError;
 use tcgop_engine::state::PendingAttack;
 use tcgop_engine::types::GameAction;
 
@@ -76,27 +87,6 @@ pub const REVEAL_COMPACT: Duration = Duration::from_millis(700);
 pub const REVEAL_TOAST: Duration = Duration::from_millis(750);
 /// End-of-turn toast.
 pub const REVEAL_END_TURN: Duration = Duration::from_millis(550);
-
-/// TS `announceDuration(announcement)`, keyed on the action alone.
-///
-/// The authoritative version is
-/// [`PlayAnnouncement::duration`](crate::vfx::PlayAnnouncement::duration),
-/// which knows the "big vs compact vs toast" split of the card that was
-/// actually revealed. This one is the same table collapsed onto the action, for
-/// callers that only have a [`GameAction`] in hand; the cinematic cases
-/// (special / captain / end of turn) are identical in both.
-pub fn announce_duration(action: &GameAction) -> Duration {
-    match action {
-        GameAction::SpecialAttack { .. } | GameAction::FruitSpecialAttack { .. } => REVEAL_SPECIAL,
-        GameAction::CaptainAttack { .. } => REVEAL_CAPTAIN,
-        GameAction::EndTurn => REVEAL_END_TURN,
-        GameAction::PassCounter | GameAction::UseHaki { .. } | GameAction::MoveCharacter { .. } => {
-            REVEAL_TOAST
-        }
-        GameAction::BaseAttack { .. } | GameAction::BaseSupportAction { .. } => REVEAL_COMPACT,
-        _ => REVEAL_BIG,
-    }
-}
 
 // ============================================================
 // Pure pacing arithmetic
@@ -156,6 +146,15 @@ pub struct AiPacing {
     pub state_version: u64,
     /// The pending auto-action, if the loop is currently counting down.
     pub armed: Option<ArmedAuto>,
+    /// Actions the engine refused at the current [`AiPacing::state_version`].
+    /// The loop never offers one of them again until the state moves on.
+    pub refused: Vec<GameAction>,
+    /// Set when even the fallback (`passCounter` / `endTurn`) was refused: the
+    /// loop stays disarmed instead of re-arming on every frame.
+    pub stalled: bool,
+    /// The refused fallback, waiting to be reported *once* as an
+    /// [`EngineErrorEvent`].
+    pub stall_report: Option<GameAction>,
 }
 
 impl AiPacing {
@@ -168,23 +167,51 @@ impl AiPacing {
     }
 
     /// How long a reveal will still hold the loop.
+    // Read by the pacing tests; the loop itself only compares `busy_until`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn remaining_busy(&self, now: Duration) -> Duration {
         self.busy_until.saturating_sub(now)
     }
 
     /// `true` while an auto-action is counting down.
+    // Read by the pacing tests; the loop matches on `armed` directly.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_armed(&self) -> bool {
         self.armed.is_some()
-    }
-
-    /// Time left on the armed auto-action, if any.
-    pub fn remaining(&self) -> Option<Duration> {
-        self.armed.as_ref().map(|armed| armed.timer.remaining())
     }
 
     /// Cancel the armed auto-action (TS `clearTimeout`).
     pub fn disarm(&mut self) {
         self.armed = None;
+    }
+
+    /// Remember that the engine refused `action` for the current state.
+    pub fn note_refused(&mut self, action: &GameAction) {
+        if !self.is_refused(action) {
+            self.refused.push(action.clone());
+        }
+    }
+
+    /// Has the engine already refused `action` for the current state?
+    pub fn is_refused(&self, action: &GameAction) -> bool {
+        self.refused.iter().any(|refused| refused == action)
+    }
+
+    /// Give up on the current state: disarm, stop re-arming, and queue the one
+    /// error the loop is allowed to raise about it.
+    pub fn stall(&mut self, fallback: GameAction) {
+        self.disarm();
+        if !self.stalled {
+            self.stalled = true;
+            self.stall_report = Some(fallback);
+        }
+    }
+
+    /// A new state un-refuses everything and un-stalls the loop.
+    pub fn forget_refusals(&mut self) {
+        self.refused.clear();
+        self.stalled = false;
+        self.stall_report = None;
     }
 }
 
@@ -248,6 +275,8 @@ fn reset_pacing(mut pacing: ResMut<AiPacing>) {
 fn bump_state_version(mut changed: MessageReader<StateChanged>, mut pacing: ResMut<AiPacing>) {
     if changed.read().count() > 0 {
         pacing.state_version = pacing.state_version.wrapping_add(1);
+        // Decision §8.21: the refusals belonged to the *old* state.
+        pacing.forget_refusals();
     }
 }
 
@@ -270,7 +299,24 @@ fn drive_auto_actions(
     mut session: ResMut<Session>,
     mut pacing: ResMut<AiPacing>,
     mut dispatch: MessageWriter<DispatchAction>,
+    mut failed: MessageWriter<EngineErrorEvent>,
 ) {
+    // Decision §8.21: a stalled loop says so once, then stays quiet until a
+    // [`StateChanged`] clears it — no timer, no dispatch, no second error.
+    if let Some(action) = pacing.stall_report.take() {
+        failed.write(EngineErrorEvent {
+            error: EngineError::illegal(format!(
+                "AI loop stalled: {} is the only answer left and the engine refuses it",
+                action.type_name()
+            )),
+            action,
+        });
+    }
+    if pacing.stalled {
+        pacing.disarm();
+        return;
+    }
+
     let auto = session.needs_auto_action();
     if auto == AutoAction::None {
         pacing.disarm();
@@ -303,8 +349,30 @@ fn drive_auto_actions(
     }
     pacing.disarm();
 
-    if let Some(action) = choose_auto_action(&mut session, auto) {
-        dispatch.write(DispatchAction(action));
+    let Some(action) = choose_auto_action(&mut session, auto) else {
+        return;
+    };
+    // Decision §8.21: never re-offer what this state already refused.
+    let action = if pacing.is_refused(&action) {
+        let fallback = fallback_action(&session);
+        if pacing.is_refused(&fallback) {
+            pacing.stall(fallback);
+            return;
+        }
+        fallback
+    } else {
+        action
+    };
+    dispatch.write(DispatchAction(action));
+}
+
+/// The answer that is always legal for whoever is on the clock — TS
+/// `updateState`'s `catch` fallback.
+fn fallback_action(session: &Session) -> GameAction {
+    if session.in_counter_window() {
+        GameAction::PassCounter
+    } else {
+        GameAction::EndTurn
     }
 }
 
@@ -352,25 +420,33 @@ fn ai_pick(session: &mut Session, level: tcgop_engine::ai::Difficulty) -> Option
 ///
 /// Only the auto-driven cases are recovered — a refused *human* action is a UI
 /// bug, reported by the bridge and left alone here.
+///
+/// Decision §8.21: the refusal is also written down for the current
+/// `state_version` (a refused action leaves the state untouched, so nothing
+/// else would stop the loop from choosing it again), and if the fallback is
+/// itself among the refusals the loop stalls rather than re-arming for ever.
 fn recover_from_refused_actions(
     mut failures: MessageReader<EngineErrorEvent>,
     session: Res<Session>,
+    mut pacing: ResMut<AiPacing>,
     mut dispatch: MessageWriter<DispatchAction>,
 ) {
+    // Always drain the reader, even when there is nothing to recover — a
+    // message left behind would be re-read on a later, unrelated frame.
     let refused: Vec<GameAction> = failures.read().map(|failure| failure.action.clone()).collect();
-    if refused.is_empty() || session.winner().is_some() {
+    if refused.is_empty() || pacing.stalled || session.winner().is_some() {
         return;
     }
     if session.needs_auto_action() == AutoAction::None {
         return;
     }
-    let fallback = if session.in_counter_window() {
-        GameAction::PassCounter
-    } else {
-        GameAction::EndTurn
-    };
+    for action in &refused {
+        pacing.note_refused(action);
+    }
+    let fallback = fallback_action(&session);
     // The fallback itself failing must not re-queue the fallback for ever.
-    if refused.iter().all(|action| *action == fallback) {
+    if pacing.is_refused(&fallback) {
+        pacing.stall(fallback);
         return;
     }
     dispatch.write(DispatchAction(fallback));
@@ -424,6 +500,11 @@ mod tests {
             pushback_slots: None,
             strip_stealth: None,
             survive_played: None,
+            survive_target_id: None,
+            damage_reduction: None,
+            ignore_def: None,
+            permanent_pv_loss: None,
+            no_heal: None,
         }
     }
 
@@ -478,30 +559,6 @@ mod tests {
     }
 
     // --- pure arithmetic ---
-
-    #[test]
-    fn cinematic_actions_hold_the_loop_longer() {
-        assert_eq!(announce_duration(&GameAction::EndTurn), REVEAL_END_TURN);
-        assert_eq!(
-            announce_duration(&GameAction::CaptainAttack {
-                target_instance_id: "x".into(),
-                target_is_captain: None,
-                is_special: None,
-            }),
-            REVEAL_CAPTAIN
-        );
-        assert!(
-            announce_duration(&GameAction::SpecialAttack {
-                attacker_instance_id: "a".into(),
-                target_instance_id: "b".into(),
-                target_is_captain: None,
-            }) > announce_duration(&GameAction::BaseAttack {
-                attacker_instance_id: "a".into(),
-                target_instance_id: "b".into(),
-                target_is_captain: None,
-            })
-        );
-    }
 
     #[test]
     fn base_delay_mirrors_the_web_table() {
@@ -796,5 +853,87 @@ mod tests {
         }
         assert_eq!(app.world().resource::<Session>().state.turn_number, turn);
         assert!(!app.world().resource::<AiPacing>().is_armed());
+    }
+
+    // --- decision §8.21: dead ends ---
+
+    /// Corrupt the session into a dead end: a counter window whose attack aims
+    /// at an instance that does not exist, with an empty human hand so
+    /// `passCounter` is the only answer left — and the engine refuses it every
+    /// single time (`Instance not found`).
+    fn dead_end(app: &mut App) {
+        let mut session = app.world_mut().resource_mut::<Session>();
+        let human = session.human;
+        let ai = session.ai_player();
+        session.state.player_mut(human).hand.clear();
+        session.state.current_player = ai;
+        session.state.pending_attack = Some(pending("ghost", false));
+        session.refresh_valid();
+    }
+
+    fn errors_this_frame(app: &App) -> usize {
+        app.world()
+            .resource::<Messages<EngineErrorEvent>>()
+            .iter_current_update_messages()
+            .count()
+    }
+
+    #[test]
+    fn a_refused_fallback_stalls_the_loop_after_a_single_error() {
+        let mut app = driver_app(42);
+        dead_end(&mut app);
+        assert_eq!(
+            app.world().resource::<Session>().needs_auto_action(),
+            AutoAction::AutoPass,
+            "the dead end must still ask the driver for an answer"
+        );
+
+        let mut errors = Vec::new();
+        for _ in 0..80 {
+            app.update();
+            errors.push(errors_this_frame(&app));
+            assert!(
+                applied(&app).is_empty(),
+                "nothing can be applied in a dead end"
+            );
+        }
+
+        // Before decision §8.21 the loop re-armed on every frame and replayed
+        // the refused `passCounter` roughly every 750 ms, for ever.
+        let total: usize = errors.iter().sum();
+        assert!(
+            total <= 2,
+            "the loop kept retrying: {total} refusals in 80 frames ({errors:?})"
+        );
+        assert!(
+            errors[20..].iter().all(|count| *count == 0),
+            "the loop was still dispatching after it gave up ({errors:?})"
+        );
+        let pacing = app.world().resource::<AiPacing>();
+        assert!(pacing.stalled, "the loop must record that it gave up");
+        assert!(!pacing.is_armed(), "and stay disarmed");
+    }
+
+    #[test]
+    fn a_new_state_forgets_what_the_old_one_refused() {
+        let mut app = driver_app(42);
+        {
+            let mut pacing = app.world_mut().resource_mut::<AiPacing>();
+            pacing.note_refused(&GameAction::PassCounter);
+            pacing.note_refused(&GameAction::PassCounter);
+            assert_eq!(pacing.refused.len(), 1, "a refusal is remembered once");
+            assert!(pacing.is_refused(&GameAction::PassCounter));
+            pacing.stall(GameAction::PassCounter);
+        }
+
+        app.world_mut().write_message(StateChanged);
+        app.update();
+
+        let pacing = app.world().resource::<AiPacing>();
+        assert!(
+            !pacing.is_refused(&GameAction::PassCounter),
+            "a new state re-opens every action"
+        );
+        assert!(!pacing.stalled, "and gives the loop another go");
     }
 }

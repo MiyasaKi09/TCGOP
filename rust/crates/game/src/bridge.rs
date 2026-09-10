@@ -24,13 +24,13 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use crate::app::{AppSet, configure_pipeline};
+use crate::app::{AppSet, board_active, configure_pipeline};
 use tcgop_engine::ai::Difficulty;
 use tcgop_engine::cards;
 use tcgop_engine::context::EngineContext;
 use tcgop_engine::error::EngineError;
 use tcgop_engine::registry::CardRegistry;
-use tcgop_engine::state::{GameState, LogEntry, create_game};
+use tcgop_engine::state::{GameState, create_game};
 use tcgop_engine::types::{DeckDef, GameAction, PlayerId};
 use tcgop_engine::{valid_actions_for, apply_with_ctx};
 
@@ -53,9 +53,19 @@ pub struct ActionApplied(pub GameAction);
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StateChanged;
 
-/// The engine refused an action. The client should never produce one of these
-/// (it only ever dispatches actions taken from [`Session::valid`]), so it is a
-/// bug report: log it, do not surface it to the player.
+/// The engine refused an action.
+///
+/// Mostly a bug report — the client only ever dispatches actions taken from
+/// [`Session::valid`] — but **not always**: `valid_actions_for` is occasionally
+/// more permissive than `apply`, and a card that then refuses its own
+/// pre-condition (MG-024 *Flashback*, offered with an empty graveyard) is a
+/// dead click the player has no other feedback about. The crate's scripted bot
+/// has always known this (`e2e.rs` keeps a `refused` set for exactly it).
+///
+/// So: log it *and* tell the player. The AI driver recovers by picking another
+/// action (`ai_driver::recover_from_refused_actions`); a refusal on the human's
+/// own turn raises the footer's transient notice
+/// ([`RefusalNotice`](crate::hand::RefusalNotice)).
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct EngineErrorEvent {
     pub action: GameAction,
@@ -82,8 +92,6 @@ pub struct Session {
     pub ai_level: Difficulty,
     /// The human's legal actions right now — TS `validActions`.
     pub valid: Vec<GameAction>,
-    /// How much of `state.log` has already been consumed by the UI.
-    pub log_cursor: usize,
 }
 
 impl Session {
@@ -116,7 +124,6 @@ impl Session {
             human: PlayerId::Player1,
             ai_level: level,
             valid: Vec::new(),
-            log_cursor: 0,
         };
         session.refresh_valid();
         Ok(session)
@@ -164,7 +171,9 @@ impl Session {
         self.state.player(self.human)
     }
 
-    /// The AI's `PlayerState`.
+    /// The AI's `PlayerState`. The mirror of [`Session::you`]; the board reads
+    /// the two halves through it in its tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn foe(&self) -> &tcgop_engine::state::PlayerState {
         self.state.player(self.ai_player())
     }
@@ -187,13 +196,6 @@ impl Session {
     /// `true` when the human won (only meaningful once [`Session::winner`] is `Some`).
     pub fn human_won(&self) -> bool {
         self.state.winner == Some(self.human)
-    }
-
-    /// Log entries appended since the last call, advancing [`Session::log_cursor`].
-    pub fn drain_log(&mut self) -> Vec<LogEntry> {
-        let from = self.log_cursor.min(self.state.log.len());
-        self.log_cursor = self.state.log.len();
-        self.state.log[from..].to_vec()
     }
 
     /// What the driver has to do next, if anything — TS `needsAutoAction`.
@@ -266,7 +268,12 @@ impl Plugin for BridgePlugin {
                 )
                     .chain()
                     .in_set(BridgeSet)
-                    .run_if(resource_exists::<Session>),
+                    .run_if(resource_exists::<Session>)
+                    // `Session` survives into `AppScreen::GameOver`; without
+                    // this a click consumed on the transition frame would be
+                    // applied to a finished game and refused by the engine —
+                    // which this module declares should never happen.
+                    .run_if(board_active),
             );
     }
 }
@@ -287,6 +294,9 @@ fn apply_dispatched_actions(
                 changed.write(StateChanged);
             }
             Err(error) => {
+                // Not necessarily a bug (see `EngineErrorEvent`): the human is
+                // told by `hand::surface_engine_refusals`, the AI recovers in
+                // `ai_driver::recover_from_refused_actions`.
                 warn!("engine refused {}: {error}", action.type_name());
                 failed.write(EngineErrorEvent { action, error });
             }
@@ -381,7 +391,7 @@ pub(crate) mod testkit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::testkit::{advance, session as make_session};
+    use super::testkit::session as make_session;
 
     fn session() -> Session {
         make_session(42)
@@ -408,22 +418,6 @@ mod tests {
         assert!(s.is_ai_turn());
         assert!(s.valid.is_empty(), "no human actions during the AI turn");
         assert_eq!(s.needs_auto_action(), AutoAction::AiTurn);
-    }
-
-    #[test]
-    fn drain_log_only_returns_new_entries() {
-        let mut s = session();
-        assert!(s.drain_log().is_empty(), "a fresh game has logged nothing");
-
-        // Play on until the engine actually writes a line.
-        assert!(
-            advance(&mut s, 60, |s| !s.state.log.is_empty()),
-            "60 actions must produce at least one log line"
-        );
-        let entries = s.drain_log();
-        assert_eq!(entries.len(), s.state.log.len());
-        assert_eq!(s.log_cursor, s.state.log.len());
-        assert!(s.drain_log().is_empty(), "the cursor consumed everything");
     }
 
     #[test]

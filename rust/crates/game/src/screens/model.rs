@@ -44,6 +44,8 @@ impl DeckKey {
     ];
 
     /// Index in [`DeckKey::ALL`] (used for the staggered "enter" delay).
+    // Used by the deck-list test; the stagger is computed while iterating.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn index(self) -> usize {
         match self {
             DeckKey::Mugiwara => 0,
@@ -168,6 +170,8 @@ pub const LEVELS: [LevelChoice; 3] = [
 ];
 
 /// The [`LevelChoice`] describing a difficulty.
+// Used by the difficulty test; the setup screen iterates `LEVELS`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn level_choice(level: Difficulty) -> LevelChoice {
     LEVELS[match level {
         Difficulty::Beginner => 0,

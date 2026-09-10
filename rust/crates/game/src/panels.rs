@@ -5,7 +5,7 @@
 //!
 //! | mode / condition | web | built by |
 //! |---|---|---|
-//! | `ActionMenu` | `ActionMenu.tsx` | [`spawn_action_menu`] |
+//! | `ActionMenu` | `ActionMenu.tsx` + the mock-up's `.pop` | [`spawn_action_menu`] |
 //! | `CaptainMenu` | `CaptainMenu.tsx` | [`spawn_captain_menu`] |
 //! | `ShipMenu` | `ShipMenu.tsx` | [`spawn_ship_menu`] |
 //! | `CardDetail` | `CardDetail.tsx` + `FullCard.tsx` | [`spawn_card_detail`] |
@@ -22,6 +22,18 @@
 //! global observer [`route_panel_clicks`] turns into `resetUI()` plus a
 //! [`DispatchAction`](crate::bridge::DispatchAction).
 //!
+//! The **action menu is the exception**: the mock-up's core interaction is a
+//! small popover anchored on the tile you clicked ("Carte cliquée = infos +
+//! actions · sinon pleine illustration"), so it has no dimmer and no centred
+//! body — the board has to stay visible around it. It is placed from
+//! [`BoardAnchors`](crate::board::BoardAnchors) and re-placed every frame by
+//! [`place_popovers`], and a transparent full-screen catcher takes the click
+//! that closes it.
+//!
+//! **Rebuilds.** An open panel is respawned only when its own content changed:
+//! [`panel_signature`] fingerprints exactly what each panel draws, so a card
+//! detail left open while the AI plays no longer flickers once per AI action.
+//!
 //! The amber "clique ton Capitaine / ton Navire" hint box lives in the action
 //! column next to the hand and is built by
 //! [`hand`](crate::hand) (`footer_hints`), not here.
@@ -30,11 +42,14 @@ pub mod model;
 pub mod widgets;
 
 use bevy::prelude::*;
+use bevy::input::mouse::MouseScrollUnit;
+use bevy::window::PrimaryWindow;
 use tcgop_engine::state::CardInstance;
 use tcgop_engine::types::{CardDef, PlayerId};
 
 use crate::app::{AppScreen, AppSet, Fonts, Palette, configure_pipeline, layout as L};
 use crate::art::{ArtCache, faction_visual, trait_color, trait_label};
+use crate::board::BoardAnchors;
 use crate::board::interaction::apply_ui_command;
 use crate::bridge::{BridgeSet, DispatchAction, Session, StateChanged};
 use crate::hand::SymbolFont;
@@ -45,13 +60,11 @@ use model::{
     AbilityKind, AbilityRow, AttackOption, CounterKind, StatusChip, haki_label, turns_label,
 };
 use widgets::{
-    ANCHOR, BOLT, ButtonSpec, ButtonTone, CROWN, ClickCommand, EYE, PanelButton, PanelCtx,
-    SHIELD, SPARKLE, STAR, SWORD, body, column, line, panel, row, scrim, section, spawn_button,
-    spawn_caption, spawn_close_cross, spawn_gauge, spawn_pill,
+    ANCHOR, BOLT, ButtonSpec, ButtonTone, CROWN, ClickCommand, EYE, HEART, PanelButton, PanelCtx,
+    button_gradient,
+    SHIELD, SPARKLE, STAR, SWORD, body, catcher, column, line, panel, popover, row, scrim,
+    section, spawn_button, spawn_caption, spawn_close_cross, spawn_gauge, spawn_pill,
 };
-
-/// `▸` — the "this row is clickable" caret of `FullCard.renderAction`.
-const CARET: &str = "\u{25BA}";
 
 // ============================================================
 // Plugin
@@ -68,11 +81,14 @@ impl Plugin for PanelsPlugin {
             // `HandPlugin` inserts this first; the fallback keeps `PanelsPlugin`
             // usable on its own in a head-less test.
             .init_resource::<SymbolFont>()
+            // `BoardPlugin` owns it; the fallback keeps the popover placement
+            // working when the panels are assembled on their own.
+            .init_resource::<BoardAnchors>()
             .init_resource::<PanelCache>()
             .add_observer(route_panel_clicks)
             .add_systems(
                 Update,
-                (rebuild_panels, highlight_panel_buttons)
+                (rebuild_panels, place_popovers, highlight_panel_buttons)
                     .chain()
                     .in_set(AppSet::Render)
                     .after(BridgeSet)
@@ -167,9 +183,59 @@ struct PanelRoot;
 #[derive(Resource, Default)]
 struct PanelCache {
     key: Option<Vec<PanelKind>>,
-    /// Bumped on every [`StateChanged`] so an open panel refreshes its numbers.
-    stamp: u64,
-    built_stamp: u64,
+    /// What each open panel last drew, as a comparable fingerprint.
+    ///
+    /// The layer used to bump a stamp on **every** `StateChanged` and treat a
+    /// stamp mismatch as a full rebuild, so a `CardDetail` left open while the
+    /// AI played was torn down and respawned once per AI action. Comparing the
+    /// panels' own view values instead is the discipline the board layer
+    /// already applies to its tiles: a panel whose content did not change is
+    /// never respawned.
+    signature: Vec<String>,
+}
+
+/// A comparable dump of everything `kind` would draw.
+///
+/// Every view type in [`model`] derives `Debug`, so its formatting is a total,
+/// cheap fingerprint — and it is only ever computed while a panel is open.
+fn panel_signature(session: &Session, kind: &PanelKind) -> String {
+    let state = &session.state;
+    let registry = &session.registry;
+    match kind {
+        PanelKind::ActionMenu { instance_id } => format!(
+            "{:?}",
+            model::action_menu_view(state, registry, &session.valid, instance_id)
+        ),
+        PanelKind::CaptainMenu { player } => format!(
+            "{:?}",
+            model::captain_menu_view(state, registry, &session.valid, *player, session.human)
+        ),
+        PanelKind::ShipMenu {
+            instance_id,
+            is_you,
+        } => format!(
+            "{:?}",
+            model::ship_menu_view(state, registry, &session.valid, instance_id, *is_you)
+        ),
+        PanelKind::CardDetail {
+            def_id,
+            instance_id,
+        } => format!(
+            "{:?}",
+            model::card_detail_view(state, registry, def_id, instance_id.as_deref())
+        ),
+        PanelKind::Confirm {
+            instance_id,
+            is_ship,
+        } => format!(
+            "{:?}",
+            model::confirm_view(state, registry, instance_id, *is_ship)
+        ),
+        PanelKind::Counter => format!(
+            "{:?}",
+            model::counter_view(state, registry, &session.valid)
+        ),
+    }
 }
 
 fn close_all_panels(
@@ -181,6 +247,7 @@ fn close_all_panels(
         commands.entity(entity).despawn();
     }
     cache.key = None;
+    cache.signature.clear();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -189,24 +256,38 @@ fn rebuild_panels(
     mut changed: MessageReader<StateChanged>,
     mut cache: ResMut<PanelCache>,
     session: Res<Session>,
-    mode: Res<UiMode>,
+    mut mode: ResMut<UiMode>,
+    mut selected: ResMut<crate::selection::SelectedHandCard>,
     palette: Res<Palette>,
     fonts: Res<Fonts>,
     symbols: Res<SymbolFont>,
     assets: Res<AssetServer>,
     mut art: ResMut<ArtCache>,
+    anchors: Res<BoardAnchors>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     roots: Query<Entity, With<PanelRoot>>,
 ) {
-    if changed.read().count() > 0 {
-        cache.stamp = cache.stamp.wrapping_add(1);
-    }
+    let dirty = changed.read().count() > 0;
+    let window = windows
+        .single()
+        .map(|w| Vec2::new(w.width(), w.height()))
+        .unwrap_or(Vec2::new(L::WINDOW_W, L::WINDOW_H));
 
     let wanted = active_panels(&mode, session.in_counter_window());
-    if cache.key.as_ref() == Some(&wanted) && cache.built_stamp == cache.stamp {
+    let same_panels = cache.key.as_ref() == Some(&wanted);
+    if same_panels && !dirty {
+        return;
+    }
+    let signature: Vec<String> = wanted
+        .iter()
+        .map(|kind| panel_signature(&session, kind))
+        .collect();
+    if same_panels && cache.signature == signature {
+        // The state moved, but nothing these panels show did.
         return;
     }
     cache.key = Some(wanted.clone());
-    cache.built_stamp = cache.stamp;
+    cache.signature = signature;
 
     for entity in &roots {
         commands.entity(entity).despawn();
@@ -218,63 +299,65 @@ fn rebuild_panels(
         symbols: &symbols.0,
     };
     let mut z = L::Z_MODAL;
+    // Every spawner answers whether it actually drew anything: the subject of a
+    // panel can be gone by the time it is built (the unit backing an open
+    // action menu is KO'd by an opposing effect, or bounced), and each of them
+    // gives up *before* the `PanelRoot` that carries the outside-click catcher.
+    // The cache is keyed on the mode, so nothing would ever retry: the popover
+    // would simply be missing while `UiMode` stayed latched on it, with the
+    // `✕ Annuler` button as the only way out.
+    let mut drawn = true;
     for kind in &wanted {
-        match kind {
+        drawn &= match kind {
             PanelKind::ActionMenu { instance_id } => {
-                spawn_action_menu(
-                    &mut commands,
-                    &ctx,
-                    &session,
-                    &assets,
-                    &mut art,
-                    z,
-                    instance_id,
-                );
+                spawn_action_menu(&mut commands, &ctx, &session, &anchors, window, z, instance_id)
             }
             PanelKind::CaptainMenu { player } => {
-                spawn_captain_menu(&mut commands, &ctx, &session, z, *player);
+                spawn_captain_menu(&mut commands, &ctx, &session, z, *player)
             }
             PanelKind::ShipMenu {
                 instance_id,
                 is_you,
-            } => {
-                spawn_ship_menu(
-                    &mut commands,
-                    &ctx,
-                    &session,
-                    &assets,
-                    &mut art,
-                    z,
-                    instance_id,
-                    *is_you,
-                );
-            }
+            } => spawn_ship_menu(
+                &mut commands,
+                &ctx,
+                &session,
+                &assets,
+                &mut art,
+                z,
+                instance_id,
+                *is_you,
+            ),
             PanelKind::CardDetail {
                 def_id,
                 instance_id,
-            } => {
-                spawn_card_detail(
-                    &mut commands,
-                    &ctx,
-                    &session,
-                    &assets,
-                    &mut art,
-                    z,
-                    def_id,
-                    instance_id.as_deref(),
-                );
-            }
+            } => spawn_card_detail(
+                &mut commands,
+                &ctx,
+                &session,
+                &assets,
+                &mut art,
+                z,
+                def_id,
+                instance_id.as_deref(),
+            ),
             PanelKind::Confirm {
                 instance_id,
                 is_ship,
-            } => {
-                spawn_confirm(&mut commands, &ctx, &session, z, instance_id, *is_ship);
-            }
-            PanelKind::Counter => {
-                spawn_counter_window(&mut commands, &ctx, &session, z);
-            }
-        }
+            } => spawn_confirm(&mut commands, &ctx, &session, z, instance_id, *is_ship),
+            PanelKind::Counter => spawn_counter_window(&mut commands, &ctx, &session, z),
+        };
         z += 4;
+    }
+
+    if !drawn {
+        // Back to idle, and forget the key so the next mode is rebuilt from
+        // scratch rather than short-circuited as "already drawn".
+        warn!("a panel had no subject left to draw: returning to idle");
+        *mode = UiMode::Idle;
+        selected.0 = None;
+        cache.key = None;
+        cache.signature.clear();
     }
 }
 
@@ -315,14 +398,29 @@ fn route_panel_clicks(
 }
 
 /// Light a button while the pointer is over it.
+///
+/// A gradient skin has to be re-painted as a gradient: `BackgroundGradient`
+/// covers `BackgroundColor`, so writing the colour alone would leave the
+/// mock-up's gold→amber and pink calls to action visually inert on hover.
 fn highlight_panel_buttons(
-    buttons: Query<(&Interaction, &PanelButton, &mut BackgroundColor), Changed<Interaction>>,
+    buttons: Query<
+        (
+            &Interaction,
+            &PanelButton,
+            &mut BackgroundColor,
+            Option<&mut BackgroundGradient>,
+        ),
+        Changed<Interaction>,
+    >,
 ) {
-    for (interaction, button, mut background) in buttons {
-        background.0 = match interaction {
-            Interaction::None => button.base,
-            _ => button.hover,
-        };
+    for (interaction, button, mut background, gradient) in buttons {
+        let hovered = !matches!(interaction, Interaction::None);
+        match (button.stops(hovered), gradient) {
+            (Some((from, to)), Some(mut ramp)) => *ramp = button_gradient(from, to),
+            _ => {
+                background.0 = if hovered { button.hover } else { button.base };
+            }
+        }
     }
 }
 
@@ -356,8 +454,35 @@ fn spawn_modal(
     root.with_children(|scrim| {
         scrim
             .spawn(panel(ctx.palette, width, edge))
+            .observe(scroll_panel)
             .with_children(build);
     });
+}
+
+/// Move a panel body with the wheel.
+///
+/// `Overflow::scroll_y` only tells the layout to clip and offset by
+/// [`ScrollPosition`]; nothing writes that position, so without this a modal
+/// taller than the window is exactly as unreachable as a clipped one. The
+/// offset is clamped to the content that actually overflows.
+fn scroll_panel(
+    scroll: On<Pointer<Scroll>>,
+    mut panels: Query<(&mut ScrollPosition, &ComputedNode), With<widgets::ScrollArea>>,
+) {
+    let Ok((mut position, computed)) = panels.get_mut(scroll.entity) else {
+        return;
+    };
+    let step = match scroll.unit {
+        MouseScrollUnit::Line => widgets::SCROLL_LINE,
+        MouseScrollUnit::Pixel => 1.0,
+    };
+    let inv = computed.inverse_scale_factor();
+    let overflow = (computed.content_size().y - computed.size().y).max(0.0) * inv;
+    if overflow <= 0.0 {
+        position.0.y = 0.0;
+        return;
+    }
+    position.0.y = (position.0.y - scroll.y * step).clamp(0.0, overflow);
 }
 
 /// Does clicking outside the panel close it?
@@ -549,312 +674,320 @@ fn spawn_stat_pair(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, atk: i32, 
 // Action menu (ActionMenu.tsx)
 // ============================================================
 
-const ACTION_MENU_W: f32 = 552.0;
-const ACTION_CARD_W: f32 = 232.0;
+/// Where a popover sits, so it can follow its tile when the board re-lays
+/// itself out (a window resize scales every slot).
+#[derive(Component, Debug, Clone)]
+pub struct PopoverAnchor {
+    /// The instance id whose tile this popover belongs to.
+    pub instance_id: String,
+    /// Which edge the caret is currently on, so `place_popovers` only moves it
+    /// when the panel actually flips sides.
+    pub above: bool,
+}
 
+/// The `.pop:after` caret, so a flip can move it to the other edge.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PopoverCaret;
+
+/// The caret's box: on the bottom edge when the popover floats above its tile,
+/// on the top edge when it was flipped below.
+fn caret_node(above: bool) -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        width: px(L::POPOVER_CARET),
+        height: px(L::POPOVER_CARET),
+        left: percent(50.),
+        bottom: if above {
+            px(-L::POPOVER_CARET * 0.5)
+        } else {
+            Val::Auto
+        },
+        top: if above {
+            Val::Auto
+        } else {
+            px(-L::POPOVER_CARET * 0.5)
+        },
+        ..default()
+    }
+}
+
+/// Place `size`-wide popover over the tile `anchor`, inside `window`.
+///
+/// Mock-up `.pop{left:50%;bottom:68px;transform:translateX(-50%)}` — centred on
+/// the tile and floating just above it, flipping below when the tile is too
+/// close to the top edge.
+pub fn popover_placement(anchor: Rect, size: Vec2, window: Vec2) -> (Vec2, bool) {
+    let margin = 8.0;
+    let left = (anchor.center().x - size.x * 0.5)
+        .max(margin)
+        .min((window.x - size.x - margin).max(margin));
+    let above = anchor.min.y - size.y - L::POPOVER_GAP;
+    if above >= margin {
+        (Vec2::new(left, above), true)
+    } else {
+        (
+            Vec2::new(left, (anchor.max.y + L::POPOVER_GAP).min(window.y - margin)),
+            false,
+        )
+    }
+}
+
+/// The unit popover — mock-up `.pop`, the client's core interaction
+/// ("Carte cliquée = infos + actions · sinon pleine illustration").
+///
+/// It is **not** a modal: there is no scrim and no 552 px centred body, because
+/// the whole point is that the board stays visible around the tile you are
+/// acting on. A transparent full-screen catcher takes the outside click, the
+/// popover itself swallows its own.
 #[allow(clippy::too_many_arguments)]
 fn spawn_action_menu(
     commands: &mut Commands,
     ctx: &PanelCtx,
     session: &Session,
-    assets: &AssetServer,
-    art: &mut ArtCache,
+    anchors: &BoardAnchors,
+    window: Vec2,
     z: i32,
     instance_id: &str,
-) {
+)-> bool {
     let Some(view) = model::action_menu_view(
         &session.state,
         &session.registry,
         &session.valid,
         instance_id,
     ) else {
-        return;
+        return false;
     };
     let Some(instance) = session.state.card(instance_id) else {
-        return;
+        return false;
     };
     let Some(def) = session.registry.card_def(&instance.def_id) else {
-        return;
+        return false;
     };
-    let instance = instance.clone();
-    let def = def.clone();
+    let pv = instance.current_pv;
+    let cost = def.cost;
     let palette = *ctx.palette;
+    let anchor = anchors
+        .instance(instance_id)
+        // No anchor yet (the tile is laid out next frame): park it centred, the
+        // per-frame placement pass moves it as soon as the rectangle exists.
+        .unwrap_or_else(|| Rect::from_center_size(window * 0.5, Vec2::splat(1.0)));
+    let (at, above) = popover_placement(anchor, Vec2::new(L::POPOVER_W, 120.0), window);
 
-    spawn_modal(
-        commands,
-        ctx,
-        z,
-        ACTION_MENU_W,
-        palette.gold.with_alpha(0.55),
-        "ActionMenu",
-        Dismiss::OnBackdrop,
-        |panel| {
-            // Header: hint on the left, Volonté on the right.
-            panel
-                .spawn((
-                    Node {
-                        justify_content: JustifyContent::SpaceBetween,
-                        align_items: AlignItems::Center,
+    commands
+        .spawn((
+            PanelRoot,
+            Name::new("ActionPopover"),
+            catcher(z),
+            // Clicking the board around the popover closes it.
+            ClickCommand(UiCommand::Reset),
+        ))
+        .with_children(|root| {
+            let mut pop = root.spawn((
+                popover(&palette, at),
+                PopoverAnchor {
+                    instance_id: instance_id.to_string(),
+                    above,
+                },
+            ));
+            pop.with_children(|pop| {
+                // The `:after` caret — a rotated square peeking out of the edge
+                // that faces the tile. Mock-up `.pop:after{bottom:-7px}` is a
+                // downward caret, which is only right while `.pop` is *above*
+                // its tile; `popover_placement` flips the panel below when the
+                // tile is near the top of the window, and the caret has to
+                // follow or it points away from what it belongs to.
+                pop.spawn((
+                    PopoverCaret,
+                    caret_node(above),
+                    UiTransform {
+                        translation: Val2::px(-L::POPOVER_CARET * 0.5, 0.),
+                        rotation: Rot2::degrees(45.),
                         ..default()
                     },
+                    BackgroundColor(palette.gold.with_alpha(0.5)),
                     Pickable::IGNORE,
-                ))
-                .with_children(|header| {
-                    spawn_caption(header, ctx, "Choisissez une action", palette.text_faint);
-                    header.spawn(line(
-                        format!("{} Vol.", view.volonte),
-                        &ctx.fonts.oswald_bold,
-                        L::FS_NAME,
-                        palette.gold,
+                ));
+                // `.ph` — cost disc + name, and the escape hatch.
+                pop.spawn((row(6.), Pickable::IGNORE)).with_children(|head| {
+                    head.spawn((
+                        Node {
+                            width: px(18.),
+                            height: px(18.),
+                            flex_shrink: 0.,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundGradient::from(LinearGradient::to_bottom(vec![
+                            ColorStop::new(palette.gold, percent(0.)),
+                            ColorStop::new(palette.gold_deep, percent(100.)),
+                        ])),
+                        Pickable::IGNORE,
+                        children![line(
+                            cost.to_string(),
+                            &ctx.fonts.poppins_bold,
+                            L::FS_LABEL,
+                            palette.text_on_gold,
+                        )],
                     ));
+                    // The name opens the full card — TS "Détails".
+                    head.spawn((
+                        Node {
+                            flex_grow: 1.,
+                            min_width: px(0.),
+                            ..default()
+                        },
+                        ClickCommand(view.detail_command.clone()),
+                        children![line(
+                            view.name.clone(),
+                            &ctx.fonts.cinzel_bold,
+                            L::FS_NAME,
+                            palette.text,
+                        )],
+                    ));
+                    spawn_close_cross(head, ctx);
                 });
 
-            panel
-                .spawn((
-                    Node {
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Start,
-                        column_gap: px(14.),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ))
-                .with_children(|split| {
-                    spawn_face(
-                        split,
-                        ctx,
-                        assets,
-                        art,
-                        &FaceSpec {
-                            def: &def,
-                            instance: Some(&instance),
-                            atk: view.atk,
-                            def_value: view.def,
-                            width: ACTION_CARD_W,
-                        },
-                    );
+                // `.stats` — ⚔ / 🛡 / ❤, the only numbers the mock-up shows.
+                pop.spawn((row(8.), Pickable::IGNORE)).with_children(|stats| {
+                    for (glyph, value, color) in [
+                        (SWORD, view.atk, palette.atk),
+                        (SHIELD, view.def, palette.def),
+                        (HEART, pv, palette.hp),
+                    ] {
+                        stats
+                            .spawn((row(3.), Pickable::IGNORE))
+                            .with_children(|stat| {
+                                stat.spawn(line(glyph, ctx.symbols, L::FS_BODY, color));
+                                stat.spawn(line(
+                                    value.to_string(),
+                                    &ctx.fonts.poppins_bold,
+                                    L::FS_BODY,
+                                    color,
+                                ));
+                            });
+                    }
+                });
 
-                    split
-                        .spawn((
-                            Node {
-                                flex_direction: FlexDirection::Column,
-                                row_gap: px(8.),
-                                flex_grow: 1.,
-                                min_width: px(0.),
-                                ..default()
-                            },
-                            Pickable::IGNORE,
-                        ))
-                        .with_children(|col| {
-                            col.spawn(line(
-                                view.name.clone(),
-                                &ctx.fonts.cinzel_bold,
-                                L::FS_NAME + 2.0,
-                                palette.text,
-                            ));
-                            spawn_stat_pair(col, ctx, view.atk, view.def);
-                            spawn_flag_pills(
-                                col,
-                                ctx,
-                                &view.flags,
+                if !view.flags.is_empty() {
+                    pop.spawn((row(4.), Pickable::IGNORE)).with_children(|f| {
+                        for flag in &view.flags {
+                            spawn_pill(
+                                f,
+                                &ctx.fonts.poppins,
+                                *flag,
                                 palette.amber,
                                 palette.amber.with_alpha(0.18),
+                                L::FS_TINY,
                             );
+                        }
+                    });
+                }
 
-                            if let Some(base) = &view.base {
-                                spawn_attack_row(col, ctx, base);
-                            }
-                            if let Some(special) = &view.special {
-                                spawn_attack_row(col, ctx, special);
-                            }
-
-                            let equipment: Vec<String> =
-                                view.equipment.iter().map(|e| e.label()).collect();
-                            spawn_list_section(
-                                col,
-                                ctx,
-                                "Équipement",
-                                palette.amber,
-                                palette.amber.with_alpha(0.10),
-                                palette.amber.with_alpha(0.90),
-                                &equipment,
-                            );
-                        });
+                // `.acts` — "Attaquer" (gold) and "Spéciale ★" (red).
+                pop.spawn((row(6.), Pickable::IGNORE)).with_children(|acts| {
+                    let mut any = false;
+                    if let Some(base) = &view.base {
+                        any = true;
+                        spawn_popover_action(acts, ctx, base, "Attaquer");
+                    }
+                    if let Some(special) = &view.special {
+                        any = true;
+                        spawn_popover_action(acts, ctx, special, "Spéciale");
+                    }
+                    if !any {
+                        acts.spawn(line(
+                            "Aucune action",
+                            &ctx.fonts.poppins,
+                            L::FS_LABEL,
+                            palette.text_faint,
+                        ));
+                    }
                 });
 
-            panel
-                .spawn((row(8.), Pickable::IGNORE))
-                .with_children(|actions| {
-                    spawn_button(
-                        actions,
-                        ctx,
-                        ButtonSpec::new("Détails", ButtonTone::Ghost, view.detail_command.clone())
-                            .grow(),
-                    );
-                    spawn_button(
-                        actions,
-                        ctx,
-                        ButtonSpec::new("Fermer", ButtonTone::Ghost, UiCommand::Reset).grow(),
-                    );
-                });
-        },
-    );
+                if !view.equipment.is_empty() {
+                    let equipment: Vec<String> =
+                        view.equipment.iter().map(|e| e.label()).collect();
+                    pop.spawn(line(
+                        equipment.join(" · "),
+                        &ctx.fonts.poppins,
+                        L::FS_TINY,
+                        palette.amber.with_alpha(0.9),
+                    ));
+                }
+            });
+        });
+    true
 }
 
-/// One clickable rules row — TS `FullCard.renderAction` with `actions.base` /
-/// `actions.special` wired up.
-fn spawn_attack_row(parent: &mut ChildSpawnerCommands, ctx: &PanelCtx, option: &AttackOption) {
-    let palette = ctx.palette;
-    let accent = if option.is_special {
-        palette.atk
+/// One `.acts button`: the mock-up's two gradient calls to action.
+fn spawn_popover_action(
+    parent: &mut ChildSpawnerCommands,
+    ctx: &PanelCtx,
+    option: &AttackOption,
+    label: &str,
+) {
+    let tone = if option.is_special {
+        ButtonTone::Danger
     } else {
-        palette.deploy
+        ButtonTone::Gold
     };
-    let alpha = if option.disabled { 0.5 } else { 1.0 };
-    let fill = Color::srgba(1., 1., 1., 0.05);
-    let glyph = if option.is_special {
-        STAR
-    } else if option.atk.is_none() {
-        SPARKLE
-    } else {
-        SWORD
+    let label = match (&option.reason, option.is_special) {
+        (Some(reason), _) => format!("{label} — {reason}"),
+        (None, true) => format!("{label} {STAR}"),
+        (None, false) => label.to_string(),
     };
+    let mut spec = ButtonSpec::new(label, tone, option.command.clone())
+        .disabled(option.disabled)
+        .grow();
+    spec.height = 28.0;
+    spec.font_size = L::FS_LABEL;
+    spawn_button(parent, ctx, spec);
+}
 
-    let mut node = parent.spawn((
-        Node {
-            flex_direction: FlexDirection::Row,
-            justify_content: JustifyContent::SpaceBetween,
-            align_items: AlignItems::Start,
-            column_gap: px(6.),
-            padding: UiRect::axes(px(8.), px(6.)),
-            border: UiRect::all(px(1.)),
-            border_radius: BorderRadius::all(px(9.)),
-            ..default()
-        },
-        BackgroundColor(fill),
-        BorderColor::all(accent.with_alpha(if option.disabled { 0.12 } else { 0.42 })),
-    ));
-    if !option.disabled {
-        node.insert((
-            ClickCommand(option.command.clone()),
-            Button,
-            PanelButton {
-                base: fill,
-                hover: accent.with_alpha(0.16),
-            },
-        ));
+/// Keep every open popover on its tile.
+///
+/// The board publishes its anchors from the computed layout, so a tile only
+/// gets a rectangle on the frame *after* it is spawned, and it moves whenever
+/// the window is resized. Re-placing every frame is one query over at most one
+/// entity.
+fn place_popovers(
+    anchors: Res<BoardAnchors>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut popovers: Query<(&mut PopoverAnchor, &ComputedNode, &Children, &mut Node)>,
+    mut carets: Query<&mut Node, (With<PopoverCaret>, Without<PopoverAnchor>)>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let viewport = Vec2::new(window.width(), window.height());
+    for (mut anchored, computed, children, mut node) in &mut popovers {
+        let Some(rect) = anchors.instance(&anchored.instance_id) else {
+            continue;
+        };
+        let inv = computed.inverse_scale_factor();
+        let size = computed.size() * inv;
+        let size = if size.y > 1.0 {
+            size
+        } else {
+            Vec2::new(L::POPOVER_W, 120.0)
+        };
+        let (at, above) = popover_placement(rect, size, viewport);
+        let (left, top) = (px(at.x), px(at.y));
+        if node.left != left || node.top != top {
+            node.left = left;
+            node.top = top;
+        }
+        if anchored.above != above {
+            anchored.above = above;
+            for child in children.iter() {
+                if let Ok(mut caret) = carets.get_mut(child) {
+                    *caret = caret_node(above);
+                }
+            }
+        }
     }
-
-    let option = option.clone();
-    node.with_children(|row_node| {
-        row_node
-            .spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: px(1.),
-                    flex_grow: 1.,
-                    flex_shrink: 1.,
-                    min_width: px(0.),
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ))
-            .with_children(|left| {
-                left.spawn((
-                    Node {
-                        flex_direction: FlexDirection::Row,
-                        flex_wrap: FlexWrap::Wrap,
-                        align_items: AlignItems::Center,
-                        column_gap: px(5.),
-                        row_gap: px(2.),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ))
-                .with_children(|head| {
-                    head.spawn(line(
-                        glyph,
-                        ctx.symbols,
-                        L::FS_STAT,
-                        accent.with_alpha(alpha),
-                    ));
-                    head.spawn(line(
-                        option.name.clone(),
-                        &ctx.fonts.spectral_bold,
-                        L::FS_BODY + 0.5,
-                        palette.text.with_alpha(alpha),
-                    ));
-                    if let Some(element) = option.element {
-                        spawn_pill(
-                            head,
-                            &ctx.fonts.oswald,
-                            element_label(element),
-                            Color::WHITE.with_alpha(alpha),
-                            element_color(element).with_alpha(alpha),
-                            L::FS_TINY + 0.5,
-                        );
-                    }
-                    for attack_trait in &option.attack_traits {
-                        spawn_pill(
-                            head,
-                            &ctx.fonts.oswald,
-                            crate::hand::card_face::attack_trait_label(*attack_trait),
-                            Color::WHITE.with_alpha(alpha),
-                            Color::srgba(1., 1., 1., 0.22 * alpha),
-                            L::FS_TINY + 0.5,
-                        );
-                    }
-                    if !option.disabled {
-                        head.spawn(line(CARET, ctx.symbols, L::FS_LABEL, accent));
-                    }
-                });
-                if let Some(description) = &option.description {
-                    left.spawn(body(
-                        description.clone(),
-                        &ctx.fonts.spectral,
-                        L::FS_LABEL,
-                        palette.text_dim.with_alpha(alpha * 0.78),
-                    ));
-                }
-                if option.disabled
-                    && let Some(reason) = &option.reason
-                {
-                    left.spawn(line(
-                        format!("\u{2022} {reason}"),
-                        &ctx.fonts.oswald,
-                        L::FS_LABEL - 1.0,
-                        Color::srgb(1.0, 0.54, 0.50),
-                    ));
-                }
-            });
-
-        row_node
-            .spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::End,
-                    flex_shrink: 0.,
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ))
-            .with_children(|right| {
-                right.spawn(line(
-                    format!("{} Vol.", option.cost),
-                    &ctx.fonts.oswald,
-                    L::FS_LABEL,
-                    palette.text.with_alpha(0.92 * alpha),
-                ));
-                if let Some(atk) = option.atk {
-                    right.spawn(line(
-                        format!("ATK {atk}"),
-                        &ctx.fonts.oswald_bold,
-                        L::FS_LABEL,
-                        palette.text.with_alpha(0.92 * alpha),
-                    ));
-                }
-            });
-    });
 }
 
 // ============================================================
@@ -869,7 +1002,7 @@ fn spawn_captain_menu(
     session: &Session,
     z: i32,
     player: PlayerId,
-) {
+)-> bool {
     let Some(view) = model::captain_menu_view(
         &session.state,
         &session.registry,
@@ -877,7 +1010,7 @@ fn spawn_captain_menu(
         player,
         session.human,
     ) else {
-        return;
+        return false;
     };
     let palette = *ctx.palette;
     let visual = faction_visual(view.faction);
@@ -1084,6 +1217,36 @@ fn spawn_captain_menu(
                                 .disabled(!view.can_attack),
                             );
                         }
+                        // The ★ special attack the engine offers on the same
+                        // `captainAttack` action (`isSpecial: true`). Its
+                        // `AbilityRow` above already shows the cost; this is
+                        // the only way to actually spend it.
+                        if view.show_special_attack {
+                            let label = match (
+                                view.can_special_attack,
+                                view.special_attack_reason,
+                            ) {
+                                (false, Some(reason)) => format!(
+                                    "{} \u{2014} {reason}",
+                                    view.special_attack_name
+                                ),
+                                _ => format!(
+                                    "{} \u{2014} {} Volont\u{00E9}",
+                                    view.special_attack_name, view.special_attack_cost
+                                ),
+                            };
+                            spawn_button(
+                                actions,
+                                ctx,
+                                ButtonSpec::new(
+                                    label,
+                                    ButtonTone::Gold,
+                                    view.special_attack_command.clone(),
+                                )
+                                .glyph(STAR)
+                                .disabled(!view.can_special_attack),
+                            );
+                        }
                         if view.can_king_haki {
                             spawn_button(
                                 actions,
@@ -1105,6 +1268,7 @@ fn spawn_captain_menu(
                 });
         },
     );
+    true
 }
 
 /// TS `<AbilityRow />`.
@@ -1197,7 +1361,7 @@ fn spawn_ship_menu(
     z: i32,
     instance_id: &str,
     is_you: bool,
-) {
+)-> bool {
     let Some(view) = model::ship_menu_view(
         &session.state,
         &session.registry,
@@ -1205,13 +1369,13 @@ fn spawn_ship_menu(
         instance_id,
         is_you,
     ) else {
-        return;
+        return false;
     };
     let Some(instance) = session.state.card(instance_id).cloned() else {
-        return;
+        return false;
     };
     let Some(def) = session.registry.card_def(&instance.def_id).cloned() else {
-        return;
+        return false;
     };
     let cyan = Color::srgb(0.36, 0.78, 0.88);
 
@@ -1290,13 +1454,36 @@ fn spawn_ship_menu(
                 );
             }
 
-            spawn_button(
-                panel,
-                ctx,
-                ButtonSpec::new("Fermer", ButtonTone::Ghost, UiCommand::Reset),
-            );
+            // The web reaches a ship's card detail from a header button
+            // (`⚓ <name>`); the header now shows the foe's ship only in its
+            // command bar, so the route lives here — this menu is what a click
+            // on either side's ship slot opens.
+            panel
+                .spawn((row(8.), Pickable::IGNORE))
+                .with_children(|actions| {
+                    spawn_button(
+                        actions,
+                        ctx,
+                        ButtonSpec::new(
+                            "Détails",
+                            ButtonTone::Ghost,
+                            UiCommand::SetMode(UiMode::CardDetail {
+                                def_id: view.def_id.clone(),
+                                instance_id: Some(view.instance_id.clone()),
+                            }),
+                        )
+                        .glyph(EYE)
+                        .grow(),
+                    );
+                    spawn_button(
+                        actions,
+                        ctx,
+                        ButtonSpec::new("Fermer", ButtonTone::Ghost, UiCommand::Reset).grow(),
+                    );
+                });
         },
     );
+    true
 }
 
 // ============================================================
@@ -1316,13 +1503,13 @@ fn spawn_card_detail(
     z: i32,
     def_id: &str,
     instance_id: Option<&str>,
-) {
+)-> bool {
     let Some(view) = model::card_detail_view(&session.state, &session.registry, def_id, instance_id)
     else {
-        return;
+        return false;
     };
     let Some(def) = session.registry.card_def(def_id).cloned() else {
-        return;
+        return false;
     };
     let instance = instance_id.and_then(|id| session.state.card(id)).cloned();
     let (atk, def_value) = match instance_id {
@@ -1492,6 +1679,7 @@ fn spawn_card_detail(
                 });
         },
     );
+    true
 }
 
 // ============================================================
@@ -1507,11 +1695,11 @@ fn spawn_confirm(
     z: i32,
     instance_id: &str,
     is_ship: bool,
-) {
+)-> bool {
     let Some(view) =
         model::confirm_view(&session.state, &session.registry, instance_id, is_ship)
     else {
-        return;
+        return false;
     };
     let palette = *ctx.palette;
     let cyan = Color::srgb(0.36, 0.78, 0.88);
@@ -1645,6 +1833,7 @@ fn spawn_confirm(
                 });
         },
     );
+    true
 }
 
 /// A titled box with one paragraph.
@@ -1677,9 +1866,9 @@ fn spawn_text_section(
 
 const COUNTER_W: f32 = 470.0;
 
-fn spawn_counter_window(commands: &mut Commands, ctx: &PanelCtx, session: &Session, z: i32) {
+fn spawn_counter_window(commands: &mut Commands, ctx: &PanelCtx, session: &Session, z: i32)-> bool {
     let Some(view) = model::counter_view(&session.state, &session.registry, &session.valid) else {
-        return;
+        return false;
     };
     let palette = *ctx.palette;
 
@@ -1826,6 +2015,7 @@ fn spawn_counter_window(commands: &mut Commands, ctx: &PanelCtx, session: &Sessi
                 });
         },
     );
+    true
 }
 
 // ============================================================
@@ -1986,14 +2176,53 @@ mod tests {
         let view: CounterView =
             model::counter_view(&session.state, &session.registry, &session.valid).unwrap();
         for option in &view.options {
-            let UiCommand::Dispatch(action) = &option.command else {
-                panic!("a counter button must dispatch");
+            // `DispatchKeepUi`, not `Dispatch`: the TS counter buttons are the
+            // only dispatch sites that do **not** call `resetUI()`.
+            let UiCommand::DispatchKeepUi(action) = &option.command else {
+                panic!("a counter button must dispatch without resetting the UI");
             };
             assert!(
                 session.valid.contains(action),
                 "every button comes from Session::valid"
             );
         }
+
+        // Answering the attack must leave an open panel exactly where it was.
+        let mut mode = UiMode::CardDetail {
+            def_id: "MG-001".into(),
+            instance_id: None,
+        };
+        let mut selected = SelectedHandCard(Some("h1".into()));
+        let before = (mode.clone(), selected.clone());
+        let out = apply_ui_command(view.options[0].command.clone(), &mut mode, &mut selected);
+        assert!(out.is_some());
+        assert_eq!((mode, selected), before);
+    }
+
+    /// The popover is placed on its tile, and flips below when the tile is too
+    /// close to the top edge.
+    #[test]
+    fn the_popover_hangs_off_its_tile() {
+        let window = Vec2::new(L::WINDOW_W, L::WINDOW_H);
+        let size = Vec2::new(L::POPOVER_W, 120.0);
+
+        let tile = Rect::from_center_size(Vec2::new(640.0, 500.0), Vec2::new(120.0, 60.0));
+        let (at, above) = popover_placement(tile, size, window);
+        assert!(above, "there is room above a mid-board tile");
+        assert!((at.x + size.x * 0.5 - tile.center().x).abs() < 1e-3);
+        assert!((at.y + size.y + L::POPOVER_GAP - tile.min.y).abs() < 1e-3);
+
+        // A tile right under the header: the popover flips below it.
+        let high = Rect::from_center_size(Vec2::new(640.0, 70.0), Vec2::new(120.0, 60.0));
+        let (below, above) = popover_placement(high, size, window);
+        assert!(!above);
+        assert!(below.y > high.max.y);
+
+        // …and it never leaves the window sideways.
+        let edge = Rect::from_center_size(Vec2::new(10.0, 500.0), Vec2::new(120.0, 60.0));
+        assert!(popover_placement(edge, size, window).0.x >= 0.0);
+        let far = Rect::from_center_size(Vec2::new(1275.0, 500.0), Vec2::new(120.0, 60.0));
+        assert!(popover_placement(far, size, window).0.x + size.x <= window.x);
     }
 
     #[test]
@@ -2015,6 +2244,70 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An open panel is respawned **only** when its own content changed.
+    ///
+    /// The layer used to bump a stamp on every `StateChanged`, so a card detail
+    /// left open while the AI played was torn down and rebuilt once per AI
+    /// action — losing its buttons' hover state each time.
+    #[test]
+    fn an_open_panel_survives_an_unrelated_state_change() {
+        use crate::app::{AppScreen, Fonts, Palette};
+        use crate::art::ArtCache;
+        use crate::bridge::{BridgePlugin, DispatchAction};
+        use crate::selection::SelectionPlugin;
+        use tcgop_engine::types::GameAction;
+
+        let session = make_session(7);
+        let def_id = session
+            .state
+            .card(&session.you().hand[0])
+            .unwrap()
+            .def_id
+            .clone();
+
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins)
+            .add_plugins(bevy::state::app::StatesPlugin)
+            .add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<Image>()
+            .init_state::<AppScreen>()
+            .insert_resource(Palette::default())
+            .insert_resource(Fonts::default())
+            .init_resource::<ArtCache>()
+            .add_plugins((BridgePlugin, SelectionPlugin, PanelsPlugin))
+            .insert_resource(session);
+        app.world_mut()
+            .resource_mut::<NextState<AppScreen>>()
+            .set(AppScreen::Board);
+        app.update();
+
+        *app.world_mut().resource_mut::<UiMode>() = UiMode::CardDetail {
+            def_id,
+            instance_id: None,
+        };
+        app.update();
+
+        let roots = |app: &mut App| -> Vec<Entity> {
+            let mut q = app.world_mut().query_filtered::<Entity, With<PanelRoot>>();
+            q.iter(app.world()).collect()
+        };
+        let before = roots(&mut app);
+        assert_eq!(before.len(), 1, "the detail is open");
+
+        // The turn changes hands: a real `StateChanged`, but nothing this
+        // panel draws moved.
+        app.world_mut()
+            .write_message(DispatchAction(GameAction::EndTurn));
+        app.update();
+        app.update();
+
+        assert_eq!(
+            roots(&mut app),
+            before,
+            "the panel must not be despawned and respawned"
+        );
     }
 
     #[test]

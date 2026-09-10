@@ -45,6 +45,36 @@ pub const HAND_LIMIT: usize = 10;
 /// TS `ALLY_KO_BONUS_VOL` — bonus Vol on ally KO.
 pub const ALLY_KO_BONUS_VOL: i32 = 2;
 
+// ------------------------------------------------------------
+// `usedOnceAbilities` keys (decision §8.50)
+// ------------------------------------------------------------
+//
+// The list stays a `Vec<String>` holding the exact strings the TypeScript
+// engine wrote: the UI compares an ability *name* (`shipActive.name`,
+// `specialAttack.name`, …) against its entries, so typing the key would break
+// both that comparison and the wire format. The engine's own sentinels — the
+// ones that are not an ability name — go through the constants below instead
+// of being spelled out at each site.
+
+/// The once-per-character "this character already survived a lethal hit at
+/// 1 PV" tag (`survivesLethal` / `MG-005`), written by the damage step in
+/// `combat.rs`.
+pub const ONCE_SURVIVED: &str = "survived";
+
+/// The once-per-character Straw Hat tag (`MG-001`, the hat's one-shot
+/// protection), written by the damage step in `combat.rs`.
+pub const ONCE_STRAWHAT: &str = "strawhat";
+
+/// Prefix of the once-per-game key of a captain **surcharge** (decision
+/// §8.34): the surcharge's own name is appended — see [`once_surcharge`].
+pub const ONCE_SURCHARGE_PREFIX: &str = "surcharge_";
+
+/// The `usedOnceAbilities` key guarding a `oncePerGame` captain surcharge
+/// named `name` (decision §8.34/§8.50).
+pub fn once_surcharge(name: &str) -> String {
+    format!("{ONCE_SURCHARGE_PREFIX}{name}")
+}
+
 // ============================================================
 // Instance ids (utils.ts `generateInstanceId`)
 // ============================================================
@@ -94,6 +124,19 @@ pub struct CardInstance {
     /// Is this a Devil Fruit that has been awakened?
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_awakened: Option<bool>,
+    /// Permanent loss of maximum PV (decision §8.5): the heal cap is
+    /// `def.pv - pv_max_loss`, never the printed PV alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pv_max_loss: Option<i32>,
+    /// Decision §8.37 (`betrayal`): the player who *controls* this instance
+    /// while it is on loan. `owner` never changes, so KO bonuses, graveyards
+    /// and win conditions keep pointing at the original owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controlled_by: Option<PlayerId>,
+    /// Decision §8.37 (`betrayal`): the slot of the owner's board the loan
+    /// returns to at the borrower's end of turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loan_return_slot: Option<Slot>,
 }
 
 impl CardInstance {
@@ -117,7 +160,22 @@ impl CardInstance {
             logia_used_this_turn: None,
             used_once_abilities: Vec::new(),
             is_awakened: None,
+            pv_max_loss: None,
+            controlled_by: None,
+            loan_return_slot: None,
         }
+    }
+
+    /// The player this instance currently acts for: the borrower while it is
+    /// on loan (decision §8.37 `betrayal`), otherwise its owner.
+    pub fn controller(&self) -> PlayerId {
+        self.controlled_by.unwrap_or(self.owner)
+    }
+
+    /// The instance's maximum PV: the printed `def.pv` minus any permanent
+    /// max-PV loss (decision §8.5). `None` for a definition without `pv`.
+    pub fn max_pv(&self, printed_pv: Option<i32>) -> Option<i32> {
+        printed_pv.map(|pv| pv - self.pv_max_loss.unwrap_or(0))
     }
 
     /// TS `card.statusEffects.some((e) => e.type === t)`.
@@ -156,6 +214,14 @@ pub struct CaptainInstance {
     pub used_base_action: bool,
     pub used_special_attack: bool,
     pub used_once_abilities: Vec<String>,
+    /// Decision §8.40 — Logia intangibility on a captain is once per turn,
+    /// exactly like [`CardInstance::logia_used_this_turn`] on a character.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logia_used_this_turn: Option<bool>,
+    /// Decision §8.40 — permanent maximum-PV loss (the Sand element on a
+    /// captain), the captain counterpart of [`CardInstance::pv_max_loss`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pv_max_loss: Option<i32>,
 }
 
 impl CaptainInstance {
@@ -175,6 +241,8 @@ impl CaptainInstance {
             used_base_action: false,
             used_special_attack: false,
             used_once_abilities: Vec::new(),
+            logia_used_this_turn: None,
+            pv_max_loss: None,
         }
     }
 
@@ -337,6 +405,11 @@ pub struct PlayerState {
     /// This player's attacks pierce Logia this turn (granted Haki this turn)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub haki_this_turn: Option<bool>,
+    /// Decision §8.37 (`embargo`, `MR-027`): while `> 0` this player can
+    /// neither equip an object nor deploy a ship. Decremented at the end of
+    /// this player's own turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embargo_turns: Option<i32>,
 }
 
 impl PlayerState {
@@ -351,6 +424,10 @@ impl PlayerState {
     /// TS `player.hakiThisTurn` truthiness.
     pub fn has_haki_this_turn(&self) -> bool {
         self.haki_this_turn.unwrap_or(false)
+    }
+    /// Decision §8.37: is this player under `MR-027` Embargo right now?
+    pub fn is_embargoed(&self) -> bool {
+        self.embargo_turns.unwrap_or(0) > 0
     }
 }
 
@@ -439,6 +516,33 @@ pub struct PendingAttack {
     /// through the TS engine unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub survive_played: Option<bool>,
+    /// Decision §8.15 — the instance [`crate::combat::apply_counter_survive`]
+    /// protects. The 1-PV floor (and the `"survived"` once-tag) is applied by
+    /// `applyCharacterDamage` **only** when the attack still resolves against
+    /// this instance, so a shield block retargeting the attack no longer
+    /// floors the blocker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub survive_target_id: Option<String>,
+    /// Decision §8.13 — the total already subtracted by `reduceDamage`
+    /// counters. A Bouclier block recomputes the damage from `attackPower`
+    /// and has to re-apply this, or the block would refund a counter the
+    /// defender already paid for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_reduction: Option<i32>,
+    /// Decision §8.13 — the `ignoreDef` the declaration applied to the
+    /// target's DEF. A Bouclier block recomputes the damage against the
+    /// blocker's DEF and has to apply the same clamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_def: Option<i32>,
+    /// Decision §8.38 — `SpecialAttack.permanentPvLoss`: the target loses N
+    /// points of **maximum** PV once the attack lands (Crocodile's Desert
+    /// Girasol, "La cible perd 2 PV permanent (Sable)").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permanent_pv_loss: Option<i32>,
+    /// Decision §8.38 — `SpecialAttack.noHeal`: the target cannot be healed
+    /// for 2 turns once the attack lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_heal: Option<bool>,
 }
 
 /// TS `LogEntry`.
@@ -506,6 +610,51 @@ where
             Err(err)
         }
     }
+}
+
+/// Decision §8.25 — how much PV a poison tick actually removes from a unit
+/// currently at `current_pv`.
+///
+/// "Le poison ne peut pas tuer": the tick is clamped to what it takes to bring
+/// the unit down to 1 PV, so it can never kill — and, because the clamp is on
+/// the *damage* rather than on the resulting PV, it can never heal either. A
+/// unit already at or below 1 PV (a burn tick in the same pass may have taken
+/// it to 0) takes nothing at all instead of being restored to 1.
+fn poison_damage(damage_per_turn: i32, current_pv: i32) -> i32 {
+    damage_per_turn.min(current_pv - 1).max(0)
+}
+
+/// Decision §8.22 — one modifier-expiry pass, run once per owner turn from
+/// [`GameState::reset_turn_flags`].
+///
+/// * [`ModifierDuration::Turn`] modifiers are dropped outright (unchanged
+///   behaviour: they only ever live for the turn that created them);
+/// * every other modifier that carries `turns_remaining = Some(n)` has `n`
+///   decremented and is dropped when it reaches `0`;
+/// * `turns_remaining = None` still means "no countdown" (permanent).
+///
+/// [`ModifierDuration::NextTurn`] means "expires at the end of the owner's
+/// next turn", i.e. a countdown of two owner turns; it is created with
+/// `turns_remaining = Some(2)` ([`Modifier::next_turn`]), and a `nextTurn`
+/// modifier deserialised without one is normalised here so that the two spell
+/// the same rule.
+fn tick_modifiers(modifiers: &mut Vec<Modifier>) {
+    modifiers.retain_mut(|m| {
+        if m.duration == ModifierDuration::Turn {
+            return false;
+        }
+        if m.duration == ModifierDuration::NextTurn && m.turns_remaining.is_none() {
+            m.turns_remaining = Some(Modifier::NEXT_TURN_COUNT);
+        }
+        match m.turns_remaining {
+            Some(n) => {
+                let left = n - 1;
+                m.turns_remaining = Some(left);
+                left > 0
+            }
+            None => true,
+        }
+    });
 }
 
 // ------------------------------------------------------------
@@ -577,6 +726,7 @@ pub fn create_player_state(
         ally_ko_ed_this_turn: None,
         char_ko_ed_this_game: None,
         haki_this_turn: None,
+        embargo_turns: None,
     })
 }
 
@@ -834,25 +984,29 @@ impl GameState {
         let player = self.players.get_mut(cp);
         player.captain.used_base_action = false;
         player.captain.used_special_attack = false;
+        // Decision §8.40: the captain's Logia intangibility is once per turn.
+        player.captain.logia_used_this_turn = Some(false);
 
-        // Expire turn-duration modifiers on all player's cards
+        // Expire turn-duration modifiers on all player's cards, and tick down
+        // the ones that carry a countdown (decision §8.22).
         for id in &ids {
             if let Some(card) = self.cards.get_mut(id) {
-                card.modifiers
-                    .retain(|m| m.duration != ModifierDuration::Turn);
+                tick_modifiers(&mut card.modifiers);
             }
         }
         let player = self.players.get_mut(cp);
-        player
-            .captain
-            .modifiers
-            .retain(|m| m.duration != ModifierDuration::Turn);
+        tick_modifiers(&mut player.captain.modifiers);
     }
 
     /// TS `processStartOfTurnEffects(state)` — burn / poison / desiccation
     /// ticks and status-effect countdowns for the current player's board and
     /// captain. `selfKO` is left untouched (handled by a dedicated pass in
     /// `startTurn`).
+    ///
+    /// Decisions §8.24 (a `turnsRemaining` of `0` is already expired: it deals
+    /// nothing and is dropped here; `-1` is permanent for every status type)
+    /// and §8.25 (the poison floor is applied to the poison damage alone, see
+    /// [`poison_damage`]).
     pub fn process_start_of_turn_effects(&mut self) {
         let cp = self.current_player;
         let ids: Vec<String> = self
@@ -876,15 +1030,21 @@ impl GameState {
                     remaining.push(effect);
                     continue;
                 }
+                // Decision §8.24: `0` means "already expired" — no damage, and
+                // the effect is dropped by this very tick.
+                if effect.turns_remaining == 0 {
+                    continue;
+                }
                 // Apply damage
-                if matches!(
-                    effect.effect_type,
-                    StatusEffectType::Burn | StatusEffectType::Poison
-                ) {
+                if effect.effect_type == StatusEffectType::Burn {
                     card.current_pv -= effect.damage_per_turn;
-                    if effect.effect_type == StatusEffectType::Poison && card.current_pv < 1 {
-                        card.current_pv = 1; // Poison can't kill
-                    }
+                }
+                if effect.effect_type == StatusEffectType::Poison {
+                    // Decision §8.25: "le poison ne peut pas tuer" is a
+                    // property of the poison tick alone — it stops at 1 PV and
+                    // can never *raise* the PV of a unit another effect has
+                    // already finished off.
+                    card.current_pv -= poison_damage(effect.damage_per_turn, card.current_pv);
                 }
                 if effect.effect_type == StatusEffectType::Desiccation {
                     card.current_pv -= effect.damage_per_turn;
@@ -907,14 +1067,16 @@ impl GameState {
         let cap = &mut self.players.get_mut(cp).captain;
         let mut cap_remaining: Vec<StatusEffect> = Vec::new();
         for mut effect in std::mem::take(&mut cap.status_effects) {
-            if matches!(
-                effect.effect_type,
-                StatusEffectType::Burn | StatusEffectType::Poison
-            ) {
+            // Decision §8.24 — as above: a 0-turn status is already expired.
+            if effect.turns_remaining == 0 {
+                continue;
+            }
+            if effect.effect_type == StatusEffectType::Burn {
                 cap.current_pv -= effect.damage_per_turn;
-                if effect.effect_type == StatusEffectType::Poison && cap.current_pv < 1 {
-                    cap.current_pv = 1;
-                }
+            }
+            if effect.effect_type == StatusEffectType::Poison {
+                // Decision §8.25 — same floor, same no-resurrection rule.
+                cap.current_pv -= poison_damage(effect.damage_per_turn, cap.current_pv);
             }
             if effect.turns_remaining > 0 {
                 effect.turns_remaining -= 1;
@@ -936,7 +1098,8 @@ impl GameState {
     /// TS `startTurn(state)` — start a new turn for the current player:
     /// untap → reset flags → draw (J1 skips on T1) → gain Volonte → phase
     /// `main` → Sandai Kitetsu curse → status ticks → selfKO timers → KO
-    /// check → start-of-turn passives → passive buffs / enemy debuff auras.
+    /// check → start-of-turn passives → passive buffs / enemy debuff auras →
+    /// win check (decision §8.44).
     pub fn start_turn(
         &mut self,
         registry: &CardRegistry,
@@ -1049,13 +1212,22 @@ impl GameState {
         recalculate_passive_buffs(self, registry, cp.opponent())?;
         apply_enemy_debuff_auras(self, registry)?;
 
+        // 9. Decision §8.44: a captain that died to a burn / desiccation tick,
+        // or a deck-out on the start-of-turn draw, ends the game right here —
+        // `check_win_condition` returns the existing `winner` first, so this is
+        // idempotent and can never overwrite an earlier one.
+        if let Some(w) = self.check_win_condition() {
+            self.winner = Some(w);
+        }
+
         Ok(())
     }
 
     /// TS `endTurn(state)` — end the current player's turn and switch to the
-    /// opponent. First the Crocodile end-of-turn desiccation (the flipped
-    /// captain's `endTurnDesiccation`: the first injured enemy loses N
-    /// permanent PV, KO if it drops to 0), then phase `end`, hand-limit
+    /// opponent. First the Crocodile end-of-turn desiccation (the **active
+    /// face's** `endTurnDesiccation` — verso when flipped, recto otherwise:
+    /// the first injured enemy loses N permanent PV, KO if it drops to 0;
+    /// decision §8.17), then phase `end`, hand-limit
     /// discard and the player switch ([`GameState::end_turn_switch`]).
     pub fn end_turn(&mut self, registry: &CardRegistry) -> Result<(), EngineError> {
         // End-of-turn desiccation (Crocodile): an injured enemy loses 1 permanent PV.
@@ -1077,7 +1249,9 @@ impl GameState {
                     _ => 0,
                 })
                 .sum();
-            if captain.flipped && desicc > 0 {
+            // Decision §8.17: the face selection above *is* the rule — the
+            // extra `captain.flipped` test made the recto branch unreachable.
+            if desicc > 0 {
                 let mut injured: Vec<String> = Vec::new();
                 for id in self.players.get(opp).board.instance_ids() {
                     let Some(c) = self.cards.get(id) else {
@@ -1103,7 +1277,82 @@ impl GameState {
             }
         }
 
+        // Decision §8.37 (`betrayal`, `BW-024`): every body on loan to the
+        // player whose turn is ending goes home to `loanReturnSlot` — free by
+        // construction, since only the borrower acted in between. `owner` was
+        // never touched, so nothing else has to be undone.
+        self.return_loans(registry)?;
+
+        // Decision §8.37 (`embargo`, `MR-027`): the ban lasts exactly one of
+        // the embargoed player's own turns.
+        {
+            let me = self.current_player;
+            let player = self.players.get_mut(me);
+            if let Some(turns) = player.embargo_turns {
+                player.embargo_turns = if turns > 1 { Some(turns - 1) } else { None };
+            }
+        }
+
         self.end_turn_switch();
+        Ok(())
+    }
+
+    /// Decision §8.37 (`betrayal`): hand every borrowed character back to its
+    /// owner at the borrower's end of turn. A body that was KO'd while on loan
+    /// is already in the graveyard — only the two loan fields (and a stale
+    /// board cell) are cleaned up for it.
+    fn return_loans(&mut self, registry: &CardRegistry) -> Result<(), EngineError> {
+        let me = self.current_player;
+        let borrowed: Vec<String> = self
+            .cards
+            .iter()
+            .filter(|(_, c)| c.controlled_by == Some(me))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if borrowed.is_empty() {
+            return Ok(());
+        }
+        for id in borrowed {
+            let Some(card) = self.cards.get(&id) else {
+                continue;
+            };
+            let owner = card.owner;
+            let home = card.loan_return_slot;
+            let here = card.slot;
+            let on_board = card.zone == Zone::Board;
+
+            if let Some(slot) = here {
+                if self.players.get(me).board.get(slot) == Some(&id) {
+                    self.players.get_mut(me).board.set(slot, None);
+                }
+            }
+            if on_board {
+                if let Some(home) = home {
+                    self.players
+                        .get_mut(owner)
+                        .board
+                        .set(home, Some(id.clone()));
+                }
+            }
+
+            let card = self.cards.get_mut(&id).expect("just read");
+            card.controlled_by = None;
+            card.loan_return_slot = None;
+            if on_board {
+                card.slot = home;
+                // The borrowed body spent its turn away from home: it comes
+                // back tapped-out exactly as it left, but its slot is its own
+                // again.
+            }
+            if on_board {
+                let def_id = self.cards[&id].def_id.clone();
+                let name = registry.get_card_def(&def_id)?.name.clone();
+                self.add_log(me, format!("{name} retourne dans son camp."));
+            }
+        }
+        recalculate_passive_buffs(self, registry, me)?;
+        recalculate_passive_buffs(self, registry, me.opponent())?;
+        apply_enemy_debuff_auras(self, registry)?;
         Ok(())
     }
 

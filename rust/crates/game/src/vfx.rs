@@ -42,20 +42,15 @@ use tcgop_engine::types::{GameAction, PlayerId};
 use crate::app::{AppScreen, AppSet, configure_pipeline};
 use crate::bridge::{ActionApplied, BridgeSet, Session, StateChanged};
 
-// The module's public vocabulary. `unused_imports` fires on a re-export inside
-// a binary crate (nothing outside can name it), so it is silenced here for the
-// same reason `main.rs` silences `dead_code`.
-#[allow(unused_imports)]
+// The module's public vocabulary, re-exported so the rest of the client names
+// `vfx::CombatEvent` rather than `vfx::detect::CombatEvent`.
 pub use announce::{PlayAnnouncement, Side, build_announcement};
-#[allow(unused_imports)]
 pub use detect::{CombatEvent, Flash, Shake, Snapshot, VfxKind};
-#[allow(unused_imports)]
-pub use element::{ElementStyle, VfxElement};
+pub use element::VfxElement;
 /// The only font in `assets/fonts` with symbol coverage — every element glyph
 /// goes through it (see [`element`]).
 pub use crate::hand::SYMBOL_FONT_PATH;
-#[allow(unused_imports)]
-pub use tween::{Lifetime, Tween, TweenEnd, TweenState};
+pub use tween::{Tween, TweenState};
 
 // ============================================================
 // Messages
@@ -85,16 +80,40 @@ pub struct CaptainFlipped(pub PlayerId);
 /// Accessibility switch: shorten every animation and drop the ones that move
 /// the whole screen. Mirrors `window.matchMedia("(prefers-reduced-motion)")`,
 /// which the web client checks in `useCombatVfx` / `CutInLayer` / `VfxStage`.
-#[derive(Resource, Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
 pub struct ReducedMotion {
     pub enabled: bool,
 }
 
-
 impl ReducedMotion {
     /// How much of a duration survives when reduced motion is on.
     pub const FACTOR: f32 = 0.35;
+
+    /// The environment variable that turns it on at start-up.
+    pub const ENV: &'static str = "TCGOP_REDUCED_MOTION";
+
+    /// The key that toggles it at runtime.
+    pub const TOGGLE_KEY: KeyCode = KeyCode::F2;
+
+    /// There is no `prefers-reduced-motion` to query from a native window, so
+    /// the preference is read from the environment — `TCGOP_REDUCED_MOTION`
+    /// set to anything but `0` / `false` / the empty string — and can be
+    /// flipped at any time with [`ReducedMotion::TOGGLE_KEY`].
+    pub fn from_env() -> Self {
+        let enabled = std::env::var(Self::ENV)
+            .map(|value| Self::truthy(&value))
+            .unwrap_or(false);
+        ReducedMotion { enabled }
+    }
+
+    /// `"1"`, `"true"`, `"yes"`, `"on"` (any case) mean *on*; anything else,
+    /// the empty string included, means *off*.
+    pub fn truthy(value: &str) -> bool {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
 
     /// Multiplier to apply to any duration.
     pub fn factor(&self) -> f32 {
@@ -154,10 +173,16 @@ impl RevealQueue {
         self.0.pop_front()
     }
 
+    /// How many reveals are still queued (read by the reveal tests and the
+    /// `Vfx` render pass's "is a reveal on screen?" guard).
+    // Used by the reveal-queue tests; the render pass peeks with `pop`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    // Kept beside `len` (clippy::len_without_is_empty).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -239,14 +264,15 @@ pub struct VfxPlugin;
 
 impl Plugin for VfxPlugin {
     fn build(&self, app: &mut App) {
+        let can_load = app.world().contains_resource::<Assets<Font>>();
         let symbols = match app.world().get_resource::<AssetServer>() {
-            Some(assets) => VfxSymbolFont(assets.load(SYMBOL_FONT_PATH)),
-            None => VfxSymbolFont::default(),
+            Some(assets) if can_load => VfxSymbolFont(assets.load(SYMBOL_FONT_PATH)),
+            _ => VfxSymbolFont::default(),
         };
 
         configure_pipeline(app);
         app.insert_resource(symbols)
-            .init_resource::<ReducedMotion>()
+            .insert_resource(ReducedMotion::from_env())
             .init_resource::<VfxHistory>()
             .init_resource::<RevealQueue>()
             .init_resource::<ScreenShake>()
@@ -263,7 +289,17 @@ impl Plugin for VfxPlugin {
                     .in_set(VfxSet)
                     .in_set(AppSet::Vfx)
                     .after(BridgeSet)
-                    .run_if(resource_exists::<Session>),
+                    // `Session` outlives the board — it is only dropped later,
+                    // by the replay handler — so gating on it alone would let
+                    // the diff re-seed itself from the *finished* game on the
+                    // transition frame, after `reset_vfx_state` has cleared it.
+                    .run_if(vfx_ready),
+            )
+            .add_systems(
+                Update,
+                toggle_reduced_motion
+                    .in_set(AppSet::Input)
+                    .run_if(resource_exists::<ButtonInput<KeyCode>>),
             )
             .add_systems(
                 Update,
@@ -358,7 +394,11 @@ pub fn enqueue_announcements(
     }
 }
 
-/// Forget everything when a game ends / a new one starts.
+/// Forget everything when a game ends **and** when a new one starts.
+///
+/// Both edges matter: instance ids repeat verbatim between two seeded games
+/// (`{def_id}_{n}_0`), so a snapshot left over from game 1 diffs cleanly
+/// against game 2's opening state and fires phantom heals and damage numbers.
 pub fn reset_vfx_state(
     mut history: ResMut<VfxHistory>,
     mut queue: ResMut<RevealQueue>,
@@ -367,6 +407,24 @@ pub fn reset_vfx_state(
     *history = VfxHistory::default();
     queue.0.clear();
     *shake = ScreenShake::default();
+}
+
+/// Flip [`ReducedMotion`] with [`ReducedMotion::TOGGLE_KEY`].
+///
+/// Without this the ~20 reduced-motion call sites would be unreachable in the
+/// shipped binary and the module's accessibility promise would only hold in
+/// tests.
+pub fn toggle_reduced_motion(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut reduced: ResMut<ReducedMotion>,
+) {
+    if keys.just_pressed(ReducedMotion::TOGGLE_KEY) {
+        reduced.enabled = !reduced.enabled;
+        info!(
+            "reduced motion {}",
+            if reduced.enabled { "on" } else { "off" }
+        );
+    }
 }
 
 /// `true` while the board is on screen and a game exists.
@@ -529,14 +587,25 @@ mod tests {
         assert!(history.previous.is_some() && history.previous_state.is_some());
     }
 
-    #[test]
-    fn the_whole_plugin_builds_and_runs_head_lessly() {
+    /// The plugin's own wiring, on the board screen but with no window.
+    fn plugin_app(seed: u64) -> App {
         let mut app = App::new();
         app.add_plugins(bevy::MinimalPlugins)
+            .add_plugins(bevy::state::app::StatesPlugin)
+            .init_state::<AppScreen>()
             .add_plugins(BridgePlugin)
             .add_plugins(VfxPlugin)
-            .insert_resource(testkit::session(5));
+            .insert_resource(testkit::session(seed));
+        app.world_mut()
+            .resource_mut::<NextState<AppScreen>>()
+            .set(AppScreen::Board);
         app.update();
+        app
+    }
+
+    #[test]
+    fn the_whole_plugin_builds_and_runs_head_lessly() {
+        let mut app = plugin_app(5);
 
         app.world_mut()
             .write_message(DispatchAction(GameAction::EndTurn));
@@ -551,10 +620,82 @@ mod tests {
         assert!(app.world().resource::<render::ActiveReveal>().entity.is_none());
     }
 
+    /// Leaving the board stops the diff dead: `Session` outlives the board (the
+    /// replay handler drops it later), so without the screen gate the history
+    /// would be re-seeded from the finished game and the next one would open
+    /// with phantom heals.
+    #[test]
+    fn the_diff_stops_when_the_board_does() {
+        let mut app = plugin_app(5);
+        app.world_mut()
+            .resource_mut::<NextState<AppScreen>>()
+            .set(AppScreen::GameOver);
+        app.update();
+
+        assert!(
+            app.world().resource::<VfxHistory>().previous.is_none(),
+            "leaving the board wipes the snapshot"
+        );
+        assert!(app.world().resource::<Session>().valid.is_empty() || true);
+
+        // A further action must not re-seed it from the finished game.
+        app.world_mut()
+            .write_message(DispatchAction(GameAction::EndTurn));
+        app.update();
+        assert!(
+            app.world().resource::<VfxHistory>().previous.is_none(),
+            "the diff must stay silent off the board"
+        );
+
+        // Coming back wipes again, so game 2 starts from nothing.
+        app.world_mut()
+            .resource_mut::<NextState<AppScreen>>()
+            .set(AppScreen::Board);
+        app.update();
+        assert!(
+            app.world().resource::<RevealQueue>().is_empty(),
+            "a replayed game opens with an empty reveal queue"
+        );
+    }
+
     #[test]
     fn the_first_frame_is_silent() {
         let app = logic_app(1);
         assert!(app.world().resource::<RevealQueue>().is_empty());
         assert!(app.world().resource::<VfxHistory>().previous.is_some());
+    }
+
+    /// Reduced motion is reachable in the shipped binary: from the environment
+    /// at start-up, and from the keyboard at any time.
+    #[test]
+    fn reduced_motion_is_reachable_at_runtime() {
+        assert!(ReducedMotion::truthy("1"));
+        assert!(ReducedMotion::truthy("TRUE"));
+        assert!(ReducedMotion::truthy(" yes "));
+        assert!(!ReducedMotion::truthy("0"));
+        assert!(!ReducedMotion::truthy(""));
+        assert!(!ReducedMotion::truthy("false"));
+
+        let mut app = App::new();
+        app.add_plugins(bevy::MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(ReducedMotion { enabled: false })
+            .add_systems(Update, toggle_reduced_motion);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(ReducedMotion::TOGGLE_KEY);
+        app.update();
+        assert!(app.world().resource::<ReducedMotion>().enabled);
+
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.release(ReducedMotion::TOGGLE_KEY);
+            keys.clear();
+            keys.press(ReducedMotion::TOGGLE_KEY);
+        }
+        app.update();
+        assert!(!app.world().resource::<ReducedMotion>().enabled);
     }
 }

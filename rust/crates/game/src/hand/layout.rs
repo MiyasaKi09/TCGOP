@@ -50,16 +50,22 @@ pub const SELECTED_LIFT: f32 = 12.0;
 /// Extra scale of the selected card (TS `scale-105`).
 pub const SELECTED_SCALE: f32 = 1.05;
 
-/// TS, in the hand loop of `Game.tsx`:
+/// The mock-up's fan, which rotates **only the outermost pair**:
 ///
-/// ```text
-/// off = i - (n - 1) / 2
-/// rot = clamp(off * 2, -7, 7)
-/// ty  = min(|off| * 2.4, 14)
-/// transform = hovered ? "rotate(0deg) translateY(-6px)"
-///                     : `rotate(${rot}deg) translateY(${ty}px)`
-/// transform-origin: bottom center
+/// ```css
+/// .h:nth-child(1){transform:rotate(-7deg) translateY(6px)}
+/// .h:nth-child(4){transform:rotate( 7deg) translateY(6px)}
 /// ```
+///
+/// Every inner card is flat. Spreading the rotation across the whole hand (the
+/// `off * STEP` the TSX uses) flattens a small hand to ±3° / ±1° and never
+/// reaches the ±7° the mock-up shows, so the shape is taken from the mock-up:
+/// the two ends lean out by [`HAND_FAN_ROT_MAX`](crate::app::layout::HAND_FAN_ROT_MAX)
+/// and drop by [`HAND_FAN_LIFT_MAX`](crate::app::layout::HAND_FAN_LIFT_MAX),
+/// the rest stand upright.
+///
+/// Hovering still straightens the card and lifts it, and the selected card
+/// still rises and grows (TS `-translate-y-3 scale-105`).
 ///
 /// `card_h` is the card height the pivot compensation is computed for
 /// ([`HAND_CARD_H`](crate::app::layout::HAND_CARD_H) in practice).
@@ -72,15 +78,16 @@ pub fn fan_transform(
     if count == 0 {
         return FanTransform::IDENTITY;
     }
-    let off = index as f32 - (count.saturating_sub(1) as f32) / 2.0;
+    let last = count - 1;
 
     let (rotation_deg, lift) = if state.hovered {
         (0.0, -L::HAND_HOVER_LIFT)
+    } else if count > 1 && index == 0 {
+        (-L::HAND_FAN_ROT_MAX, L::HAND_FAN_LIFT_MAX)
+    } else if count > 1 && index == last {
+        (L::HAND_FAN_ROT_MAX, L::HAND_FAN_LIFT_MAX)
     } else {
-        (
-            (off * L::HAND_FAN_ROT_STEP).clamp(-L::HAND_FAN_ROT_MAX, L::HAND_FAN_ROT_MAX),
-            (off.abs() * L::HAND_FAN_LIFT_STEP).min(L::HAND_FAN_LIFT_MAX),
-        )
+        (0.0, 0.0)
     };
 
     // Rotating about the bottom edge instead of the centre: with
@@ -257,19 +264,32 @@ mod tests {
         assert!(left.offset_y > 0.0);
     }
 
+    /// The mock-up's four-card hand: `±7°` on the ends, flat in between —
+    /// never the `±3°/±1°` a per-card step would give.
     #[test]
-    fn rotation_and_lift_are_clamped_like_the_css() {
-        // 12 cards → |off| up to 5.5 → 11° and 13.2px before clamping.
-        let t = plain(11, 12);
-        assert_eq!(t.rotation_deg, L::HAND_FAN_ROT_MAX);
-        let lift_only = t.offset_y - (1.0 - t.rotation_deg.to_radians().cos()) * L::HAND_CARD_H / 2.0;
-        assert!((lift_only - 13.2).abs() < 1e-3, "lift {lift_only}");
+    fn only_the_outermost_pair_leans() {
+        let lift = |t: FanTransform| {
+            t.offset_y - (1.0 - t.rotation_deg.to_radians().cos()) * L::HAND_CARD_H / 2.0
+        };
+        assert_eq!(plain(0, 4).rotation_deg, -L::HAND_FAN_ROT_MAX);
+        assert_eq!(plain(3, 4).rotation_deg, L::HAND_FAN_ROT_MAX);
+        assert!((lift(plain(0, 4)) - L::HAND_FAN_LIFT_MAX).abs() < 1e-4);
+        for inner in 1..3 {
+            let t = plain(inner, 4);
+            assert_eq!(t.rotation_deg, 0.0, "card {inner} must stay flat");
+            assert_eq!(t.offset_y, 0.0);
+        }
+        // A long hand behaves the same: the ends lean, the body is flat.
+        assert_eq!(plain(11, 12).rotation_deg, L::HAND_FAN_ROT_MAX);
+        assert_eq!(plain(6, 12).rotation_deg, 0.0);
+    }
 
-        // 20 cards → |off| = 9.5 → 19° and 22.8px, both clamped.
-        let far = plain(19, 20);
-        assert_eq!(far.rotation_deg, L::HAND_FAN_ROT_MAX);
-        let far_lift = far.offset_y - (1.0 - far.rotation_deg.to_radians().cos()) * L::HAND_CARD_H / 2.0;
-        assert!((far_lift - L::HAND_FAN_LIFT_MAX).abs() < 1e-3);
+    /// A single card has no "outer pair": it stands upright.
+    #[test]
+    fn a_one_card_hand_is_upright() {
+        let t = plain(0, 1);
+        assert_eq!(t.rotation_deg, 0.0);
+        assert_eq!(t.offset_y, 0.0);
     }
 
     #[test]
@@ -342,8 +362,8 @@ mod tests {
 
     #[test]
     fn a_full_hand_overlaps_to_stay_on_screen() {
-        // 10 cards next to the 168 px action column of a 1280 px window.
-        let available = L::WINDOW_W - 2.0 * L::HAND_PAD_X - L::ACTION_COL_W - 12.0;
+        // 10 cards in a strip much narrower than they need.
+        let available = 6.0 * L::HAND_CARD_W;
         let gap = fan_gap(10, available);
         assert!(gap < 0.0, "the fan must tighten, got {gap}");
         let total = 10.0 * L::HAND_CARD_W + 9.0 * gap;
