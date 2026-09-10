@@ -1,49 +1,50 @@
-//! TCGOP — native game entry point (Bevy).
+//! TCGOP — native game entry point (Bevy 0.19).
 //!
-//! This is the bootstrap: window, camera, asset pipeline sanity (loads the sea
-//! backdrop and a card illustration) and a title. The real screens live in the
-//! modules added by the port.
+//! The binary does three things and nothing else: it configures the window,
+//! adds `DefaultPlugins` and registers [`TcgopPlugin`]. Every screen, system
+//! and resource lives under [`app`] and the feature modules it wires together.
+//!
+//! Note on filtering: `ImagePlugin::default_nearest()` is deliberately **not**
+//! used — the card illustrations are photographic JPEGs and must be sampled
+//! with the default linear filter.
+
+// This is a binary crate, so `pub` items are not part of any public API and
+// `dead_code` fires on everything the skeleton exposes for the feature modules
+// (palette fields, layout constants, `Session` accessors, the pure selection
+// helpers). Drop this attribute once the feature modules consume them.
+#![allow(dead_code)]
+
+mod ai_driver;
+mod app;
+mod art;
+mod board;
+mod bridge;
+#[cfg(test)]
+mod e2e;
+mod hand;
+mod panels;
+mod screens;
+mod selection;
+mod vfx;
 
 use bevy::prelude::*;
-use bevy::text::FontSize;
+use bevy::window::WindowResolution;
+
+use crate::app::{TcgopPlugin, layout};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "TCGOP — One Piece Grand Line TCG".into(),
-                resolution: (1280u32, 800u32).into(),
+                resolution: WindowResolution::new(
+                    layout::WINDOW_W as u32,
+                    layout::WINDOW_H as u32,
+                ),
                 ..default()
             }),
             ..default()
         }))
-        .add_systems(Startup, setup)
+        .add_plugins(TcgopPlugin)
         .run();
-}
-
-fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.spawn(Camera2d);
-
-    // Sea backdrop (from the shared `public/` assets).
-    commands.spawn((
-        Sprite::from_image(assets.load("decks/sea.png")),
-        Transform::from_xyz(0.0, 0.0, -10.0),
-    ));
-
-    // A card illustration, to prove JPEG decoding works.
-    commands.spawn((
-        Sprite {
-            image: assets.load("cards/luffy-recto.jpg"),
-            custom_size: Some(Vec2::new(300.0, 419.0)),
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 0.0),
-    ));
-
-    commands.spawn((
-        Text2d::new("TCGOP"),
-        TextFont { font_size: FontSize::Px(64.0), ..default() },
-        TextColor(Color::srgb(0.91, 0.72, 0.29)),
-        Transform::from_xyz(0.0, 320.0, 1.0),
-    ));
 }
