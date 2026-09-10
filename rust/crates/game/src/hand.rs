@@ -670,7 +670,8 @@ fn forget_pointer_state(
     *notice = RefusalNotice::default();
 }
 
-/// The footer: hand head, the fan, the single CTA row and the log.
+/// The footer: the fan and the single CTA row, plus the boxes that float
+/// above it (hints, the refusal toast, the log).
 ///
 /// Its height is exactly [`L::HAND_H`], which is what the board reserves for
 /// it (`board::spawn_board`'s `HandReserve`), so YOUR command bar always stays
@@ -730,7 +731,7 @@ fn spawn_footer(
             spawn_hint_box(footer, &pal, &fonts, &symbols);
             spawn_notice(footer, &pal, &fonts);
             spawn_log_panel(footer, &pal);
-            spawn_hand_column(footer, &pal);
+            spawn_hand_column(footer);
             spawn_cta_row(footer, &pal, &fonts, &symbols);
         });
 }
@@ -742,8 +743,7 @@ fn spawn_footer(
 /// counts are already drawn once per side inside the command bar
 /// (`board::widgets::counts_row`, mock-up `.res > .counts`) and every pixel
 /// the footer reserves is a pixel the two halves lose.
-fn spawn_hand_column(footer: &mut ChildSpawnerCommands, pal: &Palette) {
-    let _ = pal;
+fn spawn_hand_column(footer: &mut ChildSpawnerCommands) {
     // The fan itself — mock-up `.hand{justify-content:center}`, spanning the
     // whole footer so its centre is the window's centre.
     footer.spawn((
