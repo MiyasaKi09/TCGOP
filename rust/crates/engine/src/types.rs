@@ -14,7 +14,10 @@
 //!
 //! Numbers: TS `number` is mapped to `i32` for stats / costs / amounts (they
 //! can go negative through modifiers and damage) and to `u32` for turn
-//! numbers and card counts.
+//! numbers and card counts. The one exception is `deployedTurn`
+//! (`CardInstance` / `CaptainInstance`), which TS overwrites with the sentinel
+//! `-1` to clear summoning sickness: it is an `Option<i64>` so the sentinel
+//! round-trips through JSON exactly as the TS engine writes it.
 
 use serde::{Deserialize, Serialize};
 

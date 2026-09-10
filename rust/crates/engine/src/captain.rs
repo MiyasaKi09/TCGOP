@@ -127,7 +127,7 @@ pub fn flip_captain(
         let dmg_marked = (def.recto.pv - cap.current_pv).max(0);
         cap.current_pv = def.verso.pv - dmg_marked;
         cap.slot = Some(slot);
-        cap.deployed_turn = Some(turn_number);
+        cap.deployed_turn = Some(i64::from(turn_number));
     }
 
     state.add_log(
@@ -174,9 +174,9 @@ pub fn flip_captain(
 ///   ([`EngineContext::rng`]), no log;
 /// - `custom` → `"Effet d'entree special : {description}"`.
 ///
-/// `deployedTurn = -1` in TS is a negative turn number; `CaptainInstance.deployed_turn`
-/// is `Option<u32>` in Rust, so use `None` (never equal to `state.turn_number`)
-/// and document it — see the notes in `state.rs`.
+/// `deployedTurn = -1` in TS is a negative turn number, so
+/// `CaptainInstance::deployed_turn` is an `Option<i64>` and the sentinel is
+/// written verbatim — see the notes in `state.rs`.
 pub fn resolve_entry_effect(
     state: &mut GameState,
     registry: &CardRegistry,
@@ -336,9 +336,9 @@ pub fn resolve_entry_effect(
 
         EntryEffect::GrantSelfRush => {
             // Clear the captain's summoning sickness so it can act the turn it flips (Gear 2).
-            // TS sets `deployedTurn = -1`; `Option<u32>` has no negative turn, and `None`
-            // is likewise never equal to `state.turnNumber`.
-            state.players.get_mut(player_id).captain.deployed_turn = None;
+            // TS `draft.players[playerId].captain.deployedTurn = -1` — the very
+            // same sentinel, so the serialised state matches key for key.
+            state.players.get_mut(player_id).captain.deployed_turn = Some(-1);
             state.add_log(
                 player_id,
                 "Effet d'entree : Gear 2 — le Capitaine peut agir immédiatement (Rush).",
@@ -482,7 +482,7 @@ pub fn declare_captain_base_attack(
     let base_action = def.verso.base_action.clone();
 
     // Captain summoning sickness
-    if captain.deployed_turn == Some(state.turn_number) {
+    if captain.deployed_turn == Some(i64::from(state.turn_number)) {
         // Verso captain just flipped — has mal de terre unless Rush
         let has_rush = def
             .verso
@@ -796,8 +796,8 @@ mod tests {
         assert!(cap_inst.flipped);
         assert_eq!(cap_inst.current_pv, 25 - 6);
         assert_eq!(cap_inst.slot, Some(Slot::A2));
-        // grantSelfRush cleared the deployedTurn again
-        assert_eq!(cap_inst.deployed_turn, None);
+        // grantSelfRush cleared the deployedTurn again (TS sentinel `-1`)
+        assert_eq!(cap_inst.deployed_turn, Some(-1));
         assert_eq!(state.players.get(P1).volonte, 7);
         assert_eq!(
             state.log[0].message,
@@ -1145,7 +1145,7 @@ mod tests {
             Err(EngineError::illegal("Captain base action already used"))
         );
         state.players.get_mut(P1).captain.used_base_action = false;
-        state.players.get_mut(P1).captain.deployed_turn = Some(state.turn_number);
+        state.players.get_mut(P1).captain.deployed_turn = Some(i64::from(state.turn_number));
         assert_eq!(
             declare_captain_base_attack(&mut state, &reg, P1, &t, false),
             Err(EngineError::illegal("Captain has summoning sickness"))

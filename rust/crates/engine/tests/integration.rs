@@ -186,7 +186,9 @@ fn a_game_can_be_created_from_every_deck_pairing() {
             assert_eq!(state.turn_number, 1);
             assert!(state.winner.is_none());
             assert!(
-                !valid_actions(&state, &registry).is_empty(),
+                !valid_actions(&state, &registry)
+                    .expect("a fresh game enumerates")
+                    .is_empty(),
                 "{} vs {}: no legal action on turn 1",
                 a.name,
                 b.name
@@ -393,7 +395,7 @@ fn every_valid_action_is_accepted_by_apply() {
                 if sample.winner.is_some() {
                     continue;
                 }
-                let actions = valid_actions(sample, &registry);
+                let actions = valid_actions(sample, &registry).expect("a live state enumerates");
                 assert!(
                     !actions.is_empty(),
                     "{difficulty:?} seed {seed}: a live state offered no legal action"

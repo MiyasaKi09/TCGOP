@@ -14,7 +14,7 @@ use crate::registry::CardRegistry;
 use crate::state::GameState;
 use crate::types::{HakiType, PlayerId, Trait};
 
-/// TS `HAKI_THRESHOLDS` — `src/engine/haki.ts:199`
+/// TS `HAKI_THRESHOLDS` — `src/engine/haki.ts:9`
 /// (`{ observation: 5, armament: 7, king: 10 }`).
 pub const HAKI_THRESHOLDS: [(HakiType, u32); 3] = [
     (HakiType::Observation, 5),
@@ -31,7 +31,7 @@ pub fn haki_threshold(haki_type: HakiType) -> u32 {
     }
 }
 
-/// TS `isHakiAvailable(state, playerId, hakiType)` — `src/engine/haki.ts:206`.
+/// TS `isHakiAvailable(state, playerId, hakiType)` — `src/engine/haki.ts:16`.
 ///
 /// `false` below the turn threshold; then `!observationUsed` for Observation,
 /// **always `false`** for Armament (a passive since v3.1), `!kingUsed` for King.
@@ -49,7 +49,7 @@ pub fn is_haki_available(state: &GameState, player_id: PlayerId, haki_type: Haki
     }
 }
 
-/// TS `useObservationHaki(state, playerId)` — `src/engine/haki.ts:226`.
+/// TS `useObservationHaki(state, playerId)` — `src/engine/haki.ts:36`.
 ///
 /// Sets `observationUsed`, clears `pendingAttack` and logs
 /// `"Haki de l'Observation ! Attaque esquivee !"`.
@@ -75,7 +75,7 @@ pub fn use_observation_haki(state: &mut GameState, player_id: PlayerId) -> Resul
     Ok(())
 }
 
-/// TS `hasConquerorInPlay(state, playerId)` — `src/engine/haki.ts:248`.
+/// TS `hasConquerorInPlay(state, playerId)` — `src/engine/haki.ts:58`.
 ///
 /// True when the captain's current face (verso traits when flipped, otherwise
 /// the `CaptainDef.traits`) carries `conqueror`, when `CaptainDef.traits` does,
@@ -118,7 +118,7 @@ pub fn has_conqueror_in_play(
     Ok(false)
 }
 
-/// TS `useKingHaki(state, playerId)` — `src/engine/haki.ts:265`.
+/// TS `useKingHaki(state, playerId)` — `src/engine/haki.ts:75`.
 ///
 /// Sets `kingUsed`, logs `"👑 Haki des Rois ! Tous les ennemis DEF ≤ 3 sont KO !"`,
 /// then snapshots the victims (effective DEF ≤ 3, board order) **before**

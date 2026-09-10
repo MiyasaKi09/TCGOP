@@ -126,7 +126,7 @@ use crate::types::{GameAction, PlayerId};
 /// During a counter window the actions belong to the **defender**, so this
 /// facade asks for `state.current_player` first and falls back to the opponent
 /// when an attack is pending, exactly like the UI does.
-pub fn valid_actions(state: &GameState, registry: &CardRegistry) -> Vec<GameAction> {
+pub fn valid_actions(state: &GameState, registry: &CardRegistry) -> EngineResult<Vec<GameAction>> {
     let player = if state.pending_attack.is_some() {
         state.current_player.opponent()
     } else {
@@ -141,7 +141,7 @@ pub fn valid_actions_for(
     state: &GameState,
     registry: &CardRegistry,
     player_id: PlayerId,
-) -> Vec<GameAction> {
+) -> EngineResult<Vec<GameAction>> {
     actions::get_valid_actions(state, registry, player_id)
 }
 

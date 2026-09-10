@@ -584,9 +584,9 @@ pub fn resolve_event_effect(
             // Buster Call also destroys enemy ships.
             if destroy_ships.unwrap_or(false) {
                 if let Some(ship_id) = state.players.get(opponent_id).active_ship.clone() {
-                    if let Some(c) = state.cards.get_mut(&ship_id) {
-                        c.zone = Zone::Graveyard;
-                    }
+                    // TS `draft.cards[opp.activeShip].zone = "graveyard"` —
+                    // unguarded, so a dangling ship id throws.
+                    state.get_card_mut(&ship_id)?.zone = Zone::Graveyard;
                     let opp = state.players.get_mut(opponent_id);
                     opp.graveyard.push(ship_id);
                     opp.active_ship = None;
@@ -603,9 +603,9 @@ pub fn resolve_event_effect(
             let deck: Vec<String> = state.players.get(player_id).deck.clone();
             let mut found: Option<usize> = None;
             for (i, id) in deck.iter().enumerate() {
-                let Some(card) = state.cards.get(id) else {
-                    continue;
-                };
+                // TS `getCardDef(draft.cards[id].defId)` — unguarded, so a deck
+                // entry with no instance throws out of the whole `playEvent`.
+                let card = state.get_card(id)?;
                 let d = registry.get_card_def(&card.def_id)?;
                 if d.card_type != CardType::Character {
                     continue;
@@ -669,12 +669,13 @@ pub fn resolve_event_effect(
             let now = ctx.now();
             let ids = board_ids(state, opponent_id);
             // QUIRK: the TS calls `getEffectiveDef(next, slot)` on the state as
-            // it was *before* this effect's modifiers were pushed.
-            let mut pre_def: Vec<i32> = Vec::with_capacity(ids.len());
-            for id in &ids {
-                pre_def.push(get_effective_def(state, registry, id)?);
-            }
-            for (i, id) in ids.iter().enumerate() {
+            // it was *before* this effect's modifiers were pushed — hence the
+            // snapshot. It is taken (and the lookup only ever runs) inside the
+            // `effect.immobilizeMaxDef !== undefined` guard, so an effect
+            // without that field never calls `getEffectiveDef` and can never
+            // fail the way it does.
+            let pre_state = immobilize_max_def.is_some().then(|| state.clone());
+            for id in ids.iter() {
                 if !state.cards.contains_key(id) {
                     continue;
                 }
@@ -687,7 +688,10 @@ pub fn resolve_event_effect(
                             .iter()
                             .any(|e| matches!(e, PassiveEffect::ImmuneControl))
                     });
-                    immobilize = !ctrl_immune && pre_def[i] <= *max_def;
+                    let pre = pre_state
+                        .as_ref()
+                        .expect("snapshot taken whenever immobilizeMaxDef is set");
+                    immobilize = !ctrl_immune && get_effective_def(pre, registry, id)? <= *max_def;
                 }
                 let card = state.cards.get_mut(id).expect("just checked");
                 card.modifiers.push(modifier(
@@ -796,9 +800,10 @@ pub fn resolve_event_effect(
                         card_name.to_string(),
                         ModifierDuration::Turn,
                     ));
-                    // TS `deployedTurn = -1`; `None` is likewise never equal to
-                    // `turnNumber`, so summoning sickness clears identically.
-                    card.deployed_turn = None;
+                    // TS `c.deployedTurn = -1;` — clear summoning sickness so it
+                    // can act now. The sentinel is stored as-is so the
+                    // serialised `CardInstance` keeps the `deployedTurn` key.
+                    card.deployed_turn = Some(-1);
                 }
             }
         }
@@ -840,15 +845,25 @@ pub fn resolve_event_effect(
                         .map(|c| c.instance_id.clone())
                         .collect();
                     if !enemies.is_empty() {
-                        let mut best: Option<(String, i32)> = None;
+                        // TS `enemies.reduce((a, b) => ...)` with no seed: the
+                        // callback runs only from the *second* element on, so a
+                        // lone enemy is returned without `getEffectiveDef` ever
+                        // being called (and so without it being able to throw).
+                        // Keep the lookups lazy, exactly like Gaon Cannon below.
+                        let mut best: Option<String> = None;
                         for id in enemies {
-                            let d = get_effective_def(state, registry, &id)?;
-                            best = match best {
-                                Some((bid, bd)) if d >= bd => Some((bid, bd)),
-                                Some(_) | None => Some((id, d)),
+                            let replace = match best.as_deref() {
+                                None => true,
+                                Some(cur) => {
+                                    get_effective_def(state, registry, &id)?
+                                        < get_effective_def(state, registry, cur)?
+                                }
                             };
+                            if replace {
+                                best = Some(id);
+                            }
                         }
-                        let target_id = best.expect("non-empty").0;
+                        let target_id = best.expect("non-empty");
                         if let Some(c) = state.cards.get_mut(&target_id) {
                             c.current_pv -= marines;
                         }
@@ -925,7 +940,7 @@ pub fn deploy_token(
     let mut instance = CardInstance::new(id.clone(), token_def_id.to_string(), player_id, pv);
     instance.zone = Zone::Board;
     instance.slot = Some(target);
-    instance.deployed_turn = Some(state.turn_number);
+    instance.deployed_turn = Some(i64::from(state.turn_number));
     state.cards.insert(id.clone(), instance);
     state.players.get_mut(player_id).board.set(target, Some(id));
     state.log.push(LogEntry {
@@ -1195,9 +1210,11 @@ fn activate_ship_ability_inner(
             for slot_key in Slot::FRONT {
                 let id = state.players.get(opponent_id).board.get(slot_key).cloned();
                 if let Some(id) = id {
-                    if let Some(c) = state.cards.get_mut(&id) {
-                        c.current_pv -= dmg;
-                    }
+                    // TS `draft.cards[id].currentPv -= dmg;` — unguarded, so a
+                    // board slot holding a dangling id throws and unwinds the
+                    // whole `activateShipAbility` (no Volonte spent, no
+                    // `usedOnceAbilities` entry, no log).
+                    state.get_card_mut(&id)?.current_pv -= dmg;
                 }
             }
         }
@@ -1331,14 +1348,20 @@ fn execute_support_action_inner(
         let deck_len = state.players.get(player_id).deck.len();
         let n = (scry.max(0) as usize).min(deck_len);
         let mut top: Vec<String> = state.players.get(player_id).deck[..n].to_vec();
-        let mut costs: Vec<(String, i32)> = Vec::with_capacity(n);
-        for id in &top {
-            let def_id = state.get_card(id)?.def_id.clone();
-            costs.push((id.clone(), registry.get_card_def(&def_id)?.cost));
+        // The TS `getCardDef` lookups live *inside* the sort comparator, and
+        // `Array.prototype.sort` never invokes it on a 0- or 1-element slice —
+        // so a lone top card whose instance or `defId` is unknown reorders
+        // nothing instead of throwing. Keep the lookups behind the same guard.
+        if n > 1 {
+            let mut costs: Vec<(String, i32)> = Vec::with_capacity(n);
+            for id in &top {
+                let def_id = state.get_card(id)?.def_id.clone();
+                costs.push((id.clone(), registry.get_card_def(&def_id)?.cost));
+            }
+            // JS `Array.prototype.sort` is stable, and so is `sort_by_key`.
+            costs.sort_by_key(|(_, c)| *c);
+            top = costs.into_iter().map(|(id, _)| id).collect();
         }
-        // JS `Array.prototype.sort` is stable, and so is `sort_by_key`.
-        costs.sort_by_key(|(_, c)| *c);
-        top = costs.into_iter().map(|(id, _)| id).collect();
         let deck = &mut state.players.get_mut(player_id).deck;
         deck[..n].clone_from_slice(&top);
         state.add_log(
@@ -1432,10 +1455,7 @@ fn execute_support_action_inner(
         let Some(target) = target_instance_id else {
             return Err(EngineError::illegal("Trap needs a target"));
         };
-        let target_name = registry
-            .get_card_def(&state.get_card(target)?.def_id)?
-            .name
-            .clone();
+        // TS pushes inside `if (target)` …
         if let Some(t) = state.cards.get_mut(target) {
             t.status_effects.push(status(
                 StatusEffectType::Trap,
@@ -1445,6 +1465,12 @@ fn execute_support_action_inner(
                 instance_id.to_string(),
             ));
         }
+        // … then reads `getCardDef(state.cards[targetInstanceId].defId).name`
+        // unguarded, so a missing target still throws out of the action.
+        let target_name = registry
+            .get_card_def(&state.get_card(target)?.def_id)?
+            .name
+            .clone();
         state.add_log(
             player_id,
             format!(
@@ -1580,6 +1606,180 @@ mod tests {
     }
 
     #[test]
+    fn debuff_all_enemies_only_reads_effective_def_behind_the_immobilize_guard() {
+        use crate::types::{CardDef, CardType, EventEffect, Faction, Rarity, Slot};
+
+        // TS puts `getEffectiveDef(next, slot)` *inside*
+        // `if (effect.immobilizeMaxDef !== undefined)`, so an effect without
+        // that field never touches the enemy's definitions and cannot fail on
+        // them.
+        let p = PlayerId::Player1;
+        let opp = p.opponent();
+        let mut reg = card_registry();
+        for (id, max_def) in [("T-DEBUFF", None), ("T-DEBUFF-IMM", Some(9))] {
+            let mut ev = CardDef::new(
+                id,
+                "Intimidation",
+                CardType::Event,
+                1,
+                Faction::Pirate,
+                Rarity::C,
+                "TEST",
+            );
+            ev.event_effect = Some(EventEffect::DebuffAllEnemies {
+                atk: 2,
+                immobilize_max_def: max_def,
+            });
+            reg.register_card(ev);
+        }
+
+        let mut ctx = EngineContext::seeded(9);
+        let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+        state.current_player = p;
+        state.phase = crate::types::Phase::Main;
+        state.players.get_mut(p).volonte = 5;
+
+        // An enemy carrying an object whose definition is not registered:
+        // `getEffectiveDef` throws on it, `getCardDef(c.defId)` does not.
+        let obj = ctx.generate_instance_id("T-GHOSTOBJ");
+        let mut obj_inst = CardInstance::new(obj.clone(), "T-GHOSTOBJ".into(), opp, 0);
+        obj_inst.zone = Zone::Board;
+        state.add_instance(obj_inst);
+        let enemy = ctx.generate_instance_id("MR-001");
+        let mut inst = CardInstance::new(enemy.clone(), "MR-001".into(), opp, 3);
+        inst.zone = Zone::Board;
+        inst.slot = Some(Slot::V1);
+        inst.attached_objects.push(obj);
+        state.add_instance(inst);
+        state
+            .players
+            .get_mut(opp)
+            .board
+            .set(Slot::V1, Some(enemy.clone()));
+
+        let plain = ctx.generate_instance_id("T-DEBUFF");
+        let mut ev = CardInstance::new(plain.clone(), "T-DEBUFF".into(), p, 0);
+        ev.zone = Zone::Hand;
+        state.add_instance(ev);
+        state.players.get_mut(p).hand.push(plain.clone());
+
+        let immobilizing = ctx.generate_instance_id("T-DEBUFF-IMM");
+        let mut ev = CardInstance::new(immobilizing.clone(), "T-DEBUFF-IMM".into(), p, 0);
+        ev.zone = Zone::Hand;
+        state.add_instance(ev);
+        state.players.get_mut(p).hand.push(immobilizing.clone());
+
+        // The variant that *does* carry `immobilizeMaxDef` still throws.
+        let err = play_event(&mut state, &reg, &mut ctx, p, &immobilizing).unwrap_err();
+        assert_eq!(err.to_string(), "Card not found: T-GHOSTOBJ");
+
+        // The plain debuff goes through and lands its ATK modifier.
+        play_event(&mut state, &reg, &mut ctx, p, &plain).unwrap();
+        let hit = state.card(&enemy).unwrap();
+        assert!(hit.modifiers.iter().any(|m| m.amount == -2));
+        assert!(!hit.has_status(StatusEffectType::Immobilize));
+    }
+
+    #[test]
+    fn tutor_throws_on_a_deck_id_with_no_instance() {
+        // TS `getCardDef(draft.cards[id].defId)` inside `findIndex` — a deck
+        // entry with no instance throws a TypeError out of the whole
+        // `playEvent`, so the cost is refunded and the card stays in hand.
+        let p = PlayerId::Player1;
+        let (mut state, reg, mut ctx) = game_with_in_hand("BW-027", p);
+        state.players.get_mut(p).volonte = 5;
+        let instance_id = state.players.get(p).hand.last().unwrap().clone();
+        state.players.get_mut(p).deck.insert(0, "nowhere".into());
+        let before = state.clone();
+
+        let err = play_event(&mut state, &reg, &mut ctx, p, &instance_id).unwrap_err();
+        assert_eq!(err.to_string(), "Instance not found: nowhere");
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn rush_buff_writes_the_minus_one_deployed_turn_sentinel() {
+        use crate::types::Slot;
+
+        // MG-028 "Coup de Burst" — TS `c.deployedTurn = -1`.
+        let p = PlayerId::Player1;
+        let (mut state, reg, mut ctx) = game_with_in_hand("MG-028", p);
+        state.players.get_mut(p).volonte = 5;
+        let instance_id = state.players.get(p).hand.last().unwrap().clone();
+
+        let ally = ctx.generate_instance_id("MG-001");
+        let mut inst = CardInstance::new(ally.clone(), "MG-001".into(), p, 3);
+        inst.zone = Zone::Board;
+        inst.slot = Some(Slot::V1);
+        inst.deployed_turn = Some(i64::from(state.turn_number));
+        state.add_instance(inst);
+        state
+            .players
+            .get_mut(p)
+            .board
+            .set(Slot::V1, Some(ally.clone()));
+
+        play_event(&mut state, &reg, &mut ctx, p, &instance_id).unwrap();
+
+        assert_eq!(state.card(&ally).unwrap().deployed_turn, Some(-1));
+        // …and the sentinel survives serialisation as the TS engine writes it.
+        let json = serde_json::to_value(state.card(&ally).unwrap()).unwrap();
+        assert_eq!(json["deployedTurn"], serde_json::json!(-1));
+    }
+
+    #[test]
+    fn a_ship_front_line_hit_aborts_on_a_slot_with_no_instance() {
+        use crate::types::{CardDef, CardType, Faction, Rarity, ShipActive, Slot};
+
+        // TS `draft.cards[id].currentPv -= dmg;` is unguarded, so the throw
+        // unwinds `activateShipAbility`: no Volonte spent, no 1x/game use
+        // recorded, no log.
+        let p = PlayerId::Player1;
+        let mut reg = card_registry();
+        let mut ship = CardDef::new(
+            "T-SHIP",
+            "Canonniere",
+            CardType::Ship,
+            2,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        ship.ship_active = Some(ShipActive {
+            name: "Salve".into(),
+            cost: 1,
+            description: "2 deg. a toute la Ligne Avant ennemie.".into(),
+            once_per_game: Some(true),
+        });
+        reg.register_card(ship);
+
+        let mut ctx = EngineContext::seeded(5);
+        let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+        state.current_player = p;
+        state.phase = crate::types::Phase::Main;
+        state.players.get_mut(p).volonte = 5;
+
+        let sid = ctx.generate_instance_id("T-SHIP");
+        let mut inst = CardInstance::new(sid.clone(), "T-SHIP".into(), p, 0);
+        inst.zone = Zone::Board;
+        state.add_instance(inst);
+        state.players.get_mut(p).active_ship = Some(sid.clone());
+        // A front slot pointing at an id that has no instance behind it.
+        state
+            .players
+            .get_mut(p.opponent())
+            .board
+            .set(Slot::V2, Some("nowhere".into()));
+        let before = state.clone();
+
+        let err = activate_ship_ability(&mut state, &reg, &mut ctx, p, &sid).unwrap_err();
+        assert_eq!(err.to_string(), "Instance not found: nowhere");
+        assert_eq!(state, before);
+        assert_eq!(state.players.get(p).volonte, 5);
+        assert!(state.card(&sid).unwrap().used_once_abilities.is_empty());
+    }
+
+    #[test]
     fn a_rejected_trap_support_does_not_burn_the_characters_turn() {
         use crate::types::{BaseAction, CardDef, CardType, Faction, Rarity, Slot};
 
@@ -1628,6 +1828,86 @@ mod tests {
         assert!(!state.card(&iid).unwrap().tapped);
         assert!(!state.card(&iid).unwrap().used_base_action);
         assert!(!state.card(&iid).unwrap().used_special_attack);
+    }
+
+    #[test]
+    fn coordinated_fire_never_reads_the_def_of_a_lone_enemy() {
+        use crate::types::Slot;
+
+        // TS `enemies.reduce((a, b) => ...)` with no seed: a 1-element array is
+        // returned without the callback ever running, so `getEffectiveDef` is
+        // never called and an unregistered lone enemy still takes the damage.
+        let p = PlayerId::Player1;
+        let (mut state, reg, mut ctx) = game_with_in_hand("MR-024", p);
+        state.players.get_mut(p).volonte = 5;
+        let instance_id = state.players.get(p).hand.last().unwrap().clone();
+
+        // One marine of our own on the board — this def *is* registered.
+        let marine = ctx.generate_instance_id("MR-001");
+        let mut inst = CardInstance::new(marine.clone(), "MR-001".into(), p, 3);
+        inst.zone = Zone::Board;
+        inst.slot = Some(Slot::V1);
+        state.add_instance(inst);
+        state.players.get_mut(p).board.set(Slot::V1, Some(marine));
+
+        // The single enemy carries a `defId` the registry does not know.
+        let ghost = ctx.generate_instance_id("T-GHOST");
+        let mut inst = CardInstance::new(ghost.clone(), "T-GHOST".into(), p.opponent(), 9);
+        inst.zone = Zone::Board;
+        inst.slot = Some(Slot::V1);
+        state.add_instance(inst);
+        state
+            .players
+            .get_mut(p.opponent())
+            .board
+            .set(Slot::V1, Some(ghost.clone()));
+
+        play_event(&mut state, &reg, &mut ctx, p, &instance_id).unwrap();
+
+        assert_eq!(state.card(&ghost).unwrap().current_pv, 8);
+        assert!(state
+            .log
+            .iter()
+            .any(|e| e.message == "Ordre de Tir : 1 dégâts coordonnés."));
+    }
+
+    #[test]
+    fn a_one_card_scry_never_reads_the_top_cards_def() {
+        use crate::types::Slot;
+
+        // TS sorts the top N inside `Array.prototype.sort`, whose comparator is
+        // never invoked for a 1-element slice — so the `getCardDef` lookups
+        // cannot throw and the support action still spends the turn.
+        let p = PlayerId::Player1;
+        let reg = card_registry();
+        let mut ctx = EngineContext::seeded(7);
+        let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+        state.current_player = p;
+        state.phase = crate::types::Phase::Main;
+
+        let nami = ctx.generate_instance_id("MG-003");
+        let mut inst = CardInstance::new(nami.clone(), "MG-003".into(), p, 4);
+        inst.zone = Zone::Board;
+        inst.slot = Some(Slot::A1);
+        inst.deployed_turn = Some(0);
+        state.add_instance(inst);
+        state
+            .players
+            .get_mut(p)
+            .board
+            .set(Slot::A1, Some(nami.clone()));
+        // A deck of exactly one entry, pointing at an id with no instance.
+        state.players.get_mut(p).deck = vec!["nowhere".into()];
+
+        execute_support_action(&mut state, &reg, &mut ctx, p, &nami, None).unwrap();
+
+        assert_eq!(state.players.get(p).deck, vec!["nowhere".to_string()]);
+        assert!(state.card(&nami).unwrap().tapped);
+        assert!(state.card(&nami).unwrap().used_base_action);
+        assert!(state
+            .log
+            .iter()
+            .any(|e| e.message == "Nami utilise Prévisions : réorganise le dessus du deck."));
     }
 
     #[test]

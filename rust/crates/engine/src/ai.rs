@@ -18,13 +18,19 @@
 //! `try`/`catch`), so sharing the context is what reproduces the instance ids
 //! and the random stream position the TS engine ends up with.
 //!
-//! Fallibility note: the TS scoring helpers call `getCardDef` /
-//! `getEffectiveAtk` / `getEffectiveDef` straight through and `throw` on an id
-//! that is not in `state.cards` or in the registry. `scoreAction` is called
+//! Fallibility note: the TS scoring helpers are fallible, but only through
+//! `getCardDef`: `getEffectiveAtk` / `getEffectiveDef` return `0` for an
+//! instance that is *missing* from `state.cards` (board.ts:97, board.ts:124),
+//! and throw only when a *present* instance — or one of its attached objects —
+//! carries a `defId` the registry does not know. `scoreAction` is called
 //! from `chooseExpert` *outside* its `try`/`catch` (ai.ts:70), so that throw
 //! escapes the whole `aiChooseAction` — hence [`score_action`] and the choosers
-//! return [`EngineResult`]. `evaluateState`, by contrast, is called *inside*
-//! the `try`, so a failure there is the `-Infinity` branch.
+//! return [`EngineResult`]. So does `getValidActions` (ai.ts:25, outside any
+//! `try`), so [`ai_choose_action`] propagates it rather than acting on a
+//! truncated action list. `evaluateState`, by contrast, is called *inside* the
+//! `try` of `chooseExpert`, so a failure there is the `-Infinity` branch — but
+//! it is still fallible, because an *external* caller of the exported
+//! `evaluateState` sees the throw.
 
 #![allow(clippy::collapsible_if)]
 // ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
@@ -80,7 +86,7 @@ pub fn ai_choose_action(
     player_id: PlayerId,
     difficulty: Difficulty,
 ) -> EngineResult<GameAction> {
-    let actions = get_valid_actions(state, registry, player_id);
+    let actions = get_valid_actions(state, registry, player_id)?;
     if actions.is_empty() {
         return Ok(GameAction::EndTurn);
     }
@@ -200,10 +206,11 @@ pub fn choose_expert(
     let mut best_val = f64::NEG_INFINITY;
     for action in actions {
         let mut next_state = state.clone();
-        let mut val = match execute_action(&mut next_state, registry, ctx, action) {
-            Ok(()) => evaluate_state(&next_state, registry, player_id),
-            Err(_) => f64::NEG_INFINITY,
-        };
+        // TS `try { const ns = executeAction(state, action); val = evaluateState(ns, playerId); }
+        // catch { val = -Infinity; }` — both calls sit inside the same `try`.
+        let mut val = execute_action(&mut next_state, registry, ctx, action)
+            .and_then(|()| evaluate_state(&next_state, registry, player_id))
+            .unwrap_or(f64::NEG_INFINITY);
         // small heuristic tie-break; rank ending the turn last.
         val += score_action(state, registry, player_id, action)? * 0.02;
         if matches!(action, GameAction::EndTurn) {
@@ -223,7 +230,17 @@ pub fn choose_expert(
 /// winner, `atk + def + 0.5 × pv + 3` per own board character (minus the same
 /// for the opponent's), `1.4 ×` own hand minus `1.0 ×` enemy hand, `0.4 ×` own
 /// Volonté. All arithmetic is `f64` — keep it so the tie-breaks match.
-pub fn evaluate_state(state: &GameState, registry: &CardRegistry, player_id: PlayerId) -> f64 {
+///
+/// Fallible like the TS: `getEffectiveAtk` / `getEffectiveDef` return `0` for a
+/// *missing instance*, but `throw` from `getCardDef` when a present instance
+/// (or one of its attached objects) has an unregistered `defId`. Inside
+/// [`choose_expert`] that failure is the `-Infinity` branch, so the candidate
+/// action is discarded rather than scored with the missing terms as zeroes.
+pub fn evaluate_state(
+    state: &GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+) -> EngineResult<f64> {
     let opp = player_id.opponent();
     let me = state.players.get(player_id);
     let op = state.players.get(opp);
@@ -244,21 +261,21 @@ pub fn evaluate_state(state: &GameState, registry: &CardRegistry, player_id: Pla
     }
 
     for c in get_board_characters(state, player_id) {
-        v += get_effective_atk(state, registry, &c.instance_id).unwrap_or(0) as f64
-            + get_effective_def(state, registry, &c.instance_id).unwrap_or(0) as f64
+        v += get_effective_atk(state, registry, &c.instance_id)? as f64
+            + get_effective_def(state, registry, &c.instance_id)? as f64
             + c.current_pv as f64 * 0.5
             + 3.0;
     }
     for c in get_board_characters(state, opp) {
-        v -= get_effective_atk(state, registry, &c.instance_id).unwrap_or(0) as f64
-            + get_effective_def(state, registry, &c.instance_id).unwrap_or(0) as f64
+        v -= get_effective_atk(state, registry, &c.instance_id)? as f64
+            + get_effective_def(state, registry, &c.instance_id)? as f64
             + c.current_pv as f64 * 0.5
             + 3.0;
     }
 
     v += me.hand.len() as f64 * 1.4 - op.hand.len() as f64 * 1.0;
     v += me.volonte as f64 * 0.4;
-    v
+    Ok(v)
 }
 
 /// TS `scoreAction(state, playerId, action)` — `src/engine/ai.ts:102`.
@@ -528,8 +545,11 @@ pub fn score_shield(
     let Some(pending) = state.pending_attack.as_ref() else {
         return Ok(0.0);
     };
-    // TS calls `getEffectiveDef` *before* the `if (!blocker) return 0` guard,
-    // so a missing / unregistered blocker throws instead of scoring 0.
+    // TS calls `getEffectiveDef` *before* the `if (!blocker) return 0` guard
+    // (ai.ts:254-256). That helper returns `0` for a missing instance rather
+    // than throwing, which is exactly why the guard below is reachable; it
+    // throws only for a *present* blocker (or attached object) whose `defId`
+    // is unregistered.
     let blocker_def = get_effective_def(state, registry, blocker_instance_id)?;
     let Some(blocker) = state.cards.get(blocker_instance_id) else {
         return Ok(0.0);
@@ -594,6 +614,14 @@ pub fn score_captain_flip(state: &GameState, _registry: &CardRegistry, player_id
 mod tests {
     use super::*;
     use crate::decks::{marines_deck, mugiwara_deck};
+
+    /// Test shim: the states below are all well-formed, so the (fallible)
+    /// evaluation cannot throw — the TS failure path is covered by
+    /// `choose_expert`'s `-Infinity` branch instead.
+    fn evaluate_state(state: &GameState, registry: &CardRegistry, player_id: PlayerId) -> f64 {
+        super::evaluate_state(state, registry, player_id).expect("valid state")
+    }
+
     use crate::state::{PendingAttack, create_initial_state};
     use crate::types::{
         AtkDefStat, BaseAction, BuffDuration, CaptainDef, CaptainRecto, CaptainVerso, CardDef,
@@ -774,6 +802,51 @@ mod tests {
         state.cards.insert(id.clone(), inst);
         state.players.get_mut(player).hand.push(id.clone());
         id
+    }
+
+    #[test]
+    fn evaluate_state_propagates_the_get_card_def_throw() {
+        // TS `getEffectiveAtk` returns 0 for a *missing instance*, but throws
+        // from `getCardDef` when a board instance carries an unregistered
+        // `defId` — and `evaluateState` does not catch it.
+        let reg = registry();
+        let mut state = base_state(&reg);
+        place(&mut state, PlayerId::Player1, "T-GHOST", Slot::V1, 4);
+
+        let err = super::evaluate_state(&state, &reg, PlayerId::Player1).unwrap_err();
+        assert_eq!(err.to_string(), "Card not found: T-GHOST");
+
+        // Inside `chooseExpert` that failure is the `-Infinity` branch, so the
+        // candidate action loses to any action that scores at all.
+        let mut ctx = EngineContext::seeded(1);
+        let actions = [GameAction::EndTurn, GameAction::PassCounter];
+        assert_eq!(
+            choose_expert(&state, &reg, &mut ctx, PlayerId::Player1, &actions).unwrap(),
+            GameAction::EndTurn
+        );
+    }
+
+    #[test]
+    fn ai_choose_action_propagates_the_get_valid_actions_throw() {
+        // TS `aiChooseAction` calls `getValidActions` outside any try/catch,
+        // so a hand id with no instance escapes as an exception instead of
+        // silently shortening the action list.
+        let reg = registry();
+        let mut state = base_state(&reg);
+        state.current_player = PlayerId::Player1;
+        state.phase = crate::types::Phase::Main;
+        state.players.player1.hand.push("nowhere".into());
+        let mut ctx = EngineContext::seeded(2);
+
+        let err = ai_choose_action(
+            &state,
+            &reg,
+            &mut ctx,
+            PlayerId::Player1,
+            Difficulty::Intermediate,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "Instance not found: nowhere");
     }
 
     #[test]

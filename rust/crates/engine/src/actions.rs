@@ -69,27 +69,27 @@ use crate::types::{
 ///   [`crate::haki::has_conqueror_in_play`] and at least one enemy at
 ///   effective DEF ≤ 3.
 ///
-/// Infallible, unlike the TS (which would `throw` from `getCardDef`, or on a
-/// hand id that is missing from `state.cards`): a state whose card ids are all
-/// present and registered behaves identically, and an unknown one simply
-/// contributes no actions.
+/// Fallible exactly where the TS is: `getCardDef` throws `Card not found: {id}`
+/// on an unregistered `defId`, and the unguarded `state.cards[cardId]` of the
+/// hand loops raises a TypeError on an id that is not in `state.cards`. Either
+/// aborts the whole enumeration in TS, so both surface here as `Err` —
+/// enumeration never degrades to a shorter but legal-looking list.
 pub fn get_valid_actions(
     state: &GameState,
     registry: &CardRegistry,
     player_id: PlayerId,
-) -> Vec<GameAction> {
-    build_valid_actions(state, registry, player_id, false).unwrap_or_default()
+) -> Result<Vec<GameAction>, EngineError> {
+    build_valid_actions(state, registry, player_id)
 }
 
-/// Fallible twin of [`get_valid_actions`] for callers that want the TS throws
-/// surfaced instead of swallowed — both the `getCardDef` throw and the
-/// TypeError the TS hand loops raise on an id that is not in `state.cards`.
+/// Alias of [`get_valid_actions`], kept for callers written against the older
+/// `try_` name from when the default entry point swallowed the TS throws.
 pub fn try_get_valid_actions(
     state: &GameState,
     registry: &CardRegistry,
     player_id: PlayerId,
 ) -> Result<Vec<GameAction>, EngineError> {
-    build_valid_actions(state, registry, player_id, true)
+    get_valid_actions(state, registry, player_id)
 }
 
 /// TS `statusEffects.some((e) => e.type === "freeze" || ... )` — the four
@@ -119,30 +119,13 @@ fn is_frozen_or_immobilized(effects: &[StatusEffect]) -> bool {
 
 /// The shared body of [`get_valid_actions`] / [`try_get_valid_actions`].
 ///
-/// `strict = true` reproduces the TS `getCardDef` throw; `strict = false`
-/// silently skips the offending card (and only that card).
+/// Every definition / instance lookup propagates with `?`, reproducing the TS
+/// throw that aborts `getValidActions` as a whole.
 fn build_valid_actions(
     state: &GameState,
     registry: &CardRegistry,
     player_id: PlayerId,
-    strict: bool,
 ) -> Result<Vec<GameAction>, EngineError> {
-    /// `Ok(v)` → `v`; `Err(e)` → propagate when strict, otherwise evaluate the
-    /// fallback (`continue`, a default value, …).
-    macro_rules! attempt {
-        ($e:expr, $fallback:expr) => {
-            match $e {
-                Ok(v) => v,
-                Err(err) => {
-                    if strict {
-                        return Err(err);
-                    }
-                    $fallback
-                }
-            }
-        };
-    }
-
     let mut actions: Vec<GameAction> = Vec::new();
     let player = state.players.get(player_id);
 
@@ -152,10 +135,7 @@ fn build_valid_actions(
     if let Some(pending) = state.pending_attack.as_ref() {
         let defender_id = state.current_player.opponent();
         if player_id == defender_id {
-            let counters = attempt!(
-                get_eligible_counters(state, registry, player_id),
-                Vec::new()
-            );
+            let counters = get_eligible_counters(state, registry, player_id)?;
             for id in counters {
                 actions.push(GameAction::PlayCounter { instance_id: id });
             }
@@ -191,9 +171,7 @@ fn build_valid_actions(
                         let Some(adj_card) = state.cards.get(adj_id) else {
                             continue;
                         };
-                        if !adj_card.tapped
-                            && attempt!(has_trait(state, registry, adj_id, Trait::Shield), false)
-                        {
+                        if !adj_card.tapped && has_trait(state, registry, adj_id, Trait::Shield)? {
                             actions.push(GameAction::UseShield {
                                 blocker_instance_id: adj_id.clone(),
                             });
@@ -222,16 +200,13 @@ fn build_valid_actions(
     for card_id in &player.hand {
         // TS reads `state.cards[cardId].defId` with no `if (!card)` guard, so a
         // dangling hand id throws a TypeError and aborts the enumeration.
-        let card = attempt!(
-            state
-                .cards
-                .get(card_id)
-                .ok_or_else(|| EngineError::UnknownInstance(card_id.clone())),
-            continue
-        );
-        let def = attempt!(registry.get_card_def(&card.def_id), continue);
+        let card = state
+            .cards
+            .get(card_id)
+            .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
+        let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Character {
-            let cost = attempt!(deploy_cost(state, registry, player_id, def), continue);
+            let cost = deploy_cost(state, registry, player_id, def)?;
             if state.can_afford(player_id, cost) {
                 for slot in &empty_slots {
                     actions.push(GameAction::DeployCharacter {
@@ -249,14 +224,11 @@ fn build_valid_actions(
     for card_id in &player.hand {
         // TS reads `state.cards[cardId].defId` with no `if (!card)` guard, so a
         // dangling hand id throws a TypeError and aborts the enumeration.
-        let card = attempt!(
-            state
-                .cards
-                .get(card_id)
-                .ok_or_else(|| EngineError::UnknownInstance(card_id.clone())),
-            continue
-        );
-        let def = attempt!(registry.get_card_def(&card.def_id), continue);
+        let card = state
+            .cards
+            .get(card_id)
+            .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
+        let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Ship && state.can_afford(player_id, def.cost) {
             actions.push(GameAction::DeployShip {
                 instance_id: card_id.clone(),
@@ -271,14 +243,11 @@ fn build_valid_actions(
     for card_id in &player.hand {
         // TS reads `state.cards[cardId].defId` with no `if (!card)` guard, so a
         // dangling hand id throws a TypeError and aborts the enumeration.
-        let card = attempt!(
-            state
-                .cards
-                .get(card_id)
-                .ok_or_else(|| EngineError::UnknownInstance(card_id.clone())),
-            continue
-        );
-        let def = attempt!(registry.get_card_def(&card.def_id), continue);
+        let card = state
+            .cards
+            .get(card_id)
+            .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
+        let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Object && state.can_afford(player_id, def.cost) {
             for target in &board_chars {
                 actions.push(GameAction::EquipObject {
@@ -295,14 +264,11 @@ fn build_valid_actions(
     for card_id in &player.hand {
         // TS reads `state.cards[cardId].defId` with no `if (!card)` guard, so a
         // dangling hand id throws a TypeError and aborts the enumeration.
-        let card = attempt!(
-            state
-                .cards
-                .get(card_id)
-                .ok_or_else(|| EngineError::UnknownInstance(card_id.clone())),
-            continue
-        );
-        let def = attempt!(registry.get_card_def(&card.def_id), continue);
+        let card = state
+            .cards
+            .get(card_id)
+            .ok_or_else(|| EngineError::UnknownInstance(card_id.clone()))?;
+        let def = registry.get_card_def(&card.def_id)?;
         if def.card_type == CardType::Event && state.can_afford(player_id, def.cost) {
             actions.push(GameAction::PlayEvent {
                 instance_id: card_id.clone(),
@@ -320,17 +286,14 @@ fn build_valid_actions(
         if ch.tapped || ch.used_base_action {
             continue;
         }
-        if attempt!(
-            has_summoning_sickness(state, registry, &ch.instance_id),
-            continue
-        ) {
+        if has_summoning_sickness(state, registry, &ch.instance_id)? {
             continue;
         }
         if is_action_blocked(&ch.status_effects) {
             continue;
         }
 
-        let def = attempt!(registry.get_card_def(&ch.def_id), continue);
+        let def = registry.get_card_def(&ch.def_id)?;
         let Some(ba) = def.base_action.as_ref() else {
             continue;
         };
@@ -347,11 +310,7 @@ fn build_valid_actions(
         } else if ba.bluff.unwrap_or(false) {
             // Target: an enemy of effective DEF <= 1.
             for opp in &opp_chars {
-                if attempt!(
-                    get_effective_def(state, registry, &opp.instance_id),
-                    continue
-                ) <= 1
-                {
+                if get_effective_def(state, registry, &opp.instance_id)? <= 1 {
                     actions.push(GameAction::BaseSupportAction {
                         instance_id: ch.instance_id.clone(),
                         target_instance_id: Some(opp.instance_id.clone()),
@@ -414,20 +373,13 @@ fn build_valid_actions(
         if ch.tapped || ch.used_base_action {
             continue;
         }
-        if attempt!(
-            has_summoning_sickness(state, registry, &ch.instance_id),
-            continue
-        ) {
+        if has_summoning_sickness(state, registry, &ch.instance_id)? {
             continue;
         }
 
-        let def = attempt!(registry.get_card_def(&ch.def_id), continue);
+        let def = registry.get_card_def(&ch.def_id)?;
         // Must have effective ATK > 0 to attack (includes equipment + modifiers)
-        if attempt!(
-            get_effective_atk(state, registry, &ch.instance_id),
-            continue
-        ) <= 0
-        {
+        if get_effective_atk(state, registry, &ch.instance_id)? <= 0 {
             continue;
         }
 
@@ -442,15 +394,12 @@ fn build_valid_actions(
                 .any(|e| matches!(e, PassiveEffect::CannotAttackFemale))
         });
 
-        let targets = attempt!(
-            get_valid_targets(state, registry, &ch.instance_id, false),
-            continue
-        );
+        let targets = get_valid_targets(state, registry, &ch.instance_id, false)?;
         for target_id in &targets.character_targets {
             // Filter female targets if cannotAttackFemale
             if cannot_attack_female {
                 if let Some(target_card) = state.cards.get(target_id) {
-                    let target_def = attempt!(registry.get_card_def(&target_card.def_id), continue);
+                    let target_def = registry.get_card_def(&target_card.def_id)?;
                     if target_def.has_tag("female") {
                         continue;
                     }
@@ -478,14 +427,11 @@ fn build_valid_actions(
         if ch.used_special_attack {
             continue;
         }
-        if attempt!(
-            has_summoning_sickness(state, registry, &ch.instance_id),
-            continue
-        ) {
+        if has_summoning_sickness(state, registry, &ch.instance_id)? {
             continue;
         }
 
-        let def = attempt!(registry.get_card_def(&ch.def_id), continue);
+        let def = registry.get_card_def(&ch.def_id)?;
         let Some(sa) = def.special_attack.as_ref() else {
             continue;
         };
@@ -521,14 +467,11 @@ fn build_valid_actions(
                 .any(|e| matches!(e, PassiveEffect::CannotAttackFemale))
         });
 
-        let targets = attempt!(
-            get_valid_targets(state, registry, &ch.instance_id, true),
-            continue
-        );
+        let targets = get_valid_targets(state, registry, &ch.instance_id, true)?;
         for target_id in &targets.character_targets {
             if cant_female {
                 if let Some(tc) = state.cards.get(target_id) {
-                    let tdef = attempt!(registry.get_card_def(&tc.def_id), continue);
+                    let tdef = registry.get_card_def(&tc.def_id)?;
                     if tdef.has_tag("female") {
                         continue;
                     }
@@ -553,10 +496,7 @@ fn build_valid_actions(
     // Fruit awakening special attacks
     // ------------------------------------------------------------
     for ch in &board_chars {
-        if attempt!(
-            has_summoning_sickness(state, registry, &ch.instance_id),
-            continue
-        ) {
+        if has_summoning_sickness(state, registry, &ch.instance_id)? {
             continue;
         }
         if is_frozen_or_immobilized(&ch.status_effects) {
@@ -570,7 +510,7 @@ fn build_valid_actions(
             if !obj_card.is_awakened.unwrap_or(false) {
                 continue;
             }
-            let obj_def = attempt!(registry.get_card_def(&obj_card.def_id), continue);
+            let obj_def = registry.get_card_def(&obj_card.def_id)?;
             let Some(fruit_spec) = obj_def
                 .fruit_effects
                 .as_ref()
@@ -586,10 +526,7 @@ fn build_valid_actions(
                 continue;
             }
 
-            let targets = attempt!(
-                get_valid_targets(state, registry, &ch.instance_id, true),
-                continue
-            );
+            let targets = get_valid_targets(state, registry, &ch.instance_id, true)?;
             for target_id in &targets.character_targets {
                 actions.push(GameAction::FruitSpecialAttack {
                     attacker_instance_id: ch.instance_id.clone(),
@@ -612,7 +549,7 @@ fn build_valid_actions(
     // ------------------------------------------------------------
     // Captain flip
     // ------------------------------------------------------------
-    if attempt!(can_flip_captain(state, registry, player_id), false) {
+    if can_flip_captain(state, registry, player_id)? {
         for slot in &empty_slots {
             actions.push(GameAction::FlipCaptain { slot: *slot });
         }
@@ -628,33 +565,27 @@ fn build_valid_actions(
         && !player.captain.tapped
         && !captain_disabled
     {
-        match registry.get_captain_def(&player.captain.def_id) {
-            Err(err) => {
-                if strict {
-                    return Err(err);
-                }
-            }
-            Ok(cap_def) => {
-                let has_rush = cap_def
-                    .verso
-                    .traits
-                    .as_ref()
-                    .is_some_and(|ts| ts.contains(&Trait::Rush));
-                if player.captain.deployed_turn != Some(state.turn_number) || has_rush {
-                    // Can attack — simplified: target any enemy front or captain
-                    actions.push(GameAction::CaptainAttack {
-                        target_instance_id: captain_attacker_id(opponent_id),
-                        target_is_captain: Some(true),
-                        is_special: None,
-                    });
-                    for opp in &opp_chars {
-                        actions.push(GameAction::CaptainAttack {
-                            target_instance_id: opp.instance_id.clone(),
-                            target_is_captain: None,
-                            is_special: None,
-                        });
-                    }
-                }
+        // TS `getCaptainDef(...)` — unguarded, so an unregistered captain
+        // aborts the enumeration instead of dropping the attack group.
+        let cap_def = registry.get_captain_def(&player.captain.def_id)?;
+        let has_rush = cap_def
+            .verso
+            .traits
+            .as_ref()
+            .is_some_and(|ts| ts.contains(&Trait::Rush));
+        if player.captain.deployed_turn != Some(i64::from(state.turn_number)) || has_rush {
+            // Can attack — simplified: target any enemy front or captain
+            actions.push(GameAction::CaptainAttack {
+                target_instance_id: captain_attacker_id(opponent_id),
+                target_is_captain: Some(true),
+                is_special: None,
+            });
+            for opp in &opp_chars {
+                actions.push(GameAction::CaptainAttack {
+                    target_instance_id: opp.instance_id.clone(),
+                    target_is_captain: None,
+                    is_special: None,
+                });
             }
         }
     }
@@ -682,23 +613,15 @@ fn build_valid_actions(
     // ------------------------------------------------------------
     if let Some(active_ship) = player.active_ship.as_ref() {
         if let Some(ship_card) = state.cards.get(active_ship) {
-            match registry.get_card_def(&ship_card.def_id) {
-                Err(err) => {
-                    if strict {
-                        return Err(err);
-                    }
-                }
-                Ok(ship_def) => {
-                    if let Some(sa) = ship_def.ship_active.as_ref() {
-                        let can_use = (!sa.once_per_game.unwrap_or(false)
-                            || !ship_card.used_once(&sa.name))
-                            && state.can_afford(player_id, sa.cost);
-                        if can_use {
-                            actions.push(GameAction::ActivateShip {
-                                ship_instance_id: active_ship.clone(),
-                            });
-                        }
-                    }
+            let ship_def = registry.get_card_def(&ship_card.def_id)?;
+            if let Some(sa) = ship_def.ship_active.as_ref() {
+                let can_use = (!sa.once_per_game.unwrap_or(false)
+                    || !ship_card.used_once(&sa.name))
+                    && state.can_afford(player_id, sa.cost);
+                if can_use {
+                    actions.push(GameAction::ActivateShip {
+                        ship_instance_id: active_ship.clone(),
+                    });
                 }
             }
         }
@@ -710,9 +633,9 @@ fn build_valid_actions(
     for ch in &board_chars {
         for obj_id in &ch.attached_objects {
             if let Some(obj_card) = state.cards.get(obj_id) {
-                let obj_def = attempt!(registry.get_card_def(&obj_card.def_id), continue);
+                let obj_def = registry.get_card_def(&obj_card.def_id)?;
                 if obj_def.subtype == Some(ObjectSubtype::Fruit)
-                    && attempt!(can_awaken_fruit(state, registry, player_id, obj_id), false)
+                    && can_awaken_fruit(state, registry, player_id, obj_id)?
                 {
                     actions.push(GameAction::AwakenFruit {
                         fruit_instance_id: obj_id.clone(),
@@ -729,11 +652,11 @@ fn build_valid_actions(
     // DEF <= 3, 1x/game.
     // ------------------------------------------------------------
     if is_haki_available(state, player_id, HakiType::King)
-        && attempt!(has_conqueror_in_play(state, registry, player_id), false)
+        && has_conqueror_in_play(state, registry, player_id)?
     {
         let mut has_target = false;
         for c in &opp_chars {
-            if attempt!(get_effective_def(state, registry, &c.instance_id), continue) <= 3 {
+            if get_effective_def(state, registry, &c.instance_id)? <= 3 {
                 has_target = true;
                 break;
             }
@@ -917,6 +840,17 @@ mod tests {
 
     fn types_of(actions: &[GameAction]) -> Vec<&'static str> {
         actions.iter().map(|a| a.type_name()).collect()
+    }
+
+    /// Test shim: every state below has registered defs and live instances, so
+    /// the enumeration cannot fail — the tests that *do* exercise the TS throw
+    /// call [`super::get_valid_actions`] directly.
+    fn get_valid_actions(
+        state: &GameState,
+        registry: &CardRegistry,
+        player_id: PlayerId,
+    ) -> Vec<GameAction> {
+        super::get_valid_actions(state, registry, player_id).expect("valid state")
     }
 
     // --- early returns (no dependency on the other modules) ---
@@ -1423,7 +1357,7 @@ mod tests {
         );
 
         // Summoning-sick (deployed this turn, no Rush) => no captain attack.
-        state.players.get_mut(P1).captain.deployed_turn = Some(state.turn_number);
+        state.players.get_mut(P1).captain.deployed_turn = Some(i64::from(state.turn_number));
         assert!(
             !get_valid_actions(&state, &reg, P1)
                 .iter()
@@ -1481,7 +1415,7 @@ mod tests {
     // --- strict vs. lenient def lookup ---
 
     #[test]
-    fn an_unknown_def_id_throws_only_in_strict_mode() {
+    fn an_unknown_def_id_throws() {
         let reg = registry_with(vec![character("A", 1, 2, 1, 3)]);
         let mut state = blank_state();
         // A hand card whose definition is missing from the registry: the TS
@@ -1494,8 +1428,17 @@ mod tests {
         state.players.get_mut(P1).hand.push(ghost);
         let good = put(&mut state, &reg, "A", P1, Zone::Hand, None);
 
+        // TS: `getCardDef` throws out of `getValidActions`, so the caller gets
+        // an exception rather than a list that quietly omits the ghost.
+        assert_eq!(
+            super::get_valid_actions(&state, &reg, P1)
+                .unwrap_err()
+                .to_string(),
+            "Card not found: GHOST"
+        );
         assert!(try_get_valid_actions(&state, &reg, P1).is_err());
-        // The lenient twin skips the ghost and still offers the good card.
+        // Without the ghost the very same state enumerates normally.
+        state.players.get_mut(P1).hand.retain(|id| id == &good);
         let actions = get_valid_actions(&state, &reg, P1);
         assert!(actions.iter().all(|a| match a {
             GameAction::DeployCharacter { instance_id, .. } => *instance_id == good,
@@ -1509,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dangling_hand_id_throws_only_in_strict_mode() {
+    fn a_dangling_hand_id_throws() {
         // TS reads `state.cards[cardId].defId` with no guard, so a hand id with
         // no instance behind it throws a TypeError and the whole enumeration
         // is abandoned.
@@ -1519,12 +1462,13 @@ mod tests {
         let good = put(&mut state, &reg, "A", P1, Zone::Hand, None);
 
         assert_eq!(
-            try_get_valid_actions(&state, &reg, P1)
+            super::get_valid_actions(&state, &reg, P1)
                 .unwrap_err()
                 .to_string(),
             "Instance not found: nowhere"
         );
-        // The lenient twin skips it and still offers the good card.
+        // Drop the dangling id and the good card is offered as before.
+        state.players.get_mut(P1).hand.retain(|id| id == &good);
         let actions = get_valid_actions(&state, &reg, P1);
         assert!(actions.iter().any(|a| matches!(
             a,

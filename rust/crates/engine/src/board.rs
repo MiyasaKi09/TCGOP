@@ -212,7 +212,7 @@ pub fn has_summoning_sickness(
     let Some(card) = state.cards.get(instance_id) else {
         return Ok(false);
     };
-    if card.deployed_turn == Some(state.turn_number) {
+    if card.deployed_turn == Some(i64::from(state.turn_number)) {
         return Ok(!has_trait(state, registry, instance_id, Trait::Rush)?);
     }
     Ok(false)
@@ -235,7 +235,13 @@ pub fn deploy_cost(
         if f.faction.is_some_and(|fa| def.faction != fa) {
             return false;
         }
-        if f.tag.as_ref().is_some_and(|tag| !def.has_tag(tag)) {
+        // TS `if (f.tag && !(def.tags?.includes(f.tag))) return false;` — an
+        // empty `tag` is falsy in JS, so the whole check is skipped and the
+        // filter still matches. `Some("")` must therefore behave like `None`.
+        if f.tag
+            .as_ref()
+            .is_some_and(|tag| !tag.is_empty() && !def.has_tag(tag))
+        {
             return false;
         }
         if f.trait_.is_some_and(|t| !def.has_trait(t)) {
@@ -416,8 +422,13 @@ pub(crate) fn is_js_space(c: char) -> bool {
 ///
 /// `parseInt` returns a double, so a digit run wider than `i32` still yields a
 /// finite (large) number rather than failing. Parsing through `f64` reproduces
-/// that; the `as i32` cast saturates, which is the closest `i32` can come to
-/// the JS value (and, like TS, keeps the bonus non-zero).
+/// that; the `as i32` cast then saturates, which is as close as the crate's
+/// `i32` stat domain (see the "Numbers" note in `types.rs`) can come to the JS
+/// value — and, like TS, it keeps the bonus non-zero.
+///
+/// Every consumer adds the result with **saturating** arithmetic, so a card
+/// text with an absurd digit run stays total (TS produces a large float; the
+/// port produces a clamped `i32`) instead of overflowing.
 pub(crate) fn js_parse_int(digits: &str) -> i32 {
     match digits.parse::<i32>() {
         Ok(v) => v,
@@ -507,7 +518,7 @@ pub fn deploy_character(
         let c = state.get_card_mut(instance_id)?;
         c.zone = Zone::Board;
         c.slot = Some(slot);
-        c.deployed_turn = Some(turn_number);
+        c.deployed_turn = Some(i64::from(turn_number));
         c.current_pv = def.pv.unwrap_or(0);
     }
 
@@ -525,7 +536,10 @@ pub fn deploy_character(
                 let dfb = match_ship_bonus(&sp, "def");
                 let c = state.get_card_mut(instance_id)?;
                 if let Some(amount) = pv {
-                    c.current_pv += amount;
+                    // TS `c.currentPv += parseInt(pv[1])` on a JS double; the
+                    // saturating add keeps an absurd digit run from overflowing
+                    // the `i32` stat domain (see [`js_parse_int`]).
+                    c.current_pv = c.current_pv.saturating_add(amount);
                     c.modifiers.push(Modifier {
                         id: format!("shipdep_pv_{instance_id}"),
                         stat: ModifierStat::Pv,
@@ -878,7 +892,7 @@ pub fn deploy_ship(
                         );
                         token.zone = Zone::Board;
                         token.slot = Some(empty);
-                        token.deployed_turn = Some(state.turn_number);
+                        token.deployed_turn = Some(i64::from(state.turn_number));
                         state.add_instance(token);
                         state.players.get_mut(player_id).board.set(empty, Some(tid));
                     }
@@ -1323,9 +1337,34 @@ mod tests {
             );
         }
         // `parseInt` returns a double, so a digit run wider than `i32` is still
-        // a (large) finite bonus, never "no match".
+        // a (large) finite bonus, never "no match" — clamped to the crate's
+        // `i32` stat domain, and applied with a saturating add so no card text
+        // can overflow the PV it lands on.
         assert_eq!(match_ship_bonus("+99999999999 pv", "pv"), Some(i32::MAX));
         assert_eq!(match_ship_bonus("+2147483647 pv", "pv"), Some(i32::MAX));
+    }
+
+    #[test]
+    fn an_absurd_ship_deploy_bonus_saturates_instead_of_overflowing() {
+        let mut mugi = character("MG-001", 2, 2, 1, 3);
+        mugi.tags = Some(vec!["mugiwara".into()]);
+        let reg = registry_with(vec![
+            mugi,
+            ship(
+                "MG-020",
+                2,
+                "Vos Mugiwara ont +99999999999 PV au déploiement.",
+            ),
+        ]);
+        let mut state = blank_state();
+        let mut ctx = EngineContext::seeded(1);
+
+        let sid = put(&mut state, &reg, "MG-020", P1, Zone::Board, None);
+        state.players.get_mut(P1).active_ship = Some(sid);
+        let cid = put(&mut state, &reg, "MG-001", P1, Zone::Hand, None);
+
+        deploy_character(&mut state, &reg, &mut ctx, P1, &cid, Slot::V2).unwrap();
+        assert_eq!(state.card(&cid).unwrap().current_pv, i32::MAX);
     }
 
     // --- deployCost ---
@@ -1365,6 +1404,31 @@ mod tests {
         let mut mugi = character("MUGI", 1, 1, 1, 1);
         mugi.tags = Some(vec!["mugiwara".into()]);
         assert_eq!(deploy_cost(&state, &reg, P1, &mugi).unwrap(), 1);
+    }
+
+    #[test]
+    fn an_empty_cost_reduction_tag_is_falsy_like_js() {
+        // TS `if (f.tag && !(def.tags?.includes(f.tag))) return false;` — with
+        // `f.tag === ""` the guard is falsy, the tag test never runs and the
+        // reduction still applies.
+        let mut helper = character("HELP", 1, 1, 1, 1);
+        helper.passive = Some(PassiveDef {
+            name: "p".into(),
+            description: "d".into(),
+            effects: vec![PassiveEffect::CostReduction {
+                filter: Some(AllyFilter {
+                    tag: Some(String::new()),
+                    ..Default::default()
+                }),
+                amount: 1,
+            }],
+        });
+        let target = character("TGT", 4, 2, 2, 3);
+        let reg = registry_with(vec![helper, target.clone()]);
+        let mut state = blank_state();
+        put(&mut state, &reg, "HELP", P1, Zone::Board, Some(Slot::V1));
+
+        assert_eq!(deploy_cost(&state, &reg, P1, &target).unwrap(), 3);
     }
 
     // --- deployCharacter ---

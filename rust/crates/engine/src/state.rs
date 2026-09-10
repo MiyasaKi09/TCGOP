@@ -74,9 +74,14 @@ pub struct CardInstance {
     pub attached_objects: Vec<String>,
     pub modifiers: Vec<Modifier>,
     pub status_effects: Vec<StatusEffect>,
-    /// Turn this card was deployed (for summoning sickness)
+    /// Turn this card was deployed (for summoning sickness).
+    ///
+    /// `i64`, not `u32`: TS clears summoning sickness by writing the sentinel
+    /// `deployedTurn = -1` (`turnManager.ts` `rushBuff`, `captain.ts`
+    /// `grantSelfRush`), and that value has to survive serialisation so the
+    /// JSON matches the TS engine key for key and byte for byte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployed_turn: Option<u32>,
+    pub deployed_turn: Option<i64>,
     /// Has used base action this turn
     pub used_base_action: bool,
     /// Has used special attack this turn
@@ -144,8 +149,10 @@ pub struct CaptainInstance {
     pub tapped: bool,
     pub modifiers: Vec<Modifier>,
     pub status_effects: Vec<StatusEffect>,
+    /// Turn the captain flipped onto the board — `i64` for the same reason as
+    /// [`CardInstance::deployed_turn`]: `grantSelfRush` writes `-1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployed_turn: Option<u32>,
+    pub deployed_turn: Option<i64>,
     pub used_base_action: bool,
     pub used_special_attack: bool,
     pub used_once_abilities: Vec<String>,
