@@ -398,10 +398,8 @@ mod tests {
     /// never shows.
     #[test]
     fn the_ambient_glows_sit_under_the_terrain() {
-        assert!(l::Z_AMBIENT < l::Z_GLOW);
-        assert!(l::Z_GLOW < l::Z_TERRAIN);
-        assert!(l::Z_TERRAIN < l::Z_SHADE);
-        assert!(l::Z_SHADE < l::Z_ROW);
+        let order = [l::Z_AMBIENT, l::Z_GLOW, l::Z_TERRAIN, l::Z_SHADE, l::Z_ROW];
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "z order drifted: {order:?}");
     }
 
     /// The footer's reserve is the mock-up's two boxes and nothing else.
