@@ -290,7 +290,10 @@ fn base36_matches_js_number_to_string() {
     assert_eq!(to_base36(36), "10");
     assert_eq!(to_base36(1_700_000_000_000), "loyw3v28");
     assert_eq!(to_base36(1_757_376_000_123), "mfbsao3f");
-    assert_eq!(EngineContext::new(0, 1_757_376_000_123).now_base36(), "mfbsao3f");
+    assert_eq!(
+        EngineContext::new(0, 1_757_376_000_123).now_base36(),
+        "mfbsao3f"
+    );
     let json = serde_json::to_string(&EngineContext::new(9, 5)).unwrap();
     let back: EngineContext = serde_json::from_str(&json).unwrap();
     assert_eq!(back, EngineContext::new(9, 5));
@@ -398,12 +401,16 @@ fn start_turn_ko_check_and_self_ko_timers_mirror_game_state_ts() {
         });
     }
     for (id, turns) in [(&falling, 1), (&ticking, 3)] {
-        state.card_mut(id).unwrap().status_effects.push(StatusEffect {
-            effect_type: StatusEffectType::SelfKo,
-            turns_remaining: turns,
-            damage_per_turn: 0,
-            source: "monster".into(),
-        });
+        state
+            .card_mut(id)
+            .unwrap()
+            .status_effects
+            .push(StatusEffect {
+                effect_type: StatusEffectType::SelfKo,
+                turns_remaining: turns,
+                damage_per_turn: 0,
+                source: "monster".into(),
+            });
     }
     let vol_before_turn = state.player(PlayerId::Player1).volonte; // 1 (from T1)
     assert_eq!(vol_before_turn, 1);
@@ -428,7 +435,10 @@ fn start_turn_ko_check_and_self_ko_timers_mirror_game_state_ts() {
     assert_eq!(state.cards[&falling].zone, Zone::Graveyard);
     // selfKO at 3 → 2, untouched by processStartOfTurnEffects.
     assert_eq!(
-        state.cards[&ticking].status(StatusEffectType::SelfKo).unwrap().turns_remaining,
+        state.cards[&ticking]
+            .status(StatusEffectType::SelfKo)
+            .unwrap()
+            .turns_remaining,
         2
     );
     assert_eq!(p1.graveyard, vec![falling.clone(), burning.clone()]);
@@ -453,7 +463,11 @@ fn start_turn_ko_check_and_self_ko_timers_mirror_game_state_ts() {
             ),
         ]
     );
-    assert!(state.log[log_start..].iter().all(|l| l.turn == 2 && l.player == PlayerId::Player1));
+    assert!(
+        state.log[log_start..]
+            .iter()
+            .all(|l| l.turn == 2 && l.player == PlayerId::Player1)
+    );
 }
 
 #[test]
@@ -496,8 +510,14 @@ fn end_turn_applies_crocodile_desiccation() {
     assert_eq!(state.cards[&injured].current_pv, 0);
     assert_eq!(state.cards[&injured].zone, Zone::Graveyard);
     assert_eq!(state.player(PlayerId::Player2).board.get(Slot::A1), None);
-    assert_eq!(state.player(PlayerId::Player2).graveyard, vec![injured.clone()]);
-    assert_eq!(state.player(PlayerId::Player2).board.get(Slot::V1), Some(&healthy));
+    assert_eq!(
+        state.player(PlayerId::Player2).graveyard,
+        vec![injured.clone()]
+    );
+    assert_eq!(
+        state.player(PlayerId::Player2).board.get(Slot::V1),
+        Some(&healthy)
+    );
 }
 
 /// A registry exercising every passives.ts branch: A buffs tag-`x` allies and
@@ -556,7 +576,15 @@ fn passives_registry() -> CardRegistry {
         },
         PassiveEffect::ExplodeOnKo { amount: 9 },
     ]);
-    let mut ship = CardDef::new("SHIP", "Ship", CardType::Ship, 1, Faction::Pirate, Rarity::C, "T");
+    let mut ship = CardDef::new(
+        "SHIP",
+        "Ship",
+        CardType::Ship,
+        1,
+        Faction::Pirate,
+        Rarity::C,
+        "T",
+    );
     ship.ship_passive = Some("Vos Mugiwara gagnent +1 ATK et +2  DEF".into());
     reg.register_set(vec![a, b, d, ship]);
 
@@ -630,7 +658,13 @@ fn passives_mirror_passives_ts() {
     let b = place_def(&mut state, PlayerId::Player1, "B", Slot::V2);
     let d = place_def(&mut state, PlayerId::Player1, "D", Slot::A1);
     let ship = {
-        let idx = state.players.player1.hand.iter().position(|id| state.cards[id].def_id == "SHIP").unwrap();
+        let idx = state
+            .players
+            .player1
+            .hand
+            .iter()
+            .position(|id| state.cards[id].def_id == "SHIP")
+            .unwrap();
         let id = state.players.player1.hand.remove(idx);
         state.cards.get_mut(&id).unwrap().zone = Zone::Board;
         state.players.player1.active_ship = Some(id.clone());
@@ -648,16 +682,46 @@ fn passives_mirror_passives_ts() {
     assert_eq!(state, once);
     assert_eq!(
         mods(&state, &a),
-        vec![(format!("captain_def_{a}").as_str(), ModifierStat::Def, 1, "captain_CAP")]
+        vec![(
+            format!("captain_def_{a}").as_str(),
+            ModifierStat::Def,
+            1,
+            "captain_CAP"
+        )]
     );
     assert_eq!(
         mods(&state, &b),
         vec![
-            (format!("captain_def_{b}").as_str(), ModifierStat::Def, 1, "captain_CAP"),
-            (format!("passive_{a}_atk_{b}").as_str(), ModifierStat::Atk, 1, format!("passive_{a}").as_str()),
-            (format!("ship_passive_atk_{b}").as_str(), ModifierStat::Atk, 1, "passive_ship_SHIP"),
-            (format!("ship_passive_def_{b}").as_str(), ModifierStat::Def, 2, "passive_ship_SHIP"),
-            (format!("synergy_{b}_A").as_str(), ModifierStat::Atk, 2, "synergy_A"),
+            (
+                format!("captain_def_{b}").as_str(),
+                ModifierStat::Def,
+                1,
+                "captain_CAP"
+            ),
+            (
+                format!("passive_{a}_atk_{b}").as_str(),
+                ModifierStat::Atk,
+                1,
+                format!("passive_{a}").as_str()
+            ),
+            (
+                format!("ship_passive_atk_{b}").as_str(),
+                ModifierStat::Atk,
+                1,
+                "passive_ship_SHIP"
+            ),
+            (
+                format!("ship_passive_def_{b}").as_str(),
+                ModifierStat::Def,
+                2,
+                "passive_ship_SHIP"
+            ),
+            (
+                format!("synergy_{b}_A").as_str(),
+                ModifierStat::Atk,
+                2,
+                "synergy_A"
+            ),
         ]
     );
     assert_eq!(mods(&state, &d).len(), 1); // captain def only (no tag x / mugiwara)
@@ -673,11 +737,21 @@ fn passives_mirror_passives_ts() {
     assert_eq!(state, once);
     assert_eq!(
         mods(&state, &a2),
-        vec![(format!("debuffAura_adj_{a2}").as_str(), ModifierStat::Atk, -2, "debuffAura")]
+        vec![(
+            format!("debuffAura_adj_{a2}").as_str(),
+            ModifierStat::Atk,
+            -2,
+            "debuffAura"
+        )]
     );
     assert_eq!(
         mods(&state, &b2),
-        vec![(format!("debuffAura_one_{b2}").as_str(), ModifierStat::Atk, -1, "debuffAura")]
+        vec![(
+            format!("debuffAura_one_{b2}").as_str(),
+            ModifierStat::Atk,
+            -1,
+            "debuffAura"
+        )]
     );
     assert_eq!(get_effective_atk(&state, &reg, &a2).unwrap(), 0); // 2 - 2
     assert!(mods(&state, &a).iter().all(|m| m.3 != "debuffAura"));
@@ -709,18 +783,46 @@ fn passives_mirror_passives_ts() {
     state.players.player2.captain.flipped = true;
     remove_from_board(&mut state, &reg, &a).unwrap();
     assert_eq!(state.players.player1.graveyard, vec![a.clone()]);
-    apply_on_ko_effects(&mut state, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "A").unwrap();
+    apply_on_ko_effects(
+        &mut state,
+        &reg,
+        &ctx,
+        PlayerId::Player1,
+        PlayerId::Player2,
+        "A",
+    )
+    .unwrap();
     assert_eq!(state.players.player1.char_ko_ed_this_game, Some(true));
     assert_eq!(state.cards[&a].zone, Zone::Banished);
     assert!(state.players.player1.graveyard.is_empty());
     // TS quirk kept on purpose: the rage modifier (source `synergy_rage_A`) is
     // pushed and logged, then immediately stripped by the trailing
     // recalculatePassiveBuffs (`source.startsWith("synergy_")`).
-    assert!(!state.cards[&b].modifiers.iter().any(|m| m.source == "synergy_rage_A"));
+    assert!(
+        !state.cards[&b]
+            .modifiers
+            .iter()
+            .any(|m| m.source == "synergy_rage_A")
+    );
     // recalculated: A's buff and the A synergy are gone, the rest stays
-    assert!(!state.cards[&b].modifiers.iter().any(|m| m.source == format!("passive_{a}")));
-    assert!(!state.cards[&b].modifiers.iter().any(|m| m.source == "synergy_A"));
-    assert!(state.cards[&b].modifiers.iter().any(|m| m.source == "passive_ship_SHIP"));
+    assert!(
+        !state.cards[&b]
+            .modifiers
+            .iter()
+            .any(|m| m.source == format!("passive_{a}"))
+    );
+    assert!(
+        !state.cards[&b]
+            .modifiers
+            .iter()
+            .any(|m| m.source == "synergy_A")
+    );
+    assert!(
+        state.cards[&b]
+            .modifiers
+            .iter()
+            .any(|m| m.source == "passive_ship_SHIP")
+    );
     // A has no tag x → the captain self-buff did not trigger
     assert!(state.players.player1.captain.modifiers.is_empty());
     let msgs: Vec<&str> = state.log.iter().map(|l| l.message.as_str()).collect();
@@ -737,7 +839,15 @@ fn passives_mirror_passives_ts() {
 
     // selfBuffOnAllyKO (tag x, max 2): three KOs of "B" → two +1 modifiers, then capped.
     for _ in 0..3 {
-        apply_on_ko_effects(&mut state, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "B").unwrap();
+        apply_on_ko_effects(
+            &mut state,
+            &reg,
+            &ctx,
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "B",
+        )
+        .unwrap();
     }
     let cap_mods = &state.players.player1.captain.modifiers;
     assert_eq!(cap_mods.len(), 2);
@@ -756,7 +866,15 @@ fn passives_mirror_passives_ts() {
 
     // explodeOnKO: D KO'd → 9 damage to the lowest-PV enemy (A2, 3 PV) → KO'd and removed.
     remove_from_board(&mut state, &reg, &d).unwrap();
-    apply_on_ko_effects(&mut state, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "D").unwrap();
+    apply_on_ko_effects(
+        &mut state,
+        &reg,
+        &ctx,
+        PlayerId::Player1,
+        PlayerId::Player2,
+        "D",
+    )
+    .unwrap();
     assert_eq!(state.cards[&a2].current_pv, 3 - 9);
     assert_eq!(state.cards[&a2].zone, Zone::Graveyard);
     assert_eq!(state.players.player2.board.get(Slot::V1), None);
@@ -812,6 +930,7 @@ fn game_state_round_trips_through_serde_json() {
         pushback: Some(true),
         pushback_slots: Some(2),
         strip_stealth: None,
+        survive_played: None,
     });
     state.add_log(PlayerId::Player2, "hello");
     state.players.player2.ally_ko_ed_this_turn = Some(true);
@@ -1191,7 +1310,8 @@ fn rng_shuffle_and_draw_semantics() {
 fn turn_helpers_mirror_game_state_ts() {
     let reg = fake_registry();
     let mut ctx = EngineContext::seeded(3);
-    let mut state = create_initial_state(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+    let mut state =
+        create_initial_state(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
 
     // gainVolonte: min(turnNumber, 10), replaces previous value.
     state.turn_number = 12;

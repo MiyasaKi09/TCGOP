@@ -5,9 +5,7 @@
 //! carries the marked damage over (`versoPv - (rectoPv - currentPv)`), triggers
 //! the verso `entryEffect` and unlocks the captain's base attack.
 
-use crate::board::{
-    get_board_characters, get_effective_atk, get_effective_def, remove_from_board,
-};
+use crate::board::{get_board_characters, get_effective_atk, get_effective_def, remove_from_board};
 use crate::context::EngineContext;
 use crate::error::EngineError;
 use crate::passives::apply_on_ko_effects;
@@ -50,12 +48,12 @@ pub fn can_flip_captain(
 
     // Check auto-flip condition (allies <= N)
     // Only available from turn 4+ to prevent early abuse
-    if let Some(max_allies) = condition.auto_if_allies_lte {
-        if state.turn_number >= 4 {
-            let ally_count = get_board_characters(state, player_id).len() as i32;
-            if ally_count <= max_allies {
-                return Ok(true);
-            }
+    if let Some(max_allies) = condition.auto_if_allies_lte
+        && state.turn_number >= 4
+    {
+        let ally_count = get_board_characters(state, player_id).len() as i32;
+        if ally_count <= max_allies {
+            return Ok(true);
         }
     }
 
@@ -246,10 +244,10 @@ pub fn resolve_entry_effect(
                 EntryDamageTarget::AllFront => {
                     for slot_key in Slot::FRONT {
                         let id = state.players.get(opponent_id).board.get(slot_key).cloned();
-                        if let Some(id) = id {
-                            if let Some(card) = state.cards.get_mut(&id) {
-                                card.current_pv -= *amount;
-                            }
+                        if let Some(id) = id
+                            && let Some(card) = state.cards.get_mut(&id)
+                        {
+                            card.current_pv -= *amount;
                         }
                     }
                     state.add_log(
@@ -370,7 +368,7 @@ pub fn resolve_entry_effect(
                 let ctrl_immune = d
                     .passive
                     .as_ref()
-                    .is_some_and(|p| p.effects.iter().any(|e| *e == PassiveEffect::ImmuneControl));
+                    .is_some_and(|p| p.effects.contains(&PassiveEffect::ImmuneControl));
                 let printed_def = d.def.unwrap_or(0);
                 let now = ctx.now_ms;
                 let Some(c) = state.cards.get_mut(&id) else {
@@ -442,14 +440,8 @@ pub fn resolve_entry_effect(
             }
         }
 
-        EntryEffect::Custom {
-            id: _,
-            description,
-        } => {
-            state.add_log(
-                player_id,
-                format!("Effet d'entree special : {description}"),
-            );
+        EntryEffect::Custom { id: _, description } => {
+            state.add_log(player_id, format!("Effet d'entree special : {description}"));
         }
     }
 
@@ -564,6 +556,7 @@ pub fn declare_captain_base_attack(
         pushback: None,
         pushback_slots: None,
         strip_stealth: None,
+        survive_played: None,
     });
 
     state.add_log(
@@ -710,7 +703,11 @@ mod tests {
         inst.zone = Zone::Board;
         inst.slot = Some(slot);
         state.cards.insert(iid.clone(), inst);
-        state.players.get_mut(owner).board.set(slot, Some(iid.clone()));
+        state
+            .players
+            .get_mut(owner)
+            .board
+            .set(slot, Some(iid.clone()));
         iid
     }
 
@@ -1054,7 +1051,10 @@ mod tests {
             &EntryEffect::DebuffAllEnemies { atk: 3 },
         )
         .unwrap();
-        assert_eq!(state.cards[&e].modifiers[0].id, format!("entrydebuff_{e}_7"));
+        assert_eq!(
+            state.cards[&e].modifiers[0].id,
+            format!("entrydebuff_{e}_7")
+        );
         assert_eq!(state.cards[&e].modifiers[0].amount, -3);
         assert_eq!(state.cards[&e].modifiers[0].source, "entry");
         assert!(state.log.is_empty());

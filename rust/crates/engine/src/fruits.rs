@@ -7,6 +7,12 @@
 //! awakening special attack used by
 //! [`crate::combat::declare_fruit_special_attack`].
 
+#![allow(clippy::collapsible_if)]
+// ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
+// source branch for branch (see the per-function `PORT:` references). Merging
+// them into let-chains would break that 1:1 reading, which is the whole point
+// of the port, so the lint is turned off for this file only.
+
 use crate::error::EngineError;
 use crate::passives::recalculate_passive_buffs;
 use crate::registry::CardRegistry;

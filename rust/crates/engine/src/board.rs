@@ -7,7 +7,11 @@
 //!
 //! The mutations (`deployCharacter`, `equipObject`, `deployShip`,
 //! `moveCharacter`) and `getValidTargets` live at the bottom of this file.
-#![allow(unused)]
+#![allow(clippy::collapsible_if)]
+// ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
+// source branch for branch (see the per-function `PORT:` references). Merging
+// them into let-chains would break that 1:1 reading, which is the whole point
+// of the port, so the lint is turned off for this file only.
 
 use serde::{Deserialize, Serialize};
 
@@ -364,12 +368,10 @@ fn match_ship_bonus(sp: &str, unit: &str) -> Option<i32> {
             continue;
         }
         let mut k = j;
-        // JS `\s`: ASCII whitespace plus the two Unicode separators that can
-        // realistically appear in the French card text (NBSP / narrow NBSP).
         while k < sp.len() {
             let rest = &sp[k..];
             if let Some(c) = rest.chars().next() {
-                if c.is_whitespace() {
+                if is_js_space(c) {
                     k += c.len_utf8();
                     continue;
                 }
@@ -377,10 +379,51 @@ fn match_ship_bonus(sp: &str, unit: &str) -> Option<i32> {
             break;
         }
         if sp[k..].starts_with(unit) {
-            return sp[digits_start..j].parse::<i32>().ok();
+            return Some(js_parse_int(&sp[digits_start..j]));
         }
     }
     None
+}
+
+/// JS `\s` — `WhiteSpace ∪ LineTerminator` exactly as ECMAScript defines it.
+///
+/// This is *not* Rust's `char::is_whitespace` (Unicode `White_Space`): JS
+/// excludes U+0085 (NEL, which `White_Space` includes) and includes U+FEFF
+/// (ZWNBSP, which `White_Space` excludes).
+pub(crate) fn is_js_space(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'      // <TAB>
+        | '\u{000A}'    // <LF>
+        | '\u{000B}'    // <VT>
+        | '\u{000C}'    // <FF>
+        | '\u{000D}'    // <CR>
+        | '\u{0020}'    // <SP>
+        | '\u{00A0}'    // <NBSP>
+        | '\u{1680}'
+        | '\u{2000}'
+            ..='\u{200A}'
+        | '\u{2028}'    // <LS>
+        | '\u{2029}'    // <PS>
+        | '\u{202F}'
+        | '\u{205F}'
+        | '\u{3000}'
+        | '\u{FEFF}' // <ZWNBSP>
+    )
+}
+
+/// JS `parseInt(digits, 10)` on a run of ASCII digits, narrowed to `i32`.
+///
+/// `parseInt` returns a double, so a digit run wider than `i32` still yields a
+/// finite (large) number rather than failing. Parsing through `f64` reproduces
+/// that; the `as i32` cast saturates, which is the closest `i32` can come to
+/// the JS value (and, like TS, keeps the bonus non-zero).
+pub(crate) fn js_parse_int(digits: &str) -> i32 {
+    match digits.parse::<i32>() {
+        Ok(v) => v,
+        // Only ASCII digits reach here, so the `f64` parse cannot fail.
+        Err(_) => digits.parse::<f64>().unwrap_or(0.0) as i32,
+    }
 }
 
 /// The TS literal behind an [`ObjectSubtype`] (`"weapon"` / `"fruit"` / `"accessory"`).
@@ -421,23 +464,20 @@ pub fn deploy_character(
     slot: Slot,
 ) -> Result<(), EngineError> {
     let Some(card) = state.cards.get(instance_id) else {
-        return Err(EngineError::UnknownInstance(instance_id.to_string()));
+        return Err(EngineError::illegal(format!(
+            "Card not found: {instance_id}"
+        )));
     };
     if card.owner != player_id {
-        return Err(EngineError::NotYourCard(instance_id.to_string()));
+        return Err(EngineError::illegal("Not your card"));
     }
     if card.zone != Zone::Hand {
-        return Err(EngineError::WrongZone {
-            instance_id: instance_id.to_string(),
-            expected: "hand".to_string(),
-        });
+        return Err(EngineError::illegal("Card not in hand"));
     }
 
     let def = registry.get_card_def(&card.def_id)?.clone();
     if def.card_type != CardType::Character {
-        return Err(EngineError::WrongCardType {
-            expected: "character".to_string(),
-        });
+        return Err(EngineError::illegal("Not a character card"));
     }
 
     if state.players.get(player_id).board.is_occupied(slot) {
@@ -585,36 +625,32 @@ pub fn equip_object(
     target_instance_id: &str,
 ) -> Result<(), EngineError> {
     let Some(obj_card) = state.cards.get(object_instance_id) else {
-        return Err(EngineError::UnknownInstance(object_instance_id.to_string()));
+        return Err(EngineError::illegal(format!(
+            "Object not found: {object_instance_id}"
+        )));
     };
     if obj_card.owner != player_id {
-        return Err(EngineError::NotYourCard(object_instance_id.to_string()));
+        return Err(EngineError::illegal("Not your card"));
     }
     if obj_card.zone != Zone::Hand {
-        return Err(EngineError::WrongZone {
-            instance_id: object_instance_id.to_string(),
-            expected: "hand".to_string(),
-        });
+        return Err(EngineError::illegal("Object not in hand"));
     }
 
     let obj_def = registry.get_card_def(&obj_card.def_id)?.clone();
     if obj_def.card_type != CardType::Object {
-        return Err(EngineError::WrongCardType {
-            expected: "object".to_string(),
-        });
+        return Err(EngineError::illegal("Not an object card"));
     }
 
     let Some(target_card) = state.cards.get(target_instance_id) else {
-        return Err(EngineError::UnknownInstance(target_instance_id.to_string()));
+        return Err(EngineError::illegal(format!(
+            "Target not found: {target_instance_id}"
+        )));
     };
     if target_card.owner != player_id {
-        return Err(EngineError::NotYourCard(target_instance_id.to_string()));
+        return Err(EngineError::illegal("Not your character"));
     }
     if target_card.zone != Zone::Board {
-        return Err(EngineError::WrongZone {
-            instance_id: target_instance_id.to_string(),
-            expected: "board".to_string(),
-        });
+        return Err(EngineError::illegal("Target not on board"));
     }
 
     // Clima-Tact combo: costs 0 if both Usopp (MG-004) and Nami (MG-003) are in play.
@@ -767,23 +803,20 @@ pub fn deploy_ship(
     instance_id: &str,
 ) -> Result<(), EngineError> {
     let Some(card) = state.cards.get(instance_id) else {
-        return Err(EngineError::UnknownInstance(instance_id.to_string()));
+        return Err(EngineError::illegal(format!(
+            "Card not found: {instance_id}"
+        )));
     };
     if card.owner != player_id {
-        return Err(EngineError::NotYourCard(instance_id.to_string()));
+        return Err(EngineError::illegal("Not your card"));
     }
     if card.zone != Zone::Hand {
-        return Err(EngineError::WrongZone {
-            instance_id: instance_id.to_string(),
-            expected: "hand".to_string(),
-        });
+        return Err(EngineError::illegal("Card not in hand"));
     }
 
     let def = registry.get_card_def(&card.def_id)?.clone();
     if def.card_type != CardType::Ship {
-        return Err(EngineError::WrongCardType {
-            expected: "ship".to_string(),
-        });
+        return Err(EngineError::illegal("Not a ship card"));
     }
 
     if !state.can_afford(player_id, def.cost) {
@@ -803,7 +836,8 @@ pub fn deploy_ship(
                 .get_card_def(&state.get_card(&active_ship)?.def_id)?
                 .clone();
             if let Some(de) = old_def.ship_destroy_effect.clone() {
-                if let Some(heal_all) = de.heal_all {
+                // TS `if (de.healAll)` — JS truthiness, so `0` is skipped.
+                if let Some(heal_all) = de.heal_all.filter(|v| *v != 0) {
                     for s in Slot::ALL {
                         let Some(cid) = state.players.get(player_id).board.get(s).cloned() else {
                             continue;
@@ -826,7 +860,9 @@ pub fn deploy_ship(
                         }
                     }
                 }
-                if let Some(token_def_id) = &de.deploy_token {
+                // TS `if (de.deployToken)` — JS truthiness, so `""` is skipped
+                // (and never reaches `getCardDef("")`).
+                if let Some(token_def_id) = de.deploy_token.as_ref().filter(|t| !t.is_empty()) {
                     let empty = Slot::ALL
                         .into_iter()
                         .find(|s| !state.players.get(player_id).board.is_occupied(*s));
@@ -890,19 +926,16 @@ pub fn move_character(
     target_slot: Slot,
 ) -> Result<(), EngineError> {
     if state.players.get(player_id).used_free_move {
-        return Err(EngineError::AlreadyUsed("free move".to_string()));
+        return Err(EngineError::illegal("Free move already used this turn"));
     }
 
     let card = state.cards.get(instance_id);
     if !card.is_some_and(|c| c.zone == Zone::Board) {
-        return Err(EngineError::WrongZone {
-            instance_id: instance_id.to_string(),
-            expected: "board".to_string(),
-        });
+        return Err(EngineError::illegal("Card not on board"));
     }
     let card = state.get_card(instance_id)?;
     if card.owner != player_id {
-        return Err(EngineError::NotYourCard(instance_id.to_string()));
+        return Err(EngineError::illegal("Not your card"));
     }
 
     let Some(current_slot) = card.slot else {
@@ -1060,6 +1093,10 @@ pub fn get_valid_targets(
     if opponent.captain.flipped && opponent.captain.slot.is_some() {
         // Verso captain is on board — targetable like a character
         // (subject to front row protection)
+        // Two arms with the same body, exactly as in board.ts:681-685 — kept
+        // apart so the two distinct rules (range/no-front vs. captain standing
+        // in the front row) stay readable next to the TS source.
+        #[allow(clippy::if_same_then_else)]
         if !opponent_has_front || has_range {
             can_target_captain = true;
         } else if opponent.captain.slot.is_some_and(is_front_slot) {
@@ -1268,6 +1305,29 @@ mod tests {
         assert_eq!(match_ship_bonus("pv +", "pv"), None);
     }
 
+    #[test]
+    fn ship_bonus_uses_the_js_whitespace_class_and_parse_int() {
+        // JS `\s` includes U+FEFF (which Unicode White_Space does not) …
+        assert_eq!(match_ship_bonus("+1\u{feff}pv", "pv"), Some(1));
+        // … and excludes U+0085 NEL (which Unicode White_Space does include).
+        assert_eq!(match_ship_bonus("+1\u{85}pv", "pv"), None);
+        // The rest of the class behaves like `\s`.
+        for sep in [
+            "\u{9}", "\u{a}", "\u{b}", "\u{c}", "\u{d}", " ", "\u{a0}", "\u{1680}", "\u{2000}",
+            "\u{200a}", "\u{2028}", "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}",
+        ] {
+            assert_eq!(
+                match_ship_bonus(&format!("+2{sep}pv"), "pv"),
+                Some(2),
+                "{sep:?}"
+            );
+        }
+        // `parseInt` returns a double, so a digit run wider than `i32` is still
+        // a (large) finite bonus, never "no match".
+        assert_eq!(match_ship_bonus("+99999999999 pv", "pv"), Some(i32::MAX));
+        assert_eq!(match_ship_bonus("+2147483647 pv", "pv"), Some(i32::MAX));
+    }
+
     // --- deployCost ---
 
     #[test]
@@ -1367,7 +1427,7 @@ mod tests {
         // Wrong owner / wrong zone.
         assert_eq!(
             deploy_character(&mut state, &reg, &mut ctx, P2, &a, Slot::V2),
-            Err(EngineError::NotYourCard(a.clone()))
+            Err(EngineError::illegal("Not your card"))
         );
     }
 
@@ -1549,6 +1609,149 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ship_destroy_effect_follows_js_truthiness_for_heal_all_and_deploy_token() {
+        // TS: `if (de.healAll)` / `if (de.deployToken)`. `0` and `""` are falsy,
+        // so both sub-effects are skipped — the heal must not clamp a buffed
+        // character back down to its printed PV, and the empty token id must
+        // never reach `getCardDef("")`.
+        let mut old = ship("MG-020", 2, "Vos Mugiwara ont +1 PV au deploiement.");
+        old.ship_destroy_effect = Some(ShipDestroyEffect {
+            heal_all: Some(0),
+            draw: Some(0),
+            deploy_token: Some(String::new()),
+            ..Default::default()
+        });
+        let reg = registry_with(vec![
+            old,
+            ship("MG-021", 2, "Vos Mugiwara ont +1 ATK."),
+            character("BUFFED", 1, 1, 1, 3),
+        ]);
+        let mut state = blank_state();
+        let mut ctx = EngineContext::seeded(7);
+
+        let old_id = put(&mut state, &reg, "MG-020", P1, Zone::Board, None);
+        state.players.get_mut(P1).active_ship = Some(old_id.clone());
+        let buffed = put(&mut state, &reg, "BUFFED", P1, Zone::Board, Some(Slot::V1));
+        // A Going-Merry-style deploy bonus puts it one PV above its printed 3.
+        state.card_mut(&buffed).unwrap().current_pv = 4;
+        let deck_card = put(&mut state, &reg, "BUFFED", P1, Zone::Deck, None);
+        let new_id = put(&mut state, &reg, "MG-021", P1, Zone::Hand, None);
+
+        deploy_ship(&mut state, &reg, &mut ctx, P1, &new_id).unwrap();
+
+        // healAll: 0 skipped — no `min(current, printed)` clamp.
+        assert_eq!(state.card(&buffed).unwrap().current_pv, 4);
+        // draw: 0 skipped.
+        assert!(state.players.get(P1).hand.is_empty());
+        assert_eq!(state.players.get(P1).deck, vec![deck_card]);
+        // deployToken: "" skipped — no token, and no `UnknownCard("")`.
+        assert_eq!(state.players.get(P1).board.get(Slot::V2), None);
+        assert_eq!(state.players.get(P1).active_ship, Some(new_id));
+        assert_eq!(
+            state.log.first().map(|l| l.message.as_str()),
+            Some("Ship MG-020 : effet de destruction.")
+        );
+    }
+
+    #[test]
+    fn board_errors_use_the_exact_ts_throw_messages() {
+        let reg = registry_with(vec![
+            character("CH", 1, 1, 1, 3),
+            object("OB", 1, ObjectSubtype::Weapon),
+            ship("SH", 1, "rien"),
+        ]);
+        let mut state = blank_state();
+        let ch = put(&mut state, &reg, "CH", P1, Zone::Hand, None);
+        let ob = put(&mut state, &reg, "OB", P1, Zone::Hand, None);
+        let sh = put(&mut state, &reg, "SH", P1, Zone::Hand, None);
+        let board_ch = put(&mut state, &reg, "CH", P1, Zone::Board, Some(Slot::V1));
+        let mut ctx = EngineContext::seeded(1);
+
+        let msg = |e: EngineError| e.to_string();
+
+        // deployCharacter
+        assert_eq!(
+            msg(deploy_character(&mut state, &reg, &mut ctx, P1, "ghost", Slot::V2).unwrap_err()),
+            "Card not found: ghost"
+        );
+        assert_eq!(
+            msg(deploy_character(&mut state, &reg, &mut ctx, P2, &ch, Slot::V2).unwrap_err()),
+            "Not your card"
+        );
+        assert_eq!(
+            msg(deploy_character(&mut state, &reg, &mut ctx, P1, &board_ch, Slot::V2).unwrap_err()),
+            "Card not in hand"
+        );
+        assert_eq!(
+            msg(deploy_character(&mut state, &reg, &mut ctx, P1, &ob, Slot::V2).unwrap_err()),
+            "Not a character card"
+        );
+
+        // equipObject
+        assert_eq!(
+            msg(equip_object(&mut state, &reg, P1, "ghost", &board_ch).unwrap_err()),
+            "Object not found: ghost"
+        );
+        assert_eq!(
+            msg(equip_object(&mut state, &reg, P2, &ob, &board_ch).unwrap_err()),
+            "Not your card"
+        );
+        assert_eq!(
+            msg(equip_object(&mut state, &reg, P1, &board_ch, &board_ch).unwrap_err()),
+            "Object not in hand"
+        );
+        assert_eq!(
+            msg(equip_object(&mut state, &reg, P1, &ch, &board_ch).unwrap_err()),
+            "Not an object card"
+        );
+        assert_eq!(
+            msg(equip_object(&mut state, &reg, P1, &ob, "ghost").unwrap_err()),
+            "Target not found: ghost"
+        );
+        assert_eq!(
+            msg(equip_object(&mut state, &reg, P1, &ob, &ch).unwrap_err()),
+            "Target not on board"
+        );
+
+        // deployShip
+        assert_eq!(
+            msg(deploy_ship(&mut state, &reg, &mut ctx, P1, "ghost").unwrap_err()),
+            "Card not found: ghost"
+        );
+        assert_eq!(
+            msg(deploy_ship(&mut state, &reg, &mut ctx, P2, &sh).unwrap_err()),
+            "Not your card"
+        );
+        assert_eq!(
+            msg(deploy_ship(&mut state, &reg, &mut ctx, P1, &board_ch).unwrap_err()),
+            "Card not in hand"
+        );
+        assert_eq!(
+            msg(deploy_ship(&mut state, &reg, &mut ctx, P1, &ch).unwrap_err()),
+            "Not a ship card"
+        );
+
+        // moveCharacter
+        assert_eq!(
+            msg(move_character(&mut state, P1, &ch, Slot::V2).unwrap_err()),
+            "Card not on board"
+        );
+        assert_eq!(
+            msg(move_character(&mut state, P2, &board_ch, Slot::V2).unwrap_err()),
+            "Not your card"
+        );
+        assert_eq!(
+            msg(move_character(&mut state, P1, &board_ch, Slot::A2).unwrap_err()),
+            "A2 is not adjacent to V1"
+        );
+        state.players.get_mut(P1).used_free_move = true;
+        assert_eq!(
+            msg(move_character(&mut state, P1, &board_ch, Slot::V2).unwrap_err()),
+            "Free move already used this turn"
+        );
+    }
+
     // --- moveCharacter ---
 
     #[test]
@@ -1578,7 +1781,7 @@ mod tests {
 
         assert_eq!(
             move_character(&mut state, P1, &b, Slot::V1),
-            Err(EngineError::AlreadyUsed("free move".into()))
+            Err(EngineError::illegal("Free move already used this turn"))
         );
     }
 

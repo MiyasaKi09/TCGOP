@@ -6,6 +6,12 @@
 //! and `Date.now()` for a few modifier ids; here the [`CardRegistry`] and the
 //! [`EngineContext`] (clock) are passed explicitly.
 
+#![allow(clippy::collapsible_if)]
+// ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
+// source branch for branch (see the per-function `PORT:` references). Merging
+// them into let-chains would break that 1:1 reading, which is the whole point
+// of the port, so the lint is turned off for this file only.
+
 use crate::board::{get_board_characters, get_effective_atk, remove_from_board};
 use crate::context::EngineContext;
 use crate::error::EngineError;
@@ -213,9 +219,11 @@ fn ship_bonus(desc: &str, keyword: &str) -> i32 {
             }
             if end > start {
                 let rest = &desc[end..];
-                let rest = rest.trim_start_matches(char::is_whitespace);
+                let rest = rest.trim_start_matches(crate::board::is_js_space);
                 if rest.starts_with(keyword) {
-                    return desc[start..end].parse::<i32>().unwrap_or(0);
+                    // TS `parseInt` returns a double, so a digit run wider than
+                    // `i32` still yields a finite (large) bonus, never 0.
+                    return crate::board::js_parse_int(&desc[start..end]);
                 }
             }
         }
@@ -323,12 +331,7 @@ pub fn recalculate_passive_buffs(
                     }
                     if matches_filter(registry, &target.def_id, filter.as_ref())? {
                         state.get_card_mut(&target.id)?.modifiers.push(Modifier {
-                            id: format!(
-                                "passive_{}_{}_{}",
-                                ch.id,
-                                buff_stat_str(*stat),
-                                target.id
-                            ),
+                            id: format!("passive_{}_{}_{}", ch.id, buff_stat_str(*stat), target.id),
                             stat: buff_stat(*stat),
                             amount: *amount,
                             source: format!("passive_{}", ch.id),
@@ -523,7 +526,12 @@ pub fn matches_filter(
     if filter.faction.is_some_and(|f| def.faction != f) {
         return Ok(false);
     }
-    if filter.tag.as_ref().is_some_and(|tag| !def.has_tag(tag)) {
+    // TS `if (filter.tag && ...)` — JS truthiness, so an empty tag is skipped.
+    if filter
+        .tag
+        .as_ref()
+        .is_some_and(|tag| !tag.is_empty() && !def.has_tag(tag))
+    {
         return Ok(false);
     }
     if filter.trait_.is_some_and(|t| !def.has_trait(t)) {
@@ -754,7 +762,15 @@ mod tests {
     }
 
     fn ship(id: &str, name: &str, passive: &str) -> CardDef {
-        let mut d = CardDef::new(id, name, CardType::Ship, 2, Faction::Pirate, Rarity::C, "TEST");
+        let mut d = CardDef::new(
+            id,
+            name,
+            CardType::Ship,
+            2,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
         d.ship_passive = Some(passive.to_string());
         d
     }
@@ -767,7 +783,12 @@ mod tests {
         }
     }
 
-    fn cap(id: &str, name: &str, recto: Vec<PassiveEffect>, verso: Vec<PassiveEffect>) -> CaptainDef {
+    fn cap(
+        id: &str,
+        name: &str,
+        recto: Vec<PassiveEffect>,
+        verso: Vec<PassiveEffect>,
+    ) -> CaptainDef {
         CaptainDef {
             id: id.to_string(),
             name: name.to_string(),
@@ -851,7 +872,11 @@ mod tests {
         inst.zone = Zone::Board;
         inst.slot = Some(slot);
         state.cards.insert(iid.clone(), inst);
-        state.players.get_mut(owner).board.set(slot, Some(iid.clone()));
+        state
+            .players
+            .get_mut(owner)
+            .board
+            .set(slot, Some(iid.clone()));
         iid
     }
 
@@ -892,6 +917,12 @@ mod tests {
         assert_eq!(ship_bonus("++12atk", "atk"), 12);
         // `\+(\d+)\s*def` does not match "+12 3def" (JS backtracking fails too).
         assert_eq!(ship_bonus("+12 3def", "def"), 0);
+        // `parseInt` is a double: a digit run wider than `i32` still yields a
+        // large positive bonus that passes the `> 0` guard, never 0.
+        assert_eq!(ship_bonus("+99999999999 atk", "atk"), i32::MAX);
+        // JS `\s` includes U+FEFF but not U+0085.
+        assert_eq!(ship_bonus("+1\u{feff}atk", "atk"), 1);
+        assert_eq!(ship_bonus("+1\u{85}atk", "atk"), 0);
     }
 
     // --- matchesFilter ---------------------------------------------------
@@ -959,6 +990,19 @@ mod tests {
             )
             .unwrap()
         );
+        // TS `if (filter.tag && …)` — an empty tag is falsy, so the tag check
+        // is skipped entirely and the filter still matches.
+        assert!(
+            matches_filter(
+                &reg,
+                "C1",
+                Some(&AllyFilter {
+                    tag: Some(String::new()),
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+        );
     }
 
     // --- start-of-turn passives -----------------------------------------
@@ -972,7 +1016,11 @@ mod tests {
             d
         };
         let reg = CardRegistry::from_sets(
-            [vec![healer, chr("A", "Ally", 2, 1, 4), chr("B", "Far", 2, 1, 4)]],
+            [vec![
+                healer,
+                chr("A", "Ally", 2, 1, 4),
+                chr("B", "Far", 2, 1, 4),
+            ]],
             [cap("CAP", "Cap", vec![], vec![])],
         );
         let mut st = blank_state("CAP", "CAP");
@@ -1166,7 +1214,12 @@ mod tests {
         let m = place(&mut st, &reg, PlayerId::Player1, Slot::V2, "M", 4);
         let o = place(&mut st, &reg, PlayerId::Player1, Slot::A1, "O", 4);
         // Active ship: "Vos Mugiwara ont +1 ATK." → only cards tagged mugiwara.
-        let mut sh = CardInstance::new("shipinst".to_string(), "SH".to_string(), PlayerId::Player1, 0);
+        let mut sh = CardInstance::new(
+            "shipinst".to_string(),
+            "SH".to_string(),
+            PlayerId::Player1,
+            0,
+        );
         sh.zone = Zone::Board;
         st.cards.insert("shipinst".to_string(), sh);
         st.players.get_mut(PlayerId::Player1).active_ship = Some("shipinst".to_string());
@@ -1209,10 +1262,12 @@ mod tests {
             .collect();
         assert_eq!(o_srcs, vec![("passive_L@player1V1", 1)]);
         // Leader never buffs itself.
-        assert!(!st.cards[&l]
-            .modifiers
-            .iter()
-            .any(|x| x.source == "passive_L@player1V1"));
+        assert!(
+            !st.cards[&l]
+                .modifiers
+                .iter()
+                .any(|x| x.source == "passive_L@player1V1")
+        );
     }
 
     #[test]
@@ -1275,14 +1330,30 @@ mod tests {
 
         apply_enemy_debuff_auras(&mut st, &reg).unwrap();
 
-        assert_eq!(atk_bonus(&st, &big), -2, "one → strongest, stale aura cleared");
+        assert_eq!(
+            atk_bonus(&st, &big),
+            -2,
+            "one → strongest, stale aura cleared"
+        );
         assert_eq!(atk_bonus(&st, &small), 0, "stale debuffAura removed");
         assert_eq!(atk_bonus(&st, &e_front), -2, "adjacent → enemy front row");
         // The Goldenweek in V1 is also front row for player1's Shanks aura.
-        let g = st.players.get(PlayerId::Player2).board.get(Slot::V1).unwrap().clone();
+        let g = st
+            .players
+            .get(PlayerId::Player2)
+            .board
+            .get(Slot::V1)
+            .unwrap()
+            .clone();
         assert_eq!(atk_bonus(&st, &g), -2);
         // A1 is back row → untouched by the "adjacent" aura.
-        let gb = st.players.get(PlayerId::Player2).board.get(Slot::A1).unwrap().clone();
+        let gb = st
+            .players
+            .get(PlayerId::Player2)
+            .board
+            .get(Slot::A1)
+            .unwrap()
+            .clone();
         assert_eq!(atk_bonus(&st, &gb), 0);
     }
 
@@ -1384,13 +1455,33 @@ mod tests {
         let mut st = blank_state("CAP", "CAP");
 
         // Non-Mugiwara KO → filter fails, nothing happens.
-        apply_on_ko_effects(&mut st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "X")
-            .unwrap();
-        assert!(st.players.get(PlayerId::Player1).captain.modifiers.is_empty());
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &ctx,
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "X",
+        )
+        .unwrap();
+        assert!(
+            st.players
+                .get(PlayerId::Player1)
+                .captain
+                .modifiers
+                .is_empty()
+        );
 
         for _ in 0..5 {
-            apply_on_ko_effects(&mut st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "V")
-                .unwrap();
+            apply_on_ko_effects(
+                &mut st,
+                &reg,
+                &ctx,
+                PlayerId::Player1,
+                PlayerId::Player2,
+                "V",
+            )
+            .unwrap();
         }
         let mods = &st.players.get(PlayerId::Player1).captain.modifiers;
         assert_eq!(mods.len(), 3, "current < max is checked before each push");
@@ -1416,8 +1507,7 @@ mod tests {
         st.players.get_mut(PlayerId::Player2).captain.flipped = true;
         for n in 0..2 {
             let iid = format!("v{n}");
-            let mut inst =
-                CardInstance::new(iid.clone(), "V".to_string(), PlayerId::Player1, 0);
+            let mut inst = CardInstance::new(iid.clone(), "V".to_string(), PlayerId::Player1, 0);
             inst.zone = Zone::Graveyard;
             st.cards.insert(iid.clone(), inst);
             st.players.get_mut(PlayerId::Player1).graveyard.push(iid);
@@ -1455,7 +1545,10 @@ mod tests {
         let mut inst = CardInstance::new("v0".to_string(), "V".to_string(), PlayerId::Player1, 0);
         inst.zone = Zone::Graveyard;
         st.cards.insert("v0".to_string(), inst);
-        st.players.get_mut(PlayerId::Player1).graveyard.push("v0".to_string());
+        st.players
+            .get_mut(PlayerId::Player1)
+            .graveyard
+            .push("v0".to_string());
 
         apply_on_ko_effects(
             &mut st,
@@ -1499,16 +1592,23 @@ mod tests {
         assert_eq!(st.cards[&tie].current_pv, 2);
         assert_eq!(st.cards[&fat].current_pv, 4);
         assert_eq!(st.cards[&first].zone, Zone::Graveyard, "0 PV → removed");
-        assert!(st.players.get(PlayerId::Player2).board.get(Slot::V1).is_none());
+        assert!(
+            st.players
+                .get(PlayerId::Player2)
+                .board
+                .get(Slot::V1)
+                .is_none()
+        );
         let msgs: Vec<&str> = st.log.iter().map(|l| l.message.as_str()).collect();
         assert_eq!(
             msgs,
-            vec![
-                "Corps Explosif : 2 dégâts à Ennemi !",
-                "Ennemi est KO !",
-            ]
+            vec!["Corps Explosif : 2 dégâts à Ennemi !", "Ennemi est KO !",]
         );
-        assert_eq!(st.log[0].player, PlayerId::Player1, "logged for the KO'd side");
+        assert_eq!(
+            st.log[0].player,
+            PlayerId::Player1,
+            "logged for the KO'd side"
+        );
         assert_eq!(st.log[1].player, PlayerId::Player2, "logged for the owner");
     }
 
@@ -1545,8 +1645,15 @@ mod tests {
         let m = place(&mut st, &reg, PlayerId::Player1, Slot::V2, "M", 4);
         let ctx = EngineContext::new(1, 99);
 
-        apply_on_ko_effects(&mut st, &reg, &ctx, PlayerId::Player1, PlayerId::Player2, "L")
-            .unwrap();
+        apply_on_ko_effects(
+            &mut st,
+            &reg,
+            &ctx,
+            PlayerId::Player1,
+            PlayerId::Player2,
+            "L",
+        )
+        .unwrap();
 
         assert_eq!(
             st.log.last().unwrap().message,

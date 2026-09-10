@@ -9,6 +9,12 @@
 //! The TS module globals (`Math.random()`, `utils.ts::instanceCounter`,
 //! `Date.now()`) live in [`EngineContext`], passed explicitly.
 
+#![allow(clippy::collapsible_if)]
+// ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
+// source branch for branch (see the per-function `PORT:` references). Merging
+// them into let-chains would break that 1:1 reading, which is the whole point
+// of the port, so the lint is turned off for this file only.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -417,6 +423,15 @@ pub struct PendingAttack {
     pub pushback_slots: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strip_stealth: Option<bool>,
+    /// TS `applyCounterSurvive` writes an ad-hoc property on the pending
+    /// attack — `(draft.pendingAttack as PendingAttack & { survivePlayed?:
+    /// boolean }).survivePlayed = true` (combat.ts:585) — which
+    /// `applyCaptainDamage` / `applyCharacterDamage` read back
+    /// (combat.ts:907, :948) to clamp the protected target to 1 PV instead of
+    /// KO-ing it. It serialises as `"survivePlayed"`, so a state round-trips
+    /// through the TS engine unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub survive_played: Option<bool>,
 }
 
 /// TS `LogEntry`.
@@ -452,6 +467,38 @@ pub struct GameState {
     pub winner: Option<PlayerId>,
     /// Turn of first player (alternates)
     pub first_player: PlayerId,
+}
+
+// ------------------------------------------------------------
+// All-or-nothing mutation
+// ------------------------------------------------------------
+
+/// Run `f` against `state` and roll the state back when it fails.
+///
+/// The TypeScript engine is written with `immer`: `executeAction`,
+/// `declareBaseAttack`, `playEvent`, … are pure `(state, …) => GameState`
+/// functions that build a **new** state and only hand it back on success, so a
+/// `throw` anywhere inside leaves the caller's state bit-for-bit unchanged —
+/// no Volonte spent, no card tapped, nothing half-applied. The Rust port
+/// mutates `&mut GameState` in place, so every fallible entry point that would
+/// otherwise commit a partial mutation runs its body through this helper to get
+/// the same all-or-nothing contract.
+///
+/// Only `GameState` is restored. The TS module globals (`Math.random`'s
+/// stream, `instanceCounter`) are *not* rolled back by a `throw` either, so
+/// [`EngineContext`](crate::context::EngineContext) is deliberately left alone.
+pub fn transactional<T, F>(state: &mut GameState, f: F) -> Result<T, EngineError>
+where
+    F: FnOnce(&mut GameState) -> Result<T, EngineError>,
+{
+    let snapshot = state.clone();
+    match f(state) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            *state = snapshot;
+            Err(err)
+        }
+    }
 }
 
 // ------------------------------------------------------------
@@ -587,6 +634,27 @@ impl GameState {
         seed: u64,
     ) -> Result<GameState, EngineError> {
         create_game(p1_deck, p2_deck, registry, &mut EngineContext::seeded(seed))
+    }
+
+    /// TS `createGame(p1Deck, p2Deck)` (init.ts) with the registry first —
+    /// the shape the hosts and the AI harness use.
+    ///
+    /// `registry` is what TS `initializeRegistry()` fills the two module
+    /// globals with; build it once with
+    /// [`cards::registry()`](crate::cards::registry). The body is exactly
+    /// `createInitialState(p1Deck, p2Deck)` followed by `startTurn(state)`,
+    /// driven by a fresh deterministic [`EngineContext::seeded(seed)`].
+    pub fn new_game_from_decks(
+        registry: &CardRegistry,
+        deck_a: &DeckDef,
+        deck_b: &DeckDef,
+        seed: u64,
+    ) -> Result<GameState, EngineError> {
+        let mut ctx = EngineContext::seeded(seed);
+        let mut state = create_initial_state(deck_a, deck_b, registry, &mut ctx)?;
+        // Start the first turn (untap, draw skipped for P1 T1, gain 1 Vol.)
+        state.start_turn(registry, &ctx)?;
+        Ok(state)
     }
 
     /// TS `state.players[id]`.
@@ -947,11 +1015,21 @@ impl GameState {
                 let ko_owner = card.owner;
                 let ko_def_id = card.def_id.clone();
                 let name = card_def.name.clone();
-                self.add_log(current_player_id, format!("{name} est KO (brulure/effet) !"));
+                self.add_log(
+                    current_player_id,
+                    format!("{name} est KO (brulure/effet) !"),
+                );
                 // Burn/poison were inflicted by the opponent: the owner who lost the ally gets +2 Vol (Rulebook v3.1 §4).
                 self.grant_ko_bonus(ko_owner);
                 remove_from_board(self, registry, &id)?;
-                apply_on_ko_effects(self, registry, ctx, ko_owner, ko_owner.opponent(), &ko_def_id)?;
+                apply_on_ko_effects(
+                    self,
+                    registry,
+                    ctx,
+                    ko_owner,
+                    ko_owner.opponent(),
+                    &ko_def_id,
+                )?;
             }
         }
 

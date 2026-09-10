@@ -8,6 +8,12 @@
 //! `captain.rs`, `haki.rs`, `fruits.rs` and the local helpers below. A state
 //! that already has a `winner` is returned untouched.
 
+#![allow(clippy::collapsible_if)]
+// ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
+// source branch for branch (see the per-function `PORT:` references). Merging
+// them into let-chains would break that 1:1 reading, which is the whole point
+// of the port, so the lint is turned off for this file only.
+
 use crate::board::{
     deploy_character, deploy_ship, equip_object, get_board_characters, get_effective_atk,
     get_effective_def, get_empty_slots, is_front_slot, move_character, remove_from_board,
@@ -23,11 +29,11 @@ use crate::fruits::awaken_fruit;
 use crate::haki::{use_king_haki, use_observation_haki};
 use crate::passives::{apply_on_ko_effects, recalculate_passive_buffs};
 use crate::registry::CardRegistry;
-use crate::state::{CardInstance, GameState, LogEntry};
+use crate::state::{CardInstance, GameState, LogEntry, transactional};
 use crate::types::{
     AtkDefStat, BuffDuration, CardType, CounterEffect, DamageTarget, EventEffect, GameAction,
-    HakiType, Modifier, ModifierDuration, ModifierStat, PassiveEffect, PlayerId, Slot, StatusEffect,
-    StatusEffectType, Trait, Zone,
+    HakiType, Modifier, ModifierDuration, ModifierStat, PassiveEffect, PlayerId, Slot,
+    StatusEffect, StatusEffectType, Trait, Zone,
 };
 
 // ============================================================
@@ -173,7 +179,25 @@ fn number_after_prefix(s: &str, prefix: &str, word: &str) -> Option<i32> {
 ///
 /// `endTurn` is `endTurn(state)` **followed by** `startTurn(next)`
 /// — see [`end_turn_and_start_turn`].
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn execute_action(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    action: &GameAction,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        execute_action_inner(state, registry, ctx, action)
+    })
+}
+
+/// Body of [`execute_action`], run inside [`transactional`].
+fn execute_action_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     ctx: &mut EngineContext,
@@ -343,7 +367,26 @@ pub fn end_turn_and_start_turn(
 ///
 /// Errors: `Card not found`, `Not your card`, `Card not in hand`,
 /// `Not an event card`, `Cannot afford {name}`.
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn play_event(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    player_id: PlayerId,
+    instance_id: &str,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        play_event_inner(state, registry, ctx, player_id, instance_id)
+    })
+}
+
+/// Body of [`play_event`], run inside [`transactional`].
+fn play_event_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     ctx: &mut EngineContext,
@@ -468,9 +511,7 @@ pub fn resolve_event_effect(
                 }
                 state.add_log(
                     player_id,
-                    format!(
-                        "Defausse automatique de {discard} carte(s) (plus ancienne en main)."
-                    ),
+                    format!("Defausse automatique de {discard} carte(s) (plus ancienne en main)."),
                 );
             }
         }
@@ -1003,7 +1044,26 @@ pub fn play_counter(
 ///
 /// Errors: `Ship not found`, `Ship has no active ability`,
 /// `Ship ability already used (1x/game)`, `Cannot afford {name} (cost {n})`.
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn activate_ship_ability(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    player_id: PlayerId,
+    ship_instance_id: &str,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        activate_ship_ability_inner(state, registry, ctx, player_id, ship_instance_id)
+    })
+}
+
+/// Body of [`activate_ship_ability`], run inside [`transactional`].
+fn activate_ship_ability_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     ctx: &mut EngineContext,
@@ -1141,10 +1201,7 @@ pub fn activate_ship_ability(
                 }
             }
         }
-        state.add_log(
-            player_id,
-            format!("{} active {} !", def.name, active.name),
-        );
+        state.add_log(player_id, format!("{} active {} !", def.name, active.name));
         return Ok(());
     }
 
@@ -1175,18 +1232,12 @@ pub fn activate_ship_ability(
                 }
             }
         }
-        state.add_log(
-            player_id,
-            format!("{} active {} !", def.name, active.name),
-        );
+        state.add_log(player_id, format!("{} active {} !", def.name, active.name));
         return Ok(());
     }
 
     // Fallback: just log the activation
-    state.add_log(
-        player_id,
-        format!("{} active {} !", def.name, active.name),
-    );
+    state.add_log(player_id, format!("{} active {} !", def.name, active.name));
     Ok(())
 }
 
@@ -1213,7 +1264,34 @@ pub fn activate_ship_ability(
 ///
 /// Errors: `Card not found`, `Not your card`, `Action already used`,
 /// `Not a support action`, `Trap needs a target`.
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn execute_support_action(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    player_id: PlayerId,
+    instance_id: &str,
+    target_instance_id: Option<&str>,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        execute_support_action_inner(
+            state,
+            registry,
+            ctx,
+            player_id,
+            instance_id,
+            target_instance_id,
+        )
+    })
+}
+
+/// Body of [`execute_support_action`], run inside [`transactional`].
+fn execute_support_action_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     ctx: &mut EngineContext,
@@ -1232,7 +1310,11 @@ pub fn execute_support_action(
     }
 
     let def = registry.get_card_def(&card.def_id)?.clone();
-    let Some(ba) = def.base_action.clone().filter(|b| b.is_support.unwrap_or(false)) else {
+    let Some(ba) = def
+        .base_action
+        .clone()
+        .filter(|b| b.is_support.unwrap_or(false))
+    else {
         return Err(EngineError::illegal("Not a support action"));
     };
 
@@ -1406,10 +1488,7 @@ pub fn execute_support_action(
             ));
         }
     }
-    state.add_log(
-        player_id,
-        format!("{} utilise {} !", def.name, ba.name),
-    );
+    state.add_log(player_id, format!("{} utilise {} !", def.name, ba.name));
     Ok(())
 }
 
@@ -1447,6 +1526,125 @@ pub fn handle_haki(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::cards::registry as card_registry;
+    use crate::decks::{marines_deck, mugiwara_deck};
+    use crate::state::create_game;
+    use crate::types::Zone;
+
+    /// A real game plus one extra instance of `def_id` in `player`'s hand.
+    fn game_with_in_hand(
+        def_id: &str,
+        player: PlayerId,
+    ) -> (GameState, CardRegistry, EngineContext) {
+        let reg = card_registry();
+        let mut ctx = EngineContext::seeded(11);
+        let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+        let iid = ctx.generate_instance_id(def_id);
+        let mut inst = CardInstance::new(iid.clone(), def_id.to_string(), player, 0);
+        inst.zone = Zone::Hand;
+        state.add_instance(inst);
+        state.players.get_mut(player).hand.push(iid);
+        state.current_player = player;
+        state.phase = crate::types::Phase::Main;
+        (state, reg, ctx)
+    }
+
+    #[test]
+    fn a_rejected_flashback_spends_nothing_and_keeps_the_card_in_hand() {
+        // MG-024 "Flashback : Promesse" is `requiresOwnKO`. TS `playEvent`
+        // spends the Volonte into a *local* `next`, so the throw from
+        // `resolveEventEffect` discards the whole thing.
+        let p = PlayerId::Player1;
+        let (mut state, reg, mut ctx) = game_with_in_hand("MG-024", p);
+        state.players.get_mut(p).volonte = 5;
+        assert!(!state.players.get(p).char_koed_this_game());
+        let instance_id = state.players.get(p).hand.last().unwrap().clone();
+        let before = state.clone();
+
+        let err = play_event(&mut state, &reg, &mut ctx, p, &instance_id).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Flashback: aucun de vos personnages n'a été KO ce match"
+        );
+        assert_eq!(state, before);
+        assert_eq!(state.players.get(p).volonte, 5);
+        assert!(state.players.get(p).hand.contains(&instance_id));
+        assert_eq!(state.card(&instance_id).unwrap().zone, Zone::Hand);
+
+        // Repeating the illegal action cannot drain the pool either.
+        for _ in 0..3 {
+            assert!(play_event(&mut state, &reg, &mut ctx, p, &instance_id).is_err());
+        }
+        assert_eq!(state.players.get(p).volonte, 5);
+    }
+
+    #[test]
+    fn a_rejected_trap_support_does_not_burn_the_characters_turn() {
+        use crate::types::{BaseAction, CardDef, CardType, Faction, Rarity, Slot};
+
+        let p = PlayerId::Player1;
+        let mut reg = card_registry();
+        let mut trap = CardDef::new(
+            "T-TRAP",
+            "Piegeur",
+            CardType::Character,
+            1,
+            Faction::Pirate,
+            Rarity::C,
+            "TEST",
+        );
+        trap.pv = Some(3);
+        trap.base_action = Some(BaseAction {
+            name: "Piege".into(),
+            description: Some("pose un piege".into()),
+            is_support: Some(true),
+            ..Default::default()
+        });
+        reg.register_card(trap);
+
+        let mut ctx = EngineContext::seeded(3);
+        let mut state = create_game(&mugiwara_deck(), &marines_deck(), &reg, &mut ctx).unwrap();
+        state.current_player = p;
+        state.phase = crate::types::Phase::Main;
+        let iid = ctx.generate_instance_id("T-TRAP");
+        let mut inst = CardInstance::new(iid.clone(), "T-TRAP".into(), p, 3);
+        inst.zone = Zone::Board;
+        inst.slot = Some(Slot::V1);
+        inst.deployed_turn = Some(0);
+        state.add_instance(inst);
+        state
+            .players
+            .get_mut(p)
+            .board
+            .set(Slot::V1, Some(iid.clone()));
+        let before = state.clone();
+
+        // TS taps inside `produce` into a local `next`, and the missing-target
+        // throw discards it — the character keeps its whole turn.
+        let err = execute_support_action(&mut state, &reg, &mut ctx, p, &iid, None).unwrap_err();
+        assert_eq!(err.to_string(), "Trap needs a target");
+        assert_eq!(state, before);
+        assert!(!state.card(&iid).unwrap().tapped);
+        assert!(!state.card(&iid).unwrap().used_base_action);
+        assert!(!state.card(&iid).unwrap().used_special_attack);
+    }
+
+    #[test]
+    fn execute_action_is_all_or_nothing_like_the_pure_ts_dispatcher() {
+        let p = PlayerId::Player1;
+        let (mut state, reg, mut ctx) = game_with_in_hand("MG-024", p);
+        state.players.get_mut(p).volonte = 5;
+        let instance_id = state.players.get(p).hand.last().unwrap().clone();
+        let before = state.clone();
+
+        let action = GameAction::PlayEvent {
+            instance_id,
+            targets: None,
+        };
+        assert!(execute_action(&mut state, &reg, &mut ctx, &action).is_err());
+        assert_eq!(state, before);
+    }
 
     #[test]
     fn first_number_takes_the_first_maximal_digit_run() {

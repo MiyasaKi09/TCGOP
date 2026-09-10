@@ -56,16 +56,12 @@ pub fn is_haki_available(state: &GameState, player_id: PlayerId, haki_type: Haki
 ///
 /// Errors: `Observation Haki not available`, `No pending attack to dodge`,
 /// `This attack cannot be dodged`.
-pub fn use_observation_haki(
-    state: &mut GameState,
-    player_id: PlayerId,
-) -> Result<(), EngineError> {
+pub fn use_observation_haki(state: &mut GameState, player_id: PlayerId) -> Result<(), EngineError> {
     if !is_haki_available(state, player_id, HakiType::Observation) {
         return Err(EngineError::illegal("Observation Haki not available"));
     }
     let Some(pending) = state.pending_attack.as_ref() else {
-        // TS: `throw new Error("No pending attack to dodge")`.
-        return Err(EngineError::NoPendingAttack);
+        return Err(EngineError::illegal("No pending attack to dodge"));
     };
     if pending.cannot_be_dodged.unwrap_or(false) {
         return Err(EngineError::illegal("This attack cannot be dodged"));
@@ -310,7 +306,11 @@ mod tests {
         inst.zone = Zone::Board;
         inst.slot = Some(slot);
         state.cards.insert(instance_id.to_string(), inst);
-        state.players.get_mut(owner).board.set(slot, Some(instance_id.to_string()));
+        state
+            .players
+            .get_mut(owner)
+            .board
+            .set(slot, Some(instance_id.to_string()));
     }
 
     fn pending() -> PendingAttack {
@@ -331,6 +331,7 @@ mod tests {
             pushback: None,
             pushback_slots: None,
             strip_stealth: None,
+            survive_played: None,
         }
     }
 
@@ -354,13 +355,29 @@ mod tests {
     #[test]
     fn availability_is_gated_by_turn_then_by_used_flag() {
         let mut s = state_with(4);
-        assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::Observation));
+        assert!(!is_haki_available(
+            &s,
+            PlayerId::Player1,
+            HakiType::Observation
+        ));
         s.turn_number = 5;
-        assert!(is_haki_available(&s, PlayerId::Player1, HakiType::Observation));
+        assert!(is_haki_available(
+            &s,
+            PlayerId::Player1,
+            HakiType::Observation
+        ));
         s.players.get_mut(PlayerId::Player1).observation_used = true;
-        assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::Observation));
+        assert!(!is_haki_available(
+            &s,
+            PlayerId::Player1,
+            HakiType::Observation
+        ));
         // …per player.
-        assert!(is_haki_available(&s, PlayerId::Player2, HakiType::Observation));
+        assert!(is_haki_available(
+            &s,
+            PlayerId::Player2,
+            HakiType::Observation
+        ));
 
         s.turn_number = 9;
         assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::King));
@@ -374,9 +391,17 @@ mod tests {
     fn armament_is_never_available_even_unused_past_its_threshold() {
         let mut s = state_with(99);
         assert!(!s.players.get(PlayerId::Player1).armament_used);
-        assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::Armament));
+        assert!(!is_haki_available(
+            &s,
+            PlayerId::Player1,
+            HakiType::Armament
+        ));
         s.players.get_mut(PlayerId::Player1).armament_used = true;
-        assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::Armament));
+        assert!(!is_haki_available(
+            &s,
+            PlayerId::Player1,
+            HakiType::Armament
+        ));
     }
 
     // ---------- useObservationHaki ----------
@@ -389,7 +414,10 @@ mod tests {
         assert!(s.pending_attack.is_none());
         assert!(s.players.get(PlayerId::Player2).observation_used);
         assert_eq!(s.log.len(), 1);
-        assert_eq!(s.log[0].message, "Haki de l'Observation ! Attaque esquivee !");
+        assert_eq!(
+            s.log[0].message,
+            "Haki de l'Observation ! Attaque esquivee !"
+        );
         assert_eq!(s.log[0].player, PlayerId::Player2);
     }
 
@@ -405,7 +433,7 @@ mod tests {
         let mut s = state_with(5);
         assert_eq!(
             use_observation_haki(&mut s, PlayerId::Player2),
-            Err(EngineError::NoPendingAttack)
+            Err(EngineError::illegal("No pending attack to dodge"))
         );
         // 3. undodgeable attack — nothing is mutated.
         let mut s = state_with(5);
@@ -495,7 +523,10 @@ mod tests {
         assert_eq!(s.cards["e3"].zone, Zone::Graveyard);
         assert_eq!(s.cards["e2"].zone, Zone::Board);
         assert_eq!(s.cards["a1"].zone, Zone::Board);
-        assert_eq!(s.players.get(PlayerId::Player2).board.get(Slot::V2), Some(&"e2".to_string()));
+        assert_eq!(
+            s.players.get(PlayerId::Player2).board.get(Slot::V2),
+            Some(&"e2".to_string())
+        );
         assert_eq!(s.players.get(PlayerId::Player2).board.get(Slot::V1), None);
 
         // +2 Vol per lost ally, to the victim's owner.

@@ -6,7 +6,6 @@
 //! and builds an explicit [`CardRegistry`] from them; the **aggregation order is
 //! part of the contract** because a duplicate id would resolve to the last
 //! registration, exactly as in the TS `for (const card of allCards)` loop.
-#![allow(unused)]
 
 pub mod baroque;
 pub mod captains;

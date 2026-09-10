@@ -59,7 +59,7 @@ pub enum EngineError {
     #[error("Wrong phase: expected {expected:?}, current {actual:?}")]
     WrongPhase { expected: Phase, actual: Phase },
 
-    /// TS `No pending attack` / `No pending attack to dodge`.
+    /// TS `No pending attack`.
     #[error("No pending attack")]
     NoPendingAttack,
 

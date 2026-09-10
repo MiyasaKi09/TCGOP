@@ -69,7 +69,7 @@ pub mod prelude {
     pub use crate::captain::{
         can_flip_captain, declare_captain_base_attack, flip_captain, resolve_entry_effect,
     };
-    pub use crate::cards::{all_cards, all_captains, all_sets, registry as card_registry};
+    pub use crate::cards::{all_captains, all_cards, all_sets, registry as card_registry};
     pub use crate::combat::{
         CAPTAIN_ATTACKER_PREFIX, CounterOption, apply_captain_damage, apply_character_damage,
         apply_counter_cancel, apply_counter_reduce, apply_counter_survive, apply_element_effects,
@@ -79,6 +79,11 @@ pub mod prelude {
         get_eligible_counters, resolve_attack, set_survive_played, survive_played,
     };
     pub use crate::context::{EngineContext, generate_instance_id, to_base36};
+    pub use crate::decks::{
+        DECK_SIZE, all_decks, baroque_deck, deck_size, marines_deck, mugiwara_deck, redhair_deck,
+        verify_deck, verify_deck_against, verify_decks,
+    };
+    pub use crate::error::{EngineError, EngineResult};
     pub use crate::execute::{
         activate_ship_ability, deploy_token, end_turn_and_start_turn, execute_action,
         execute_support_action, handle_haki, play_counter, play_event, resolve_event_effect,
@@ -88,14 +93,9 @@ pub mod prelude {
         apply_fruit_base_effects, awaken_fruit, can_awaken_fruit, get_fruit_traits,
     };
     pub use crate::haki::{
-        HAKI_THRESHOLDS, haki_threshold, has_conqueror_in_play, is_haki_available,
-        use_king_haki, use_observation_haki,
+        HAKI_THRESHOLDS, haki_threshold, has_conqueror_in_play, is_haki_available, use_king_haki,
+        use_observation_haki,
     };
-    pub use crate::decks::{
-        DECK_SIZE, all_decks, baroque_deck, deck_size, marines_deck, mugiwara_deck, redhair_deck,
-        verify_deck, verify_deck_against, verify_decks,
-    };
-    pub use crate::error::{EngineError, EngineResult};
     pub use crate::passives::{
         apply_enemy_debuff_auras, apply_on_ko_effects, apply_start_of_turn_passives,
         matches_filter, recalculate_passive_buffs,
@@ -105,7 +105,7 @@ pub mod prelude {
     pub use crate::state::{
         ALLY_KO_BONUS_VOL, Board, CaptainInstance, CardInstance, GameState, HAND_LIMIT, LogEntry,
         PendingAttack, PlayerState, Players, STARTING_HAND_SIZE, VOLONTE_CAP, create_game,
-        create_initial_state, create_player_state,
+        create_initial_state, create_player_state, transactional,
     };
     pub use crate::types::*;
 }
@@ -147,19 +147,113 @@ pub fn valid_actions_for(
 
 /// Apply one action — TS `executeAction(state, action)`.
 ///
-/// **Signature note (see the port notes):** `executeAction` reaches for
-/// `Math.random()` (Robin's entry discard, Shanks' `discardOpponentRandom`) and
-/// `Date.now()` (modifier ids), which the Rust engine keeps in an explicit
-/// [`EngineContext`] rather than in `GameState`. This context-free wrapper
-/// therefore cannot be implemented without deciding where that context lives;
-/// hosts that already own one should call [`apply_with_ctx`] instead.
-#[allow(unused_variables)]
+/// **Where the ambient context comes from.** `executeAction` reaches for
+/// `Math.random()` (Robin's entry discard, Shanks' `discardOpponentRandom`),
+/// for the module-global `instanceCounter` (token instance ids) and for
+/// `Date.now()` (modifier ids). None of the three lives in `GameState`, so a
+/// context-free entry point has to produce them from the only thing it is
+/// given. This wrapper therefore *derives* an [`EngineContext`] from the state
+/// itself — see [`derive_ctx`] — which keeps the engine a pure function of
+/// `(state, action)` and keeps whole games reproducible from their seed.
+///
+/// Hosts that already own a long-lived context (and want one continuous random
+/// stream across the whole game) should call [`apply_with_ctx`] instead; that
+/// is the faithful `executeAction` entry point.
 pub fn apply(
     state: &mut GameState,
     registry: &CardRegistry,
     action: GameAction,
 ) -> EngineResult<()> {
-    todo!("PORT: executeAction — context-free wrapper, see apply_with_ctx")
+    let mut ctx = derive_ctx(state);
+    apply_with_ctx(state, registry, &mut ctx, action)
+}
+
+/// The ambient [`EngineContext`] a context-free [`apply`] call uses, derived
+/// from `state` alone:
+///
+/// - `rng` is seeded with a fingerprint of the state (see
+///   [`state_fingerprint`]), so the same state always makes the same "random"
+///   choice and a replay of the same action sequence reproduces byte-for-byte;
+/// - `instance_counter` starts at `state.cards.len()`. Instances are only ever
+///   *added* to `GameState::cards` (nothing removes them — a KO'd card moves to
+///   the discard zone, it stays in the map), and every
+///   `generate_instance_id` call in the engine is immediately followed by the
+///   matching insert, so the counter is strictly increasing across calls and
+///   generated ids can never collide;
+/// - `now_ms` is `state.log.len()`, a monotone stand-in for `Date.now()`: it
+///   only feeds modifier / instance id suffixes, and like the TS clock it is
+///   constant within a single `executeAction` call.
+pub fn derive_ctx(state: &GameState) -> EngineContext {
+    let mut ctx = EngineContext::new(state_fingerprint(state), state.log.len() as u64);
+    ctx.instance_counter = state.cards.len() as u64;
+    ctx
+}
+
+/// A cheap FNV-1a fingerprint over the parts of a
+/// `GameState` that change as a game progresses. Used only to seed the derived
+/// RNG of [`apply`]; it is never compared, stored or serialised.
+pub fn state_fingerprint(state: &GameState) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn mix(h: &mut u64, bytes: &[u8]) {
+        for b in bytes {
+            *h ^= u64::from(*b);
+            *h = h.wrapping_mul(FNV_PRIME);
+        }
+    }
+    fn mix_u64(h: &mut u64, v: u64) {
+        mix(h, &v.to_le_bytes());
+    }
+
+    let mut h = FNV_OFFSET;
+    mix_u64(&mut h, u64::from(state.turn_number));
+    mix_u64(&mut h, player_tag(state.current_player));
+    mix_u64(&mut h, player_tag(state.first_player));
+    mix_u64(
+        &mut h,
+        match state.phase {
+            types::Phase::Untap => 0,
+            types::Phase::Draw => 1,
+            types::Phase::WillGain => 2,
+            types::Phase::Main => 3,
+            types::Phase::End => 4,
+        },
+    );
+    mix_u64(&mut h, state.winner.map_or(2, player_tag));
+    mix_u64(&mut h, state.cards.len() as u64);
+    mix_u64(&mut h, state.log.len() as u64);
+    mix_u64(&mut h, u64::from(state.pending_attack.is_some()));
+    if let Some(pa) = &state.pending_attack {
+        mix(&mut h, pa.attacker_id.as_bytes());
+        mix(&mut h, pa.target_id.as_bytes());
+        mix_u64(&mut h, pa.raw_damage as i64 as u64);
+    }
+    // The tail of the log is what actually moves between two consecutive
+    // actions inside one turn, so it carries the entropy.
+    for entry in state.log.iter().rev().take(4) {
+        mix_u64(&mut h, u64::from(entry.turn));
+        mix_u64(&mut h, player_tag(entry.player));
+        mix(&mut h, entry.message.as_bytes());
+    }
+    for id in [PlayerId::Player1, PlayerId::Player2] {
+        let p = state.players.get(id);
+        mix_u64(&mut h, p.volonte as i64 as u64);
+        mix_u64(&mut h, p.hand.len() as u64);
+        mix_u64(&mut h, p.deck.len() as u64);
+        mix_u64(&mut h, p.graveyard.len() as u64);
+        mix_u64(&mut h, p.board.count() as u64);
+        mix_u64(&mut h, p.captain.current_pv as i64 as u64);
+        mix_u64(&mut h, u64::from(p.captain.flipped));
+    }
+    h
+}
+
+fn player_tag(id: PlayerId) -> u64 {
+    match id {
+        PlayerId::Player1 => 0,
+        PlayerId::Player2 => 1,
+    }
 }
 
 /// Apply one action with an explicit [`EngineContext`] — the faithful

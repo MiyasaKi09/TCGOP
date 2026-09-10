@@ -22,6 +22,12 @@
 //! is the `Date.now()` suffix of the Chopper transform modifier id, which comes
 //! from the injected [`EngineContext`].
 
+#![allow(clippy::collapsible_if)]
+// ^ The nested `if` / `if let` blocks in this module mirror the TypeScript
+// source branch for branch (see the per-function `PORT:` references). Merging
+// them into let-chains would break that 1:1 reading, which is the whole point
+// of the port, so the lint is turned off for this file only.
+
 use serde::{Deserialize, Serialize};
 
 use crate::board::{
@@ -32,7 +38,7 @@ use crate::context::EngineContext;
 use crate::error::EngineError;
 use crate::passives::apply_on_ko_effects;
 use crate::registry::CardRegistry;
-use crate::state::{GameState, PendingAttack};
+use crate::state::{GameState, PendingAttack, transactional};
 use crate::types::{
     AttackTrait, CardType, ConditionalBonus, CounterEffect, Element, HakiType, Modifier,
     ModifierDuration, ModifierStat, PassiveEffect, PlayerId, Slot, StatusEffect, StatusEffectType,
@@ -55,16 +61,23 @@ pub fn captain_attacker_id(player_id: PlayerId) -> String {
 /// TS `getAttackerOwner(state, attackerId)` — `src/engine/combat.ts:871`.
 ///
 /// `"captain_player1"` / `"captain_player2"` decode to their player; anything
-/// else is looked up in `state.cards`. TS throws `Attacker not found: {id}`.
+/// else is looked up in `state.cards`, and only *that* branch throws
+/// `Attacker not found: {id}`.
+///
+/// The captain branch is `attackerId.replace("captain_", "") as PlayerId` — an
+/// unchecked cast, so a synthetic id with any other suffix yields a bogus
+/// `PlayerId` string and resolution simply continues. Every consumer of the
+/// result either compares it against `"player1"` or funnels it through
+/// `getOpponent`, which is `playerId === "player1" ? "player2" : "player1"`
+/// (gameState.ts:473) — so a bogus suffix behaves exactly like the
+/// non-`player1` player. [`PlayerId::Player2`] is that value, and it is what
+/// this branch returns rather than raising an error TS never raises.
 pub fn get_attacker_owner(state: &GameState, attacker_id: &str) -> Result<PlayerId, EngineError> {
     if let Some(rest) = attacker_id.strip_prefix(CAPTAIN_ATTACKER_PREFIX) {
-        return match rest {
-            "player1" => Ok(PlayerId::Player1),
-            "player2" => Ok(PlayerId::Player2),
-            _ => Err(EngineError::illegal(format!(
-                "Attacker not found: {attacker_id}"
-            ))),
-        };
+        return Ok(match rest {
+            "player1" => PlayerId::Player1,
+            _ => PlayerId::Player2,
+        });
     }
     match state.cards.get(attacker_id) {
         Some(card) => Ok(card.owner),
@@ -78,43 +91,26 @@ pub fn get_attacker_owner(state: &GameState, attacker_id: &str) -> Result<Player
 // The `survivePlayed` flag
 // ============================================================
 
-/// Sentinel stored in `PendingAttack.pushback_slots` to carry the TS ad-hoc
-/// `survivePlayed` flag (see [`survive_played`]).
+/// TS `applyCounterSurvive` writes an **extra** property on
+/// `state.pendingAttack` — `(draft.pendingAttack as PendingAttack &
+/// { survivePlayed?: boolean }).survivePlayed = true` — which
+/// `applyCaptainDamage` / `applyCharacterDamage` read back to clamp the
+/// protected target to 1 PV; see `src/engine/combat.ts:585,907,948`.
 ///
-/// `pushbackSlots` is declared on the TS `PendingAttack` but the TS engine
-/// **never** writes or reads it on a pending attack (only `SpecialAttack`
-/// carries a meaningful `pushbackSlots`, and `declareSpecialAttack` folds it
-/// into `pending.pushback`), so the field is free real estate that dies with
-/// the pending attack exactly like the TS ad-hoc property does.
-const SURVIVE_PLAYED_MARKER: i32 = i32::MIN;
-
-/// TS `applyCounterSurvive` writes an **extra** field on `state.pendingAttack`
-/// (`(draft.pendingAttack as PendingAttack & { survivePlayed?: boolean })
-/// .survivePlayed = true`) which `applyCaptainDamage` / `applyCharacterDamage`
-/// read back — see `src/engine/combat.ts:552,648,881,918`.
-///
-/// `state::PendingAttack` has no such field, and `state.rs` is not owned by
-/// this module, so the flag is stored in the otherwise-dead
-/// `pushback_slots` slot ([`SURVIVE_PLAYED_MARKER`]). Should `state.rs` ever
-/// gain `#[serde(rename = "survivePlayed", default,
-/// skip_serializing_if = "Option::is_none")] pub survive_played: Option<bool>`,
-/// these two accessors are the only places to change.
+/// It is carried by [`PendingAttack::survive_played`], which serialises as
+/// `"survivePlayed"` just like the TS property.
 pub fn survive_played(state: &GameState) -> bool {
     state
         .pending_attack
         .as_ref()
-        .and_then(|p| p.pushback_slots)
-        .is_some_and(|v| v == SURVIVE_PLAYED_MARKER)
+        .and_then(|p| p.survive_played)
+        .unwrap_or(false)
 }
 
 /// Setter half of [`survive_played`].
 pub fn set_survive_played(state: &mut GameState, value: bool) {
     if let Some(pending) = state.pending_attack.as_mut() {
-        pending.pushback_slots = if value {
-            Some(SURVIVE_PLAYED_MARKER)
-        } else {
-            None
-        };
+        pending.survive_played = if value { Some(true) } else { None };
     }
 }
 
@@ -136,11 +132,11 @@ pub fn attacker_no_dodge(
         return Ok(false);
     };
     let def = registry.get_card_def(&card.def_id)?;
-    if def
-        .passive
-        .as_ref()
-        .is_some_and(|p| p.effects.iter().any(|e| matches!(e, PassiveEffect::NoDodge)))
-    {
+    if def.passive.as_ref().is_some_and(|p| {
+        p.effects
+            .iter()
+            .any(|e| matches!(e, PassiveEffect::NoDodge))
+    }) {
         return Ok(true);
     }
     for obj_id in &card.attached_objects {
@@ -308,7 +304,32 @@ fn trigger_attacker_trap(
 ///
 /// Errors: `Attacker not found`, `Attacker is tapped`, `Base action already used`,
 /// `Character has summoning sickness`, `Character has 0 ATK — cannot attack`.
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn declare_base_attack(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        declare_base_attack_inner(
+            state,
+            registry,
+            attacker_instance_id,
+            target_instance_id,
+            target_is_captain,
+        )
+    })
+}
+
+/// Body of [`declare_base_attack`], run inside [`transactional`].
+fn declare_base_attack_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     attacker_instance_id: &str,
@@ -410,6 +431,7 @@ pub fn declare_base_attack(
                 .unwrap_or(false)
                 || strips_stealth,
         ),
+        survive_played: None,
     };
 
     {
@@ -419,8 +441,7 @@ pub fn declare_base_attack(
         a.used_base_action = true;
         a.used_special_attack = true;
     }
-    let target_name =
-        target_display_name(state, registry, target_instance_id, target_is_captain)?;
+    let target_name = target_display_name(state, registry, target_instance_id, target_is_captain)?;
     state.pending_attack = Some(pending);
 
     state.add_log(
@@ -448,7 +469,34 @@ pub fn declare_base_attack(
 /// Errors: `Attacker not found`, `Special already used`,
 /// `Character has summoning sickness`, `Character has no special attack`,
 /// `Already used this ability (1x/game)`, `Cannot afford special (cost {n})`.
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn declare_special_attack(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &EngineContext,
+    attacker_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        declare_special_attack_inner(
+            state,
+            registry,
+            ctx,
+            attacker_instance_id,
+            target_instance_id,
+            target_is_captain,
+        )
+    })
+}
+
+/// Body of [`declare_special_attack`], run inside [`transactional`].
+fn declare_special_attack_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     ctx: &EngineContext,
@@ -607,6 +655,7 @@ pub fn declare_special_attack(
         pushback: Some(spec.pushback.unwrap_or(false) || spec.pushback_slots.unwrap_or(0) > 0),
         pushback_slots: None,
         strip_stealth: Some(spec.strip_stealth.unwrap_or(false) || strips_stealth),
+        survive_played: None,
     };
 
     {
@@ -619,8 +668,7 @@ pub fn declare_special_attack(
             a.used_once_abilities.push(spec.name.clone());
         }
     }
-    let target_name =
-        target_display_name(state, registry, target_instance_id, target_is_captain)?;
+    let target_name = target_display_name(state, registry, target_instance_id, target_is_captain)?;
     state.pending_attack = Some(pending);
 
     state.add_log(
@@ -645,7 +693,34 @@ pub fn declare_special_attack(
 /// `Fruit not awakened`, `Fruit has no awakening special attack`,
 /// `Already used this fruit ability (1x/game)`,
 /// `Cannot afford fruit special (cost {n})`.
+///
+/// Like the TS original this is **all-or-nothing**: the TS function threads a
+/// new immutable state through every step and only returns it once the last
+/// step succeeded, so a `throw` leaves the caller's state untouched. The body
+/// therefore runs inside [`transactional`], which restores the pre-call
+/// `GameState` when it fails.
 pub fn declare_fruit_special_attack(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+    fruit_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+) -> Result<(), EngineError> {
+    transactional(state, |state| {
+        declare_fruit_special_attack_inner(
+            state,
+            registry,
+            attacker_instance_id,
+            fruit_instance_id,
+            target_instance_id,
+            target_is_captain,
+        )
+    })
+}
+
+/// Body of [`declare_fruit_special_attack`], run inside [`transactional`].
+fn declare_fruit_special_attack_inner(
     state: &mut GameState,
     registry: &CardRegistry,
     attacker_instance_id: &str,
@@ -749,6 +824,7 @@ pub fn declare_fruit_special_attack(
         pushback: spec.pushback,
         pushback_slots: None,
         strip_stealth: spec.strip_stealth,
+        survive_played: None,
     };
 
     {
@@ -761,8 +837,7 @@ pub fn declare_fruit_special_attack(
             a.used_once_abilities.push(spec.name.clone());
         }
     }
-    let target_name =
-        target_display_name(state, registry, target_instance_id, target_is_captain)?;
+    let target_name = target_display_name(state, registry, target_instance_id, target_is_captain)?;
     state.pending_attack = Some(pending);
 
     state.add_log(
@@ -1242,12 +1317,7 @@ pub fn resolve_attack(
         if let Some(slot) = entry_target_slot {
             let opponent_id = get_attacker_owner(state, &pending.attacker_id)?.opponent();
             for adj_slot in get_adjacent_slots(slot) {
-                let adj_id = state
-                    .players
-                    .get(opponent_id)
-                    .board
-                    .get(*adj_slot)
-                    .cloned();
+                let adj_id = state.players.get(opponent_id).board.get(*adj_slot).cloned();
                 if let Some(adj_id) = adj_id {
                     let ko = state.cards.get(&adj_id).and_then(|c| {
                         if c.zone == Zone::Board && c.current_pv <= 0 {
@@ -1561,9 +1631,7 @@ pub fn apply_character_damage(
             state.get_card_mut(&pending.target_id)?.logia_used_this_turn = Some(true);
             state.add_log(
                 attacker_owner,
-                format!(
-                    "⚠ {target_name} : INTANGIBILITE LOGIA ! Utilisez le Haki (T7+) ou l'Eau."
-                ),
+                format!("⚠ {target_name} : INTANGIBILITE LOGIA ! Utilisez le Haki (T7+) ou l'Eau."),
             );
             return Ok(());
         }
@@ -1991,6 +2059,91 @@ mod tests {
         &state.log.last().unwrap().message
     }
 
+    // --- getAttackerOwner ---
+
+    #[test]
+    fn attacker_owner_never_throws_for_a_synthetic_captain_id() {
+        let (state, _reg) = setup();
+        assert_eq!(
+            get_attacker_owner(&state, "captain_player1"),
+            Ok(PlayerId::Player1)
+        );
+        assert_eq!(
+            get_attacker_owner(&state, "captain_player2"),
+            Ok(PlayerId::Player2)
+        );
+        // TS `attackerId.replace("captain_", "") as PlayerId` is unchecked: a
+        // bogus suffix is not "player1", so `getOpponent` resolves it to
+        // player1 and resolution simply continues — no throw.
+        let bogus = get_attacker_owner(&state, "captain_nobody").unwrap();
+        assert_eq!(bogus.opponent(), PlayerId::Player1);
+        // Only the non-captain branch throws.
+        assert_eq!(
+            get_attacker_owner(&state, "ghost").unwrap_err().to_string(),
+            "Attacker not found: ghost"
+        );
+    }
+
+    // --- survivePlayed ---
+
+    #[test]
+    fn survive_played_is_a_real_pending_attack_field_named_survive_played() {
+        let (mut state, _reg) = setup();
+        assert!(!survive_played(&state));
+        state.pending_attack = Some(PendingAttack {
+            attacker_id: "A".into(),
+            target_id: "T".into(),
+            target_is_captain: false,
+            is_special: false,
+            raw_damage: 3,
+            attack_power: None,
+            element: None,
+            attack_traits: Vec::new(),
+            has_haki: false,
+            ignore_shield: None,
+            cannot_be_dodged: None,
+            immobilize: None,
+            sleep: None,
+            pushback: None,
+            pushback_slots: None,
+            strip_stealth: None,
+            survive_played: None,
+        });
+        assert!(!survive_played(&state));
+        set_survive_played(&mut state, true);
+        assert!(survive_played(&state));
+        // The flag rides in its own field, not in `pushbackSlots`.
+        assert_eq!(state.pending_attack.as_ref().unwrap().pushback_slots, None);
+        let json = serde_json::to_string(state.pending_attack.as_ref().unwrap()).unwrap();
+        assert!(json.contains("\"survivePlayed\":true"), "{json}");
+        assert!(!json.contains("pushbackSlots"), "{json}");
+        // A TS-produced pending attack deserialises the flag back.
+        let round: PendingAttack = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.survive_played, Some(true));
+
+        set_survive_played(&mut state, false);
+        assert!(!survive_played(&state));
+    }
+
+    // --- declare* atomicity ---
+
+    #[test]
+    fn a_rejected_declaration_leaves_the_state_untouched() {
+        let (mut state, reg) = setup();
+        let attacker = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let before = state.clone();
+
+        // `targetDisplayName` fails on an unknown target id: TS builds a new
+        // state and throws before returning it, so nothing is committed.
+        let err = declare_base_attack(&mut state, &reg, &attacker, "ghost", false).unwrap_err();
+        assert_eq!(err.to_string(), "Instance not found: ghost");
+        assert_eq!(state, before);
+        assert!(!state.card(&attacker).unwrap().tapped);
+        assert!(!state.card(&attacker).unwrap().used_base_action);
+        assert!(!state.card(&attacker).unwrap().used_special_attack);
+        assert!(state.pending_attack.is_none());
+    }
+
     // --------------------------------------------------------
 
     #[test]
@@ -2222,10 +2375,12 @@ mod tests {
         assert_eq!(state.card(&normal).unwrap().zone, Zone::Graveyard);
         assert_eq!(state.card(&ghost).unwrap().current_pv, 4);
         assert_eq!(state.card(&ghost).unwrap().zone, Zone::Board);
-        assert!(state
-            .log
-            .iter()
-            .any(|l| l.message == "Voisin subit 6 degats (Zone/Total) (PV: -3)"));
+        assert!(
+            state
+                .log
+                .iter()
+                .any(|l| l.message == "Voisin subit 6 degats (Zone/Total) (PV: -3)")
+        );
     }
 
     #[test]
@@ -2244,8 +2399,9 @@ mod tests {
 
         assert_eq!(state.card(&tgt).unwrap().current_pv, 4);
         assert_eq!(state.card(&tgt).unwrap().logia_used_this_turn, Some(true));
-        assert!(state.log.iter().any(|l| l.message
-            == "⚠ Logia : INTANGIBILITE LOGIA ! Utilisez le Haki (T7+) ou l'Eau."));
+        assert!(state.log.iter().any(
+            |l| l.message == "⚠ Logia : INTANGIBILITE LOGIA ! Utilisez le Haki (T7+) ou l'Eau."
+        ));
     }
 
     #[test]
@@ -2266,10 +2422,12 @@ mod tests {
         resolve_attack(&mut state, &reg, &ctx).unwrap();
 
         assert_eq!(state.card(&atk).unwrap().current_pv, 6);
-        assert!(state
-            .log
-            .iter()
-            .any(|l| l.message == "Attaquant subit 2 dégâts (Épines) !"));
+        assert!(
+            state
+                .log
+                .iter()
+                .any(|l| l.message == "Attaquant subit 2 dégâts (Épines) !")
+        );
     }
 
     #[test]
@@ -2281,9 +2439,11 @@ mod tests {
         let cancel = give(&mut state, "X-CANCEL", PlayerId::Player2);
 
         // No pending attack yet.
-        assert!(get_eligible_counters(&state, &reg, PlayerId::Player2)
-            .unwrap()
-            .is_empty());
+        assert!(
+            get_eligible_counters(&state, &reg, PlayerId::Player2)
+                .unwrap()
+                .is_empty()
+        );
 
         declare_base_attack(&mut state, &reg, &atk, &tgt, false).unwrap();
         // attackPower 6 > maxAttackerAtk 4 → the cancel counter drops out.
