@@ -1365,7 +1365,7 @@ export function getValidActions(
     // to the captain wearing it, so the enumerator must see it too.
     if (player.captain.deployedTurn !== state.turnNumber || captainHasTraitNow(state, playerId, "rush")) {
       // Can attack — simplified: target any enemy front or captain.
-      // Decision §8.58 — une cible Inciblable est retiree ici aussi : sans ce
+      // Decision §8.61 — une cible Inciblable est retiree ici aussi : sans ce
       // filtre l'enumerateur proposait une attaque que `declareCaptainBaseAttack`
       // refusait ensuite, ce qui viole l'invariant §8.57 (« tout ce qui est
       // propose doit etre jouable »).

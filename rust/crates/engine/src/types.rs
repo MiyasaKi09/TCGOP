@@ -452,6 +452,15 @@ pub enum StatusEffectType {
     /// [`crate::board::get_valid_targets`] offers *only* that source.
     #[serde(rename = "taunt")]
     Taunt,
+    /// Decision §8.61 — "La cible devient Inciblable jusqu'a la fin du tour"
+    /// (`BW-026` Mirage du Desert). The counter used to be routed word for word
+    /// into [`crate::combat::apply_counter_cancel`], so the pending attack fell
+    /// and **nothing** was written on the target: a second attack in the same
+    /// turn landed at full price. Unlike Stealth this status has no "if
+    /// everyone is hidden, everyone is visible again" escape hatch — the
+    /// printed text is absolute — and it is purged when the turn changes.
+    #[serde(rename = "untargetable")]
+    Untargetable,
 }
 
 /// TS `CardInstance.zone: "deck" | "hand" | "board" | "graveyard" | "banished"`.

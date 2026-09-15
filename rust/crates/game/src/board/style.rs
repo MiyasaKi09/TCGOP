@@ -30,6 +30,7 @@ pub fn status_color(effect: StatusEffectType) -> Color {
         StatusEffectType::NoStealth => rgb(0x7F, 0xB0, 0xE8),
         StatusEffectType::NoHeal => rgb(0xFF, 0x8A, 0x80),
         StatusEffectType::Taunt => rgb(0xE8, 0x9A, 0x3C),
+        StatusEffectType::Untargetable => rgb(0xB9, 0x8C, 0xF0),
     }
 }
 

@@ -79,6 +79,10 @@ EquipObject {
 
 * `StatusEffectType::Taunt` (item 38, `"taunt"`) — the bearer must target `source` while that
   instance is a legal target.
+* `StatusEffectType::Untargetable` (item 61, `"untargetable"`) — the bearer cannot be chosen as
+  the target of an attack. Written by the `BW-026` counter, purged for both players at the next
+  `start_turn`. No Stealth-style "if everyone is hidden nobody is" fallback: the printed text
+  is absolute.
 * `SpecialAttack` gains structured fields `taunt: Option<bool>`, `cleanse: Option<bool>`,
   `buff_ally_atk: Option<i32>` (item 38/54) so the three text-only support specials
   (`RH-004` Provocation, `BW-007` Peinture de la Colère, `RH-006` Stimulant) stop being free-text.
@@ -152,6 +156,7 @@ EquipObject {
 | 60 | Log strings mix spellings and symbols | semantics | Preserve every existing log string byte-for-byte, accents, emoji and typographic characters included. New log lines added by the decisions above follow the *local* convention of the function they live in (e.g. unaccented `"Deplace …"` next to `"Deploie …"`, accented `"Déshydratation : …"` next to its siblings) and are listed in the tests that assert them. | Logs are compared in parity tests; consistency inside a function beats a global cleanup that would break every one of them. | all | Existing log assertions stay untouched; each new log line gets one exact-string assertion. | SKIP — **screening-review round:** no new log *shape* was introduced. The captain equip reuses `"Equipe {obj} sur {bearer}"` and `"{bearer} mange le {fruit} ! {description}"`, its awakening reuses `"⭐ EVEIL ! {bearer} eveille le {fruit} ! {description}"` and its fruit special reuses `"Capitaine {name} utilise {attack} sur {target} (ATK {a} vs DEF {d} = {r} degats)"` (§8.28 follow-up), and the non-support `healAmount` reuses the support form `"{name} utilise {attack} : +{healed} PV a {target}"` (§8.38(d)) — each asserted exactly in the tests named in those rows. One line was **removed**: `"{name} n'a plus de place dans son camp."`, written by the §8.37 homeless-loan fallback, which no row authorised. |
 
 ---
+| 61 | `CounterEffect::Untargetable` is an alias of `Cancel` | bug | `BW-026` Mirage du Désert prints "La cible devient Inciblable jusqu'à la fin du tour." but the counter was routed word for word into `apply_counter_cancel`: the pending attack fell and **nothing** was written on the target, so a second attack in the same turn landed at full price. The keyword had no representation at all — `StatusEffectType` had no member for it and `get_valid_targets` never consulted one. New `StatusEffectType::Untargetable` (serde `"untargetable"`), written by `apply_counter_cancel` on the target of the attack being countered (read before `pending_attack` is cleared), read by `get_valid_targets` — **without** the Stealth fallback, since the printed text is absolute — and purged for both players at `start_turn`, because the status is written during the attacker's turn and must fall with it. **Scope, deliberately narrow:** Untargetable removes the unit from *attack* targeting only; support actions, events and Haki keep their own target pools untouched, so no card outside the attack path changes behaviour. | Three UI surfaces already announced the effect (`announce.rs` "Devient inciblable.", the counter reveal, the card's own text) while the log said "attaque annulée" and no state moved: the engine contradicted its own interface in the same instant. Item 57 also required it — the enumerator was offering captain attacks the declaration would have had to refuse. | `types.rs`, `combat.rs`, `board.rs`, `state.rs`, `actions.rs`, `crates/game` | New: the second unhakied attack of the turn against a Mirage'd target is refused; the status is gone on the next turn. | **done** — how: `StatusEffectType::Untargetable`; `apply_counter_cancel` writes it and logs "… — la cible est Inciblable jusqu'à la fin du tour."; new `board::is_untargetable_now` / `captain_is_untargetable` / `assert_targetable`; new `combat::enforce_target_legality` chains Untargetable then Taunt and replaces `enforce_taunt` at all seven declaration sites (character base/special, fruit special, captain base/special/spec), since none of the `declare_*` functions cross-checked the target they were handed; `get_valid_targets` filters characters and clears `can_target_captain`; `state::start_turn` purges both sides; `actions::get_valid_actions` repeats the filter in the captain attack group, which builds its target list by hand. Mirrored in the TS engine (`src/engine/{board,combat,turnManager,gameState}.ts`, `src/types/index.ts`) plus the 🌫 badge in both clients. Test: `mirage_keeps_the_target_untargetable_for_the_whole_turn` (status written, second attack of the same turn refused by both the enumerator and the declaration, status gone after the turn change). |
 
 ## Grouping for implementation (by primary file)
 
@@ -159,7 +164,7 @@ EquipObject {
 |---|---|
 | `passives.rs` | 1, 2, 4, 7, 10 |
 | `fruits.rs` | 3 (+ the captain bearer of 28: `find_fruit_bearer` / `FruitBearer` / `apply_fruit_base_effects_on_captain` and the widened awakening) |
-| `board.rs` | 5, 9, 26, 27, 28, 29, 30, 31, 46, 47 (+ the targeting half of 37, 38; the shared `apply_permanent_pv_loss` / `apply_captain_permanent_pv_loss` of 36/38/40 and `move_attached_objects` of 29; `equip_object_on_captain` + `captain_equip_restriction_ok` + `attachments_grant_trait` / `attachments_granted_attack_traits` of the 28 follow-up) |
+| `board.rs` | 5, 9, 26, 27, 28, 29, 30, 31, 46, 47, 61 (+ the targeting half of 37, 38; the shared `apply_permanent_pv_loss` / `apply_captain_permanent_pv_loss` of 36/38/40 and `move_attached_objects` of 29; `equip_object_on_captain` + `captain_equip_restriction_ok` + `attachments_grant_trait` / `attachments_granted_attack_traits` of the 28 follow-up) |
 | `combat.rs` | 12, 13, 14, 15, 16, 18, 23, 38, 39, 55 (+ the counter screen of 57, the captain-element KO sweep of 40, the Sand element of 36, the awakening carrier of 38 × 48, the pushback half of 29) |
 | `captain.rs` | 6, 8 (skip), 32, 33, 34, 35, 40 (+ the entry-effect Sand of 36, the `rush` union of 40) |
 | `state.rs` | 17, 22, 24, 25, 37 (`return_loans`), 44, 45 (doc), 50, 51 (skip), 52 (skip) (+ the desiccation KO chain of 17, the loan-return half of 29) |
@@ -167,7 +172,7 @@ EquipObject {
 | `haki.rs` | 41, 42 |
 | `actions.rs` | 57 (+ generator halves of 28, 29, 31, 34, 37, 38) |
 | `ai.rs` | 19, 20, 56 (skip) |
-| `types.rs` | 46, 47, 48, 49 (skip) |
+| `types.rs` | 46, 47, 48, 49 (skip), 61 |
 | `registry.rs` | 53 (skip) |
 | `crates/game` | 21 (`ai_driver.rs`), 58 (skip), 59 (`vfx/announce.rs`), 28 follow-up (`selection.rs`, `board/model.rs` — the captain as an equip target) |
 | data (`cards/*.rs` + `src/data/cards/*.ts` + `src/types/index.ts`) | 38, 48, 54 |

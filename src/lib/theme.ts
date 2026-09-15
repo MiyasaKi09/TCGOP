@@ -134,7 +134,7 @@ export const STATUS_COLOR: Record<string, string> = {
   selfKO: "#E0463F",
   noStealth: "#7FB0E8",
   noHeal: "#FF8A80",
-  taunt: "#E8A33D",
+  taunt: "#E89A3C",
   untargetable: "#B98CF0",
 };
 

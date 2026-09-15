@@ -128,7 +128,7 @@ export function createInitialState(
 export function startTurn(state: GameState): GameState {
   let next = state;
 
-  // 0. Decision §8.58 — « Inciblable jusqu'a la fin du tour » (BW-026).
+  // 0. Decision §8.61 — « Inciblable jusqu'a la fin du tour » (BW-026).
   // Le statut est pose pendant le tour de l'attaquant ; il doit donc tomber
   // au changement de tour, des DEUX cotes (le defenseur qui l'a recu n'est
   // pas force d'etre le joueur qui commence). `processStartOfTurnEffects` ne

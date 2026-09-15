@@ -76,6 +76,7 @@ pub fn status_label(effect: StatusEffectType) -> &'static str {
         StatusEffectType::NoStealth => "Repéré",
         StatusEffectType::NoHeal => "Soins bloqués",
         StatusEffectType::Taunt => "Provoqué",
+        StatusEffectType::Untargetable => "Inciblable",
     }
 }
 

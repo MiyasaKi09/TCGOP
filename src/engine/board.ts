@@ -1034,7 +1034,7 @@ export function removeFromBoard(
  * - Captain (recto, off board) → targetable if no enemy Front
  */
 /**
- * Decision §8.58 — « Inciblable jusqu'a la fin du tour » (BW-026 Mirage du
+ * Decision §8.61 — « Inciblable jusqu'a la fin du tour » (BW-026 Mirage du
  * Desert).
  *
  * Le contre posait jusqu'ici la meme chose qu'une annulation seche : l'attaque
@@ -1136,7 +1136,7 @@ export function getValidTargets(
     targetable = targetable.filter((c) => !isStealthed(c));
   }
 
-  // Decision §8.58 — l'Inciblable retire la cible de la liste, sans la clause
+  // Decision §8.61 — l'Inciblable retire la cible de la liste, sans la clause
   // de secours du Furtif : si toute la ligne est Inciblable, il n'y a pas de
   // cible, et c'est exactement ce que la carte promet.
   targetable = targetable.filter((c) => !isUntargetableNow(state, c.instanceId));

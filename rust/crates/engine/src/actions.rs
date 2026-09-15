@@ -685,12 +685,26 @@ fn build_valid_actions(
         let has_rush =
             crate::captain::captain_has_trait_now(state, registry, player_id, Trait::Rush)?;
         if player.captain.deployed_turn != Some(i64::from(state.turn_number)) || has_rush {
+            // Decision §8.61 — the captain's attack groups build their target
+            // list by hand instead of going through `get_valid_targets`, so the
+            // Untargetable filter has to be repeated here; without it the
+            // enumerator offered an attack the declaration then refused, which
+            // breaks the "everything offered must be executable" invariant.
+            let cap_targetable = !crate::board::captain_is_untargetable(state, opponent_id);
+            let opp_chars: Vec<_> = opp_chars
+                .iter()
+                .filter(|c| !crate::board::is_untargetable_now(state, &c.instance_id))
+                .cloned()
+                .collect();
+
             // Can attack — simplified: target any enemy front or captain
-            actions.push(GameAction::CaptainAttack {
-                target_instance_id: captain_attacker_id(opponent_id),
-                target_is_captain: Some(true),
-                is_special: None,
-            });
+            if cap_targetable {
+                actions.push(GameAction::CaptainAttack {
+                    target_instance_id: captain_attacker_id(opponent_id),
+                    target_is_captain: Some(true),
+                    is_special: None,
+                });
+            }
             for opp in &opp_chars {
                 actions.push(GameAction::CaptainAttack {
                     target_instance_id: opp.instance_id.clone(),
@@ -708,11 +722,13 @@ fn build_valid_actions(
                 && !spec_once_used
                 && state.can_afford(player_id, spec.cost)
             {
-                actions.push(GameAction::CaptainAttack {
-                    target_instance_id: captain_attacker_id(opponent_id),
-                    target_is_captain: Some(true),
-                    is_special: Some(true),
-                });
+                if cap_targetable {
+                    actions.push(GameAction::CaptainAttack {
+                        target_instance_id: captain_attacker_id(opponent_id),
+                        target_is_captain: Some(true),
+                        is_special: Some(true),
+                    });
+                }
                 for opp in &opp_chars {
                     actions.push(GameAction::CaptainAttack {
                         target_instance_id: opp.instance_id.clone(),
@@ -754,12 +770,14 @@ fn build_valid_actions(
                 if !state.can_afford(player_id, fruit_spec.cost) {
                     continue;
                 }
-                actions.push(GameAction::FruitSpecialAttack {
-                    attacker_instance_id: captain_attacker_id(player_id),
-                    fruit_instance_id: obj_id.clone(),
-                    target_instance_id: captain_attacker_id(opponent_id),
-                    target_is_captain: Some(true),
-                });
+                if cap_targetable {
+                    actions.push(GameAction::FruitSpecialAttack {
+                        attacker_instance_id: captain_attacker_id(player_id),
+                        fruit_instance_id: obj_id.clone(),
+                        target_instance_id: captain_attacker_id(opponent_id),
+                        target_is_captain: Some(true),
+                    });
+                }
                 for opp in &opp_chars {
                     actions.push(GameAction::FruitSpecialAttack {
                         attacker_instance_id: captain_attacker_id(player_id),
@@ -779,10 +797,12 @@ fn build_valid_actions(
                     && !once_used
                     && state.can_afford(player_id, surcharge.cost)
                 {
-                    actions.push(GameAction::UseSurcharge {
-                        target_instance_id: captain_attacker_id(opponent_id),
-                        target_is_captain: Some(true),
-                    });
+                    if cap_targetable {
+                        actions.push(GameAction::UseSurcharge {
+                            target_instance_id: captain_attacker_id(opponent_id),
+                            target_is_captain: Some(true),
+                        });
+                    }
                     for opp in &opp_chars {
                         actions.push(GameAction::UseSurcharge {
                             target_instance_id: opp.instance_id.clone(),

@@ -1651,6 +1651,50 @@ pub enum ValidTarget {
 /// Stealth units drop out while any non-Stealth (or `noStealth`-tagged) target
 /// remains. A flipped captain is targetable like a character; a recto captain
 /// only while the defender has zero board characters.
+/// Decision §8.61 — "Inciblable jusqu'a la fin du tour" (`BW-026` Mirage du
+/// Desert). Mirror of the TS `board::isUntargetableNow`.
+pub fn is_untargetable_now(state: &GameState, instance_id: &str) -> bool {
+    state
+        .cards
+        .get(instance_id)
+        .is_some_and(|c| c.has_status(StatusEffectType::Untargetable))
+}
+
+/// Same test for a captain, whose statuses live on `player.captain` rather than
+/// in `state.cards`. Mirror of the TS `board::captainIsUntargetable`.
+pub fn captain_is_untargetable(state: &GameState, player_id: PlayerId) -> bool {
+    state
+        .players
+        .get(player_id)
+        .captain
+        .status_effects
+        .iter()
+        .any(|e| e.effect_type == StatusEffectType::Untargetable)
+}
+
+/// Declaration guard. [`get_valid_targets`] is enough for the client and the
+/// AI, which both go through `get_valid_actions`; but the `declare_*` functions
+/// never cross-checked the target they were handed, so a direct engine call
+/// went around the filter. Mirror of the TS `board::assertTargetable`.
+pub fn assert_targetable(
+    state: &GameState,
+    defender_id: PlayerId,
+    target_instance_id: &str,
+    target_is_captain: bool,
+) -> Result<(), EngineError> {
+    let hidden = if target_is_captain {
+        captain_is_untargetable(state, defender_id)
+    } else {
+        is_untargetable_now(state, target_instance_id)
+    };
+    if hidden {
+        return Err(EngineError::illegal(
+            "La cible est Inciblable jusqu'a la fin du tour",
+        ));
+    }
+    Ok(())
+}
+
 pub fn get_valid_targets(
     state: &GameState,
     registry: &CardRegistry,
@@ -1756,6 +1800,11 @@ pub fn get_valid_targets(
             .collect();
     }
 
+    // Decision §8.61 — Untargetable removes the unit outright, without the
+    // Stealth fallback: if the whole line is Untargetable there is no target,
+    // which is exactly what the card promises.
+    targetable.retain(|id| !is_untargetable_now(state, id));
+
     // Can target captain?
     let opponent = state.players.get(opponent_id);
     let mut can_target_captain = false;
@@ -1776,6 +1825,10 @@ pub fn get_valid_targets(
         // on the board — the crew is wiped (Rulebook v3.1 §2.1). Re-protected as soon as
         // any ally returns to the board.
         can_target_captain = opponent_chars.is_empty();
+    }
+
+    if can_target_captain && captain_is_untargetable(state, opponent_id) {
+        can_target_captain = false;
     }
 
     // Decision §8.38 — Provocation (`RH-004`) / Peinture de la Colère

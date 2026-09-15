@@ -1118,6 +1118,26 @@ impl GameState {
         registry: &CardRegistry,
         ctx: &EngineContext,
     ) -> Result<(), EngineError> {
+        // 0. Decision §8.61 — "Inciblable jusqu'a la fin du tour" (`BW-026`).
+        // The status is written during the attacker's turn, so it must fall
+        // when the turn changes, on BOTH sides (the defender that received it
+        // is not necessarily the player starting). `process_start_of_turn_effects`
+        // only sweeps the active player, hence this dedicated pass.
+        for pid in [PlayerId::Player1, PlayerId::Player2] {
+            let ids: Vec<String> = self.board_ids(pid);
+            self.players
+                .get_mut(pid)
+                .captain
+                .status_effects
+                .retain(|e| e.effect_type != StatusEffectType::Untargetable);
+            for id in &ids {
+                if let Some(card) = self.cards.get_mut(id) {
+                    card.status_effects
+                        .retain(|e| e.effect_type != StatusEffectType::Untargetable);
+                }
+            }
+        }
+
         // 1. Untap all characters
         self.untap_all();
 

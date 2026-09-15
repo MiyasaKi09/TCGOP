@@ -474,6 +474,42 @@ pub(crate) fn enforce_taunt(
     )))
 }
 
+/// Decision §8.61 — single target-legality guard at declaration time.
+///
+/// [`crate::board::get_valid_targets`] decides what the client and the AI *may*
+/// offer, but none of the `declare_*` functions cross-checked the target they
+/// were handed: a direct engine call went around it. The two bindings that take
+/// a target away are chained here — Untargetable (`BW-026`) then Taunt (§8.38).
+///
+/// TS: `combat::enforceTargetLegality`.
+pub(crate) fn enforce_target_legality(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+    for_special: bool,
+) -> Result<(), EngineError> {
+    let attacker_side = match state.cards.get(attacker_instance_id) {
+        Some(a) => a.controller(),
+        None => get_attacker_owner(state, attacker_instance_id)?,
+    };
+    crate::board::assert_targetable(
+        state,
+        attacker_side.opponent(),
+        target_instance_id,
+        target_is_captain,
+    )?;
+    enforce_taunt(
+        state,
+        registry,
+        attacker_instance_id,
+        target_instance_id,
+        target_is_captain,
+        for_special,
+    )
+}
+
 /// TS `declareBaseAttack(state, attackerInstanceId, targetInstanceId, targetIsCaptain)`
 /// — `src/engine/combat.ts:73`.
 ///
@@ -552,7 +588,7 @@ fn declare_base_attack_inner(
 
     // Decision §8.38: the printed taunt binds the executor too, and it is
     // checked before the trap so a refused declaration cannot eat it (§8.12).
-    enforce_taunt(
+    enforce_target_legality(
         state,
         registry,
         attacker_instance_id,
@@ -779,7 +815,7 @@ fn declare_special_attack_inner(
     // (§8.12).
     if spec.transform.is_none() && (!spec.is_support.unwrap_or(false) || support_hits_enemy(&spec))
     {
-        enforce_taunt(
+        enforce_target_legality(
             state,
             registry,
             attacker_instance_id,
@@ -1389,7 +1425,7 @@ fn declare_captain_fruit_special_attack_inner(
 
     // Decision §8.38: every declaration path is bound by a taunt (inert while
     // nothing in the catalogue can taunt a captain).
-    enforce_taunt(
+    enforce_target_legality(
         state,
         registry,
         &captain_attacker_id(owner),
@@ -1556,7 +1592,7 @@ fn declare_fruit_special_attack_inner(
 
     // Decision §8.38: the awakened special is an attack like any other, so the
     // taunt binds it too.
-    enforce_taunt(
+    enforce_target_legality(
         state,
         registry,
         attacker_instance_id,
@@ -1811,10 +1847,55 @@ pub fn apply_counter_cancel(
         }
     }
 
+    // Decision §8.61 — read BEFORE `pending_attack` is cleared: the target of
+    // the attack being countered is the one that becomes Untargetable.
+    let protected = match &ce {
+        CounterEffect::Untargetable { .. } => state
+            .pending_attack
+            .as_ref()
+            .map(|p| (p.target_id.clone(), p.target_is_captain)),
+        _ => None,
+    };
+
     state.spend_volonte(owner, cdef_cost)?;
     discard_counter(state, owner, counter_instance_id);
     state.pending_attack = None;
-    state.add_log(owner, format!("{cdef_name} : attaque annulée !"));
+
+    // Decision §8.61 — until now this arm was indistinguishable from `Cancel`:
+    // the attack fell and the target kept no trace, so the next attack of the
+    // same turn hit it. A real status is written, purged when the turn changes.
+    if let Some((target_id, target_is_captain)) = protected {
+        let effect = StatusEffect {
+            effect_type: StatusEffectType::Untargetable,
+            turns_remaining: 1,
+            damage_per_turn: 0,
+            source: counter_instance_id.to_string(),
+        };
+        let statuses = if target_is_captain {
+            Some(&mut state.players.get_mut(owner).captain.status_effects)
+        } else {
+            state
+                .cards
+                .get_mut(&target_id)
+                .map(|c| &mut c.status_effects)
+        };
+        if let Some(statuses) = statuses {
+            if !statuses
+                .iter()
+                .any(|e| e.effect_type == StatusEffectType::Untargetable)
+            {
+                statuses.push(effect);
+            }
+        }
+        state.add_log(
+            owner,
+            format!(
+                "{cdef_name} : attaque annulée — la cible est Inciblable jusqu'à la fin du tour."
+            ),
+        );
+    } else {
+        state.add_log(owner, format!("{cdef_name} : attaque annulée !"));
+    }
 
     // TS truthiness: a `selfCaptainDamage` of 0 is falsy and is skipped entirely.
     if let Some(damage) = self_captain_damage.filter(|d| *d != 0) {
@@ -3086,6 +3167,15 @@ mod tests {
                     once: None,
                 },
             ),
+            // Decision §8.61 — the `BW-026` Mirage du Desert shape.
+            counter(
+                "X-UNTARGET",
+                "Mirage",
+                1,
+                CounterEffect::Untargetable {
+                    description: "La cible devient Inciblable jusqu'à la fin du tour.".to_string(),
+                },
+            ),
         ]);
 
         let state = GameState {
@@ -3666,6 +3756,76 @@ mod tests {
                 .iter()
                 .any(|l| l.message == "Attaquant subit 2 dégâts (Épines) !")
         );
+    }
+
+    /// Decision §8.61 — the scenario the player reported: the counter held for
+    /// the first attack and the next one of the SAME turn landed. Before the
+    /// fix `Untargetable` was routed word for word into `apply_counter_cancel`,
+    /// so nothing was written on the target.
+    #[test]
+    fn mirage_keeps_the_target_untargetable_for_the_whole_turn() {
+        let (mut state, reg) = setup();
+        let a1 = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let a2 = place(&mut state, &reg, "C-ADJ", PlayerId::Player1, Slot::V2);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        let mirage = give(&mut state, "X-UNTARGET", PlayerId::Player2);
+        state.players.get_mut(PlayerId::Player2).volonte = 10;
+        let pv_before = state.card(&tgt).unwrap().current_pv;
+
+        // 1) First attack, countered by Mirage.
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &a1,
+            &tgt,
+            false,
+        )
+        .unwrap();
+        apply_counter_cancel(&mut state, &reg, &mirage).unwrap();
+        assert!(state.pending_attack.is_none());
+        assert!(
+            state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::Untargetable),
+            "the counter must write a durable status, not just clear the attack"
+        );
+        assert_eq!(state.card(&tgt).unwrap().current_pv, pv_before);
+
+        // 2) Second attack, SAME turn — no longer a legal target anywhere.
+        let legal = crate::board::get_valid_targets(&state, &reg, &a2, false).unwrap();
+        assert!(
+            !legal.character_targets.contains(&tgt),
+            "get_valid_targets must drop an Untargetable unit"
+        );
+        assert_eq!(
+            declare_base_attack(
+                &mut state,
+                &reg,
+                &EngineContext::seeded(1),
+                &a2,
+                &tgt,
+                false,
+            )
+            .unwrap_err(),
+            EngineError::illegal("La cible est Inciblable jusqu'a la fin du tour"),
+            "the declaration guard must refuse it even on a direct engine call"
+        );
+        assert_eq!(state.card(&tgt).unwrap().current_pv, pv_before);
+
+        // 3) Turn change — the status falls with the turn that saw it written.
+        state.current_player = PlayerId::Player2;
+        state.turn_number += 1;
+        state.start_turn(&reg, &EngineContext::seeded(1)).unwrap();
+        assert!(
+            !state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::Untargetable)
+        );
+        let legal = crate::board::get_valid_targets(&state, &reg, &a1, false).unwrap();
+        assert!(legal.character_targets.contains(&tgt));
     }
 
     #[test]

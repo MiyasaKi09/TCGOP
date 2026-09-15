@@ -646,7 +646,7 @@ pub fn declare_captain_base_attack(
     // No shipped effect can taunt a captain (`resolve_support_special`, the
     // only writer of the status, targets a card instance), so this is the
     // rule stated once and for all rather than a live clause.
-    crate::combat::enforce_taunt(
+    crate::combat::enforce_target_legality(
         state,
         registry,
         &crate::combat::captain_attacker_id(player_id),
@@ -980,7 +980,7 @@ fn declare_captain_spec_attack(
 
     // Decision §8.38 — the taunt binds the captain's special too (see
     // `declare_captain_base_attack`: inert while nothing can taunt a captain).
-    crate::combat::enforce_taunt(
+    crate::combat::enforce_target_legality(
         state,
         registry,
         &crate::combat::captain_attacker_id(player_id),

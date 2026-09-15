@@ -154,7 +154,7 @@ export function enforceTaunt(
 }
 
 /**
- * Decision §8.58 — garde unique de legalite de cible a la declaration.
+ * Decision §8.61 — garde unique de legalite de cible a la declaration.
  *
  * `getValidTargets` decide ce que l'interface et l'IA PEUVENT proposer, mais
  * aucune des fonctions `declare*` ne recoupait la cible recue : un appel direct
@@ -977,7 +977,7 @@ export function applyCounterCancel(state: GameState, counterInstanceId: string):
   }
 
   // Lu AVANT que le `produce` ne vide `pendingAttack` : c'est la cible de
-  // l'attaque en cours qui devient Inciblable (decision §8.58).
+  // l'attaque en cours qui devient Inciblable (decision §8.61).
   const protectedTarget = ce.type === "untargetable"
     ? { id: state.pendingAttack.targetId, isCaptain: state.pendingAttack.targetIsCaptain }
     : null;
@@ -990,7 +990,7 @@ export function applyCounterCancel(state: GameState, counterInstanceId: string):
     p.graveyard.push(counterInstanceId);
     draft.pendingAttack = null;
 
-    // Decision §8.58 — jusqu'ici le bras `untargetable` ne se distinguait en
+    // Decision §8.61 — jusqu'ici le bras `untargetable` ne se distinguait en
     // rien d'un `cancel` : l'attaque tombait et la cible ne gardait aucune
     // trace, donc la deuxieme attaque du meme tour la touchait. On pose
     // maintenant un vrai statut, purge au debut du tour suivant.
