@@ -25,6 +25,7 @@ import {
 } from "./board";
 import { spendVolonte, canAfford, grantKOBonus } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
+import { defHasNaturalHaki } from "./haki";
 
 // ============================================================
 // Step 1: Declare Attack
@@ -354,7 +355,7 @@ export function declareBaseAttack(
 
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) ||
+    defHasNaturalHaki(def) ||
     state.turnNumber >= 7 ||
     attackElement === "water" ||
     !!state.players[attacker.owner].hakiThisTurn;
@@ -523,7 +524,7 @@ export function declareSpecialAttack(
 
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) ||
+    defHasNaturalHaki(def) ||
     state.turnNumber >= 7 ||
     spec.element === "water" ||
     !!state.players[attacker.owner].hakiThisTurn;
@@ -634,7 +635,7 @@ export function declareFruitSpecialAttack(
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) || next.turnNumber >= 7 || spec.element === "water";
+    defHasNaturalHaki(def) || next.turnNumber >= 7 || spec.element === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,

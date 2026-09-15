@@ -1,5 +1,5 @@
 import { produce } from "immer";
-import type { GameState, PlayerId, HakiType } from "@/types";
+import type { GameState, PlayerId, HakiType, CardDef } from "@/types";
 import { addLog, getOpponent } from "./gameState";
 import { getBoardCharacters, getEffectiveDef, removeFromBoard } from "./board";
 import { getCaptainDef } from "./cardRegistry";
@@ -99,6 +99,19 @@ export function getHakiStatus(state: GameState, playerId: PlayerId): HakiStatus[
       blockedReason,
     };
   });
+}
+
+/**
+ * Decision §8.42 — both `naturalHaki` forms are honoured: the `CardDef.naturalHaki`
+ * array **and** the `PassiveEffect { type: "naturalHaki" }` passive. The two
+ * shipped carriers (MR-002 Garde du Corps, MR-004 Poing de Garp, RH-002 Haki
+ * d'Équipage) declare both, so reading the passive is inert on the shipped
+ * catalogue and only removes a trap for future cards.
+ * Rust: `haki::def_has_natural_haki`.
+ */
+export function defHasNaturalHaki(def: CardDef): boolean {
+  if (def.naturalHaki && def.naturalHaki.length > 0) return true;
+  return def.passive?.effects.some((e) => e.type === "naturalHaki") ?? false;
 }
 
 /** Check if a Haki type is available this turn */
