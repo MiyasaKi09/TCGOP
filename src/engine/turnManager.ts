@@ -27,6 +27,9 @@ import {
   hasFreeObjectSlot,
   captainEquipRestrictionOk,
   captainHasFreeObjectSlot,
+  controllerOf,
+  isEmbargoed,
+  moveAttachedObjectsInDraft,
 } from "./board";
 import {
   declareBaseAttack,
@@ -54,6 +57,13 @@ import {
 import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
 import { produce } from "immer";
 
+/** Decision §8.37 — the refusal an embargoed player gets on `equipObject`.
+ *  Rust: `execute::EMBARGO_EQUIP`. */
+export const EMBARGO_EQUIP = "Embargo: cannot equip an object this turn";
+/** Decision §8.37 — the refusal an embargoed player gets on `deployShip`.
+ *  Rust: `execute::EMBARGO_SHIP`. */
+export const EMBARGO_SHIP = "Embargo: cannot deploy a ship this turn";
+
 // ============================================================
 // Execute a game action — single entry point for all mutations
 // ============================================================
@@ -70,6 +80,11 @@ export function executeAction(
       return deployCharacter(state, state.currentPlayer, action.instanceId, action.slot);
 
     case "equipObject":
+      // Decision §8.37 (`embargo`, MR-027) : « L'adversaire ne peut ni équiper
+      // ni jouer de Navire à son prochain tour. »
+      if (isEmbargoed(state, state.currentPlayer)) {
+        throw new Error(EMBARGO_EQUIP);
+      }
       // Decision §8.28 (follow-up): `targetIsCaptain` routes the equip to the
       // player's own captain, the printed bearer of the three signature SR
       // Devil Fruits ("Équipable sur Luffy / Crocodile / Akainu").
@@ -82,6 +97,10 @@ export function executeAction(
       );
 
     case "deployShip":
+      // Decision §8.37 (`embargo`, MR-027).
+      if (isEmbargoed(state, state.currentPlayer)) {
+        throw new Error(EMBARGO_SHIP);
+      }
       return deployShip(state, state.currentPlayer, action.instanceId);
 
     case "baseAttack":
@@ -502,14 +521,100 @@ function resolveEventEffect(
             next = sweepKOs(next, opponentId, playerId);
           }
         }
+      } else if (effect.id === "embargo") {
+        // Decision §8.37 — `MR-027` : « L'adversaire ne peut ni équiper ni
+        // jouer de Navire à son prochain tour. » Un tour, le sien.
+        next = produce(next, (draft) => {
+          draft.players[opponentId].embargoTurns = 1;
+        });
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
+      } else if (effect.id === "noHeal2") {
+        // Decision §8.37 — `BW-028` : « Persistant (2 tours) : les ennemis ne
+        // peuvent pas être soignés. » Tous les chemins de soin sautent déjà une
+        // unité `noHeal` (§8.5). Un statut ne se décrémente que sur les tours de
+        // son porteur : `turnsRemaining: 2` couvre la fin de ce tour plus le
+        // prochain tour adverse. Une unité déjà sous la pluie voit son compteur
+        // rafraîchi, jamais cumulé.
+        next = produce(next, (draft) => {
+          for (const slot of Object.values(draft.players[opponentId].board)) {
+            if (!slot) continue;
+            const c = draft.cards[slot];
+            if (!c) continue;
+            const existing = c.statusEffects.find((e) => e.type === "noHeal");
+            if (existing) existing.turnsRemaining = Math.max(existing.turnsRemaining, 2);
+            else c.statusEffects.push({ type: "noHeal", turnsRemaining: 2, damagePerTurn: 0, source: cardName });
+          }
+        });
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
+      } else if (effect.id === "betrayal") {
+        // Decision §8.37 — `BW-024` : « Prenez le contrôle d'un ennemi de coût
+        // ≤ 2 ce tour. » L'interface n'envoie jamais de `targets`, donc la
+        // convention du moteur choisit l'ennemi légal le plus fort.
+        next = takeControlForTheTurn(next, playerId, cardName);
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
       } else {
-        // embargo / betrayal / noHeal2 — flavour-logged (not yet enforced).
+        // Decision §8.37 : un id hors des six légaux garde le journal d'ambiance.
         next = addLog(next, playerId, `${cardName} : ${effect.description}`);
       }
       break;
     }
   }
 
+  return next;
+}
+
+/**
+ * Decision §8.37 (`betrayal`, `BW-024`) — emprunte pour ce tour l'ennemi dont
+ * l'ATK effective est la plus haute parmi ceux dont le coût **imprimé** est ≤ 2.
+ *
+ * Le corps passe dans le premier slot libre du plateau de l'emprunteur avec
+ * `controlledBy = emprunteur` et `loanReturnSlot = <le slot quitté>`, dégagé et
+ * les deux drapeaux d'action remis à zéro : il peut agir tout de suite pour son
+ * nouveau camp. `owner` n'est délibérément pas touché — bonus de KO, cimetière
+ * et condition de victoire continuent de désigner le joueur qui a payé la carte.
+ * `endTurn` le ramène chez lui. Rust: `execute::take_control_for_the_turn`.
+ */
+function takeControlForTheTurn(
+  state: GameState,
+  playerId: PlayerId,
+  cardName: string
+): GameState {
+  const opponentId = getOpponent(playerId);
+  let best: string | null = null;
+  for (const c of getBoardCharacters(state, opponentId)) {
+    if (getCardDef(c.defId).cost > 2) continue;
+    if (best === null || getEffectiveAtk(state, c.instanceId) > getEffectiveAtk(state, best)) {
+      best = c.instanceId;
+    }
+  }
+  if (!best) return state;
+  const targetId = best;
+  const home = state.cards[targetId].slot;
+  if (!home) return state;
+  const dest = getEmptySlots(state, playerId)[0];
+  if (!dest) return state;
+
+  let next = produce(state, (draft) => {
+    draft.players[opponentId].board[home] = null;
+    draft.players[playerId].board[dest] = targetId;
+    const c = draft.cards[targetId];
+    c.slot = dest;
+    c.controlledBy = playerId;
+    c.loanReturnSlot = home;
+    c.tapped = false;
+    c.usedBaseAction = false;
+    c.usedSpecialAttack = false;
+    // Decision §8.29 : l'équipement suit son porteur — le prêt déplace le corps
+    // vers une autre case (d'un autre plateau), ses attachements suivent.
+    moveAttachedObjectsInDraft(draft, c.attachedObjects, dest);
+  });
+
+  next = addLog(next, playerId, `${cardName} : ${getCardDef(next.cards[targetId].defId).name} change de camp !`);
+
+  const { recalculatePassiveBuffs, applyEnemyDebuffAuras } = require("./passives");
+  next = recalculatePassiveBuffs(next, playerId);
+  next = recalculatePassiveBuffs(next, opponentId);
+  next = applyEnemyDebuffAuras(next);
   return next;
 }
 
@@ -739,7 +844,9 @@ function executeSupportAction(
 ): GameState {
   const card = state.cards[instanceId];
   if (!card) throw new Error("Card not found");
-  if (card.owner !== playerId) throw new Error("Not your card");
+  // Decision §8.37 (`betrayal`) : un corps emprunte agit pour son emprunteur —
+  // `controllerOf` vaut `owner` pour toute carte qui n'est pas en pret.
+  if (controllerOf(card) !== playerId) throw new Error("Not your card");
   if (card.tapped || card.usedBaseAction) throw new Error("Action already used");
 
   const def = getCardDef(card.defId);
@@ -964,10 +1071,15 @@ export function getValidActions(
   }
 
   // Deploy ships from hand
+  // Decision §8.37 (`embargo`, MR-027) × §8.57 : `executeAction` refuse
+  // `deployShip` et `equipObject` tant que le bannissement dure, donc aucun des
+  // deux n'est proposé — tout ce qui est proposé doit être exécutable.
+  const embargoed = isEmbargoed(state, playerId);
   for (const cardId of player.hand) {
     const card = state.cards[cardId];
     const def = getCardDef(card.defId);
     if (def.type === "ship" && canAfford(state, playerId, def.cost)) {
+      if (embargoed) continue;
       actions.push({ type: "deployShip", instanceId: cardId });
     }
   }
@@ -978,7 +1090,16 @@ export function getValidActions(
     const card = state.cards[cardId];
     const def = getCardDef(card.defId);
     if (def.type === "object" && canAfford(state, playerId, def.cost)) {
+      // Decision §8.37 (`embargo`, MR-027).
+      if (embargoed) continue;
       for (const target of boardChars) {
+        // Decision §8.57 × §8.37 (`betrayal`) : `boardChars` lit des *cases* de
+        // plateau, qui pendant un prêt abritent aussi un corps ennemi emprunté.
+        // Un objet est un attachement permanent — il repartirait avec le corps à
+        // la fin du tour — donc, à la différence des actions de contrôle
+        // (attaque, déplacement, soutien), l'équipement reste réservé aux
+        // personnages que l'on *possède*, ce que `equipObject` impose déjà.
+        if (target.owner !== playerId) continue;
         // Decision §8.28 × §8.57: only the pairs `equipObject` would accept —
         // a character that satisfies the printed restriction and still has a
         // free slot of that subtype. Everything offered must be executable.

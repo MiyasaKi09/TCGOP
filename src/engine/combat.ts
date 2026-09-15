@@ -22,6 +22,9 @@ import {
   healUnit,
   applyPermanentPvLoss,
   applyCaptainPermanentPvLoss,
+  controllerOf,
+  grantedAttackTraits,
+  attachmentsGrantedAttackTraits,
 } from "./board";
 import { spendVolonte, canAfford, grantKOBonus } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
@@ -137,7 +140,7 @@ export function enforceTaunt(
       .map((e) => e.source)
       .find((src) => {
         const c = state.cards[src];
-        return !!c && c.zone === "board" && c.owner !== owner;
+        return !!c && c.zone === "board" && controllerOf(c) !== owner;
       });
   }
   if (bound === undefined) return;
@@ -178,7 +181,9 @@ function resolveSupportSpecial(
   // Decision §8.38 — the audience split is part of the printed rule, so the
   // executor enforces it and not just the enumerator.
   if (needsTarget) {
-    const targetSide = targetCard ? targetCard.owner : owner;
+    // Decision §8.37 (`betrayal`): a borrowed body counts as an ally of its
+    // borrower for the turn, which is what `getValidActions` enumerates too.
+    const targetSide = targetCard ? controllerOf(targetCard) : owner;
     // Same precedence as `getValidActions`: a special carrying both audiences
     // (none shipped does) is enumerated against the enemy.
     if (supportHitsEnemy(spec)) {
@@ -316,9 +321,17 @@ export function declareBaseAttack(
     }
   }
 
+  // Decision §8.37 (`betrayal`): a borrowed body attacks for whoever controls
+  // it this turn; `controllerOf` is `owner` for every card that is not on loan.
+  const actingOwner = controllerOf(attacker);
   const baseAction = def.baseAction;
   const atk = getEffectiveAtk(state, attackerInstanceId);
-  const attackTraits: AttackTrait[] = baseAction?.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = [...(baseAction?.attackTraits ?? [])];
+  // Decision §8.47 : le bras `AttackTrait` du `grantsTraits` d'un objet porté
+  // rejoint chaque attaque déclarée par son porteur.
+  for (const at of grantedAttackTraits(state, attackerInstanceId)) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   // Check equipped objects for granted element (e.g. Baril d'Eau grants "water")
   let attackElement = baseAction?.element;
@@ -335,7 +348,7 @@ export function declareBaseAttack(
   // Calculate raw damage against target
   let targetDef = 0;
   if (targetIsCaptain) {
-    const opponent = getOpponent(attacker.owner);
+    const opponent = getOpponent(actingOwner);
     const cap = state.players[opponent].captain;
     const capDef = getCaptainDef(cap.defId);
     targetDef = cap.flipped ? capDef.verso.def : capDef.recto.def;
@@ -362,7 +375,7 @@ export function declareBaseAttack(
     defHasNaturalHaki(def) ||
     state.turnNumber >= 7 ||
     attackElement === "water" ||
-    !!state.players[attacker.owner].hakiThisTurn;
+    !!state.players[actingOwner].hakiThisTurn;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -392,7 +405,7 @@ export function declareBaseAttack(
     : getCardDef(state.cards[targetInstanceId].defId).name;
   next = addLog(
     next,
-    attacker.owner,
+    actingOwner,
     `${def.name} attaque ${targetName} (ATK ${atk} vs DEF ${targetDef} = ${rawDamage} degats)`
   );
 
@@ -452,19 +465,23 @@ export function declareSpecialAttack(
   const spec = def.specialAttack;
   if (!spec) throw new Error("Character has no special attack");
 
+  // Decision §8.37 (`betrayal`): a borrowed body attacks — and pays — for
+  // whoever controls it this turn; `controllerOf` is `owner` off loan.
+  const actingOwner = controllerOf(attacker);
+
   // Check 1x/game
   if (spec.oncePerGame && attacker.usedOnceAbilities.includes(spec.name)) {
     throw new Error("Already used this ability (1x/game)");
   }
 
-  if (!canAfford(state, attacker.owner, spec.cost)) {
+  if (!canAfford(state, actingOwner, spec.cost)) {
     throw new Error(`Cannot afford special (cost ${spec.cost})`);
   }
 
   // Self-transformation special (Chopper Monster Point): no target, no pending attack.
   if (spec.transform) {
     const t = spec.transform;
-    let tnext = spendVolonte(state, attacker.owner, spec.cost);
+    let tnext = spendVolonte(state, actingOwner, spec.cost);
     const curAtk = getEffectiveAtk(tnext, attackerInstanceId);
     tnext = produce(tnext, (draft) => {
       const c = draft.cards[attackerInstanceId];
@@ -480,27 +497,31 @@ export function declareSpecialAttack(
       // Self-KO countdown — KO'd after `turns` of the owner's turns (no Vol to opponent).
       c.statusEffects.push({ type: "selfKO", turnsRemaining: t.turns, damagePerTurn: 0, source: spec.name });
     });
-    return addLog(tnext, attacker.owner, `${def.name} : ${spec.name} ! ATK ${t.atk} pendant ${t.turns} tours, puis KO.`);
+    return addLog(tnext, actingOwner, `${def.name} : ${spec.name} ! ATK ${t.atk} pendant ${t.turns} tours, puis KO.`);
   }
 
   // Decision §8.38: a *support* special resolves its structured fields and never
   // builds a pending attack — there is nothing to counter, block or dodge.
   if (spec.isSupport) {
-    return resolveSupportSpecial(state, attacker.owner, attackerInstanceId, def.name, spec, targetInstanceId);
+    return resolveSupportSpecial(state, actingOwner, attackerInstanceId, def.name, spec, targetInstanceId);
   }
 
-  let next = spendVolonte(state, attacker.owner, spec.cost);
+  let next = spendVolonte(state, actingOwner, spec.cost);
 
   const baseAtk = getEffectiveAtk(state, attackerInstanceId);
-  const condBonus = conditionalAtkBonus(state, spec.conditionalBonus, targetInstanceId, targetIsCaptain, getOpponent(attacker.owner));
+  const condBonus = conditionalAtkBonus(state, spec.conditionalBonus, targetInstanceId, targetIsCaptain, getOpponent(actingOwner));
   const totalAtk = baseAtk + spec.atkBonus + condBonus;
 
   // "Touche 2 cibles" is approximated as a small Zone (target + adjacents).
   const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? []), ...(spec.twoTargets && !(spec.attackTraits ?? []).includes("zone") ? ["zone" as AttackTrait] : [])];
+  // Decision §8.47 : même fusion que sur l'attaque de base.
+  for (const at of grantedAttackTraits(state, attackerInstanceId)) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
-    const opponent = getOpponent(attacker.owner);
+    const opponent = getOpponent(actingOwner);
     const cap = next.players[opponent].captain;
     const capDef = getCaptainDef(cap.defId);
     targetDefVal = cap.flipped ? capDef.verso.def : capDef.recto.def;
@@ -531,7 +552,7 @@ export function declareSpecialAttack(
     defHasNaturalHaki(def) ||
     state.turnNumber >= 7 ||
     spec.element === "water" ||
-    !!state.players[attacker.owner].hakiThisTurn;
+    !!state.players[actingOwner].hakiThisTurn;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -571,7 +592,7 @@ export function declareSpecialAttack(
     : getCardDef(next.cards[targetInstanceId].defId).name;
   next = addLog(
     next,
-    attacker.owner,
+    actingOwner,
     `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 
@@ -617,26 +638,35 @@ export function declareFruitSpecialAttack(
   const spec = fruitDef.fruitEffects?.awakening?.specialAttack;
   if (!spec) throw new Error("Fruit has no awakening special attack");
 
+  // Decision §8.37 (`betrayal`): the awakened-fruit special is a declaration
+  // like its two siblings — it acts for the body's controller.
+  const actingOwner = controllerOf(attacker);
+
   // Check once per game
   if (spec.oncePerGame && attacker.usedOnceAbilities.includes(spec.name)) {
     throw new Error("Already used this fruit ability (1x/game)");
   }
 
-  if (!canAfford(state, attacker.owner, spec.cost)) {
+  if (!canAfford(state, actingOwner, spec.cost)) {
     throw new Error(`Cannot afford fruit special (cost ${spec.cost})`);
   }
 
-  let next: GameState = spendVolonte(state, attacker.owner, spec.cost);
+  let next: GameState = spendVolonte(state, actingOwner, spec.cost);
 
   const def = getCardDef(attacker.defId);
   const baseAtk = getEffectiveAtk(next, attackerInstanceId);
   const totalAtk = baseAtk + spec.atkBonus;
 
-  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? [])];
+  // Decision §8.47 (suivi) : « chaque déclaration » veut dire les trois — la
+  // spéciale de fruit éveillé fusionne les mêmes mots-clés que ses deux sœurs.
+  for (const at of grantedAttackTraits(state, attackerInstanceId)) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
-    const opponent = getOpponent(attacker.owner);
+    const opponent = getOpponent(actingOwner);
     const cap = next.players[opponent].captain;
     const capDef = getCaptainDef(cap.defId);
     targetDefVal = cap.flipped ? capDef.verso.def : capDef.recto.def;
@@ -690,7 +720,7 @@ export function declareFruitSpecialAttack(
     : getCardDef(next.cards[targetInstanceId].defId).name;
   next = addLog(
     next,
-    attacker.owner,
+    actingOwner,
     `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 
@@ -769,7 +799,12 @@ export function declareCaptainFruitSpecialAttack(
   }
   const totalAtk = baseAtk + spec.atkBonus;
 
-  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? [])];
+  // Decision §8.47 × §8.28 : le capitaine porteur lit le meme bras
+  // `AttackTrait` de `grantsTraits` que ses equivalents personnages.
+  for (const at of attachmentsGrantedAttackTraits(next, captain.attachedObjects ?? [])) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
@@ -1162,10 +1197,13 @@ export function resolveAttack(state: GameState): GameState {
       if (pending.pushback && !(tdef.passive?.effects.some((e) => e.type === "immuneImpact"))) {
         const back: Record<string, string> = { V1: "A1", V2: "A2", V3: "A3" };
         const slot = tgt.slot;
-        if (slot && back[slot] && next.players[tgt.owner].board[back[slot] as keyof typeof next.players.player1.board] === null) {
+        // Decision §8.37 (`betrayal`): the cell a body occupies belongs to its
+        // *controller*, so that is the board the push reads and writes.
+        const tgtSide = controllerOf(tgt);
+        if (slot && back[slot] && next.players[tgtSide].board[back[slot] as keyof typeof next.players.player1.board] === null) {
           const dest = back[slot];
           next = produce(next, (draft) => {
-            const p = draft.players[tgt.owner];
+            const p = draft.players[tgtSide];
             p.board[slot as keyof typeof p.board] = null;
             p.board[dest as keyof typeof p.board] = pending.targetId;
             draft.cards[pending.targetId].slot = dest as import("@/types").Slot;
@@ -1285,7 +1323,9 @@ function getAttackerOwner(state: GameState, attackerId: string): PlayerId {
   }
   const card = state.cards[attackerId];
   if (!card) throw new Error(`Attacker not found: ${attackerId}`);
-  return card.owner;
+  // Decision §8.37 (`betrayal`): `controlledBy` first, `owner` after — a
+  // borrowed body attacks (and spends Volonte) for whoever controls it.
+  return controllerOf(card);
 }
 
 function applyCaptainDamage(

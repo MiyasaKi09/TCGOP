@@ -19,6 +19,7 @@ import {
   getEffectiveDef,
   hasTrait,
   attachmentsGrantTrait,
+  attachmentsGrantedAttackTraits,
   moveAttachedObjectsInDraft,
 } from "./board";
 
@@ -446,6 +447,13 @@ export function declareCaptainBaseAttack(
     ((def.verso.naturalHaki && def.verso.naturalHaki.length > 0) ?? false) ||
     state.turnNumber >= 7;
 
+  // Decision §8.47 × §8.28 : le bras `AttackTrait` de `grantsTraits` des objets
+  // que porte le capitaine rejoint son attaque de base, comme pour un personnage.
+  const baseAttackTraits: AttackTrait[] = [...(baseAction.attackTraits ?? [])];
+  for (const at of attachmentsGrantedAttackTraits(state, captain.attachedObjects ?? [])) {
+    if (!baseAttackTraits.includes(at)) baseAttackTraits.push(at);
+  }
+
   let next = produce(state, (draft) => {
     const cap = draft.players[playerId].captain;
     cap.tapped = true;
@@ -460,7 +468,7 @@ export function declareCaptainBaseAttack(
       rawDamage,
       attackPower: atk,
       element: baseAction.element,
-      attackTraits: baseAction.attackTraits ?? [],
+      attackTraits: baseAttackTraits,
       hasHaki,
     };
   });
@@ -629,6 +637,10 @@ function declareCaptainSpecAttack(
   // "Touche 2 cibles" is approximated as a small Zone, like the character special.
   const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? [])];
   if (spec.twoTargets && !attackTraits.includes("zone")) attackTraits.push("zone");
+  // Decision §8.47 × §8.28.
+  for (const at of attachmentsGrantedAttackTraits(state, state.players[playerId].captain.attachedObjects ?? [])) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {

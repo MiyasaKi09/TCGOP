@@ -92,7 +92,11 @@ function resolveStartOfTurnEffect(
         draft.cards[targetId].modifiers.push({
           id: `vantardise_${targetId}_${Date.now()}`,
           stat: effect.stat, amount: effect.amount,
-          source: `passive_${sourceId}`, duration: "turn",
+          // Decision §8.2 : la source etait `passive_<id>`, donc le
+          // `recalculatePassiveBuffs` qui clot `startTurn` (et tout deploy /
+          // equip / KO / bascule ulterieur) l'effacait aussitot. Source propre,
+          // identifiant inchange ; le modificateur reste « turn ».
+          source: `vantardise_${sourceId}`, duration: "turn",
         });
         draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${sourceDef.name} : Vantardise — un allié gagne +${effect.amount} ${effect.stat.toUpperCase()} ce tour.` });
       });
@@ -238,12 +242,19 @@ export function recalculatePassiveBuffs(
     }
 
     // === Synergy bonuses ===
+    // Decision §8.7 : un partenaire de synergie est une unite *sur le plateau*.
+    // Le capitaine recto est explicitement hors plateau (§4.11), donc le verso
+    // est la seule face qui puisse etre un partenaire — c'est ce qui fait vivre
+    // la synergie `RH-004` Rockstar / `CAP-SHANKS`, muette jusqu'ici.
+    const capOnBoard = captain.flipped && !!captain.slot;
     for (const char of boardChars) {
       const def = getCardDef(char.defId);
       if (!def.synergies) continue;
       for (const syn of def.synergies) {
         // Check if partner is on the board
-        const partnerOnBoard = boardChars.some((c) => c.defId === syn.partnerId);
+        const partnerOnBoard =
+          boardChars.some((c) => c.defId === syn.partnerId) ||
+          (capOnBoard && captain.defId === syn.partnerId);
         if (partnerOnBoard) {
           draft.cards[char.id].modifiers.push({
             id: `synergy_${char.id}_${syn.partnerId}`,

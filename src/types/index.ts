@@ -398,6 +398,14 @@ export interface CardInstance {
   /** Decision §8.5/§8.38: permanent max-PV loss ("perd N PV permanent (Sable)").
    *  The instance's maximum PV is `def.pv - pvMaxLoss`, never the printed PV alone. */
   pvMaxLoss?: number;
+  /** Decision §8.37 (`betrayal`, BW-024): the player who controls this body
+   *  **for the current turn**. `owner` never moves, so KO bonuses, graveyards
+   *  and the win condition keep pointing at the player who paid for the card.
+   *  Absent for every card that is not on loan. Rust: `CardInstance.controlledBy`. */
+  controlledBy?: PlayerId;
+  /** Decision §8.37: the slot the loan left, where `endTurn` walks the body
+   *  back. Rust: `CardInstance.loanReturnSlot`. */
+  loanReturnSlot?: Slot;
 }
 
 export interface CaptainInstance {
@@ -449,6 +457,10 @@ export interface PlayerState {
   charKOedThisGame?: boolean;
   /** This player's attacks pierce Logia this turn (granted Haki this turn) */
   hakiThisTurn?: boolean;
+  /** Decision §8.37 (`embargo`, MR-027): while `> 0` this player can neither
+   *  `equipObject` nor `deployShip`; decremented at the end of their own turn.
+   *  Rust: `PlayerState.embargoTurns` / `is_embargoed()`. */
+  embargoTurns?: number;
 }
 
 export interface PendingAttack {

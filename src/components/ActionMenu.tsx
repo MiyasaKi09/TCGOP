@@ -1,7 +1,7 @@
 "use client";
 
 import type { CardDef, CardInstance, GameState, GameAction } from "@/types";
-import { getEffectiveAtk } from "@/engine/board";
+import { getEffectiveAtk, controllerOf } from "@/engine/board";
 import { getCardDef } from "@/engine/cardRegistry";
 import { CARD_ART, CARD_ART_VERSO } from "@/data/cardArt";
 import FullCard, { type CardActions } from "./FullCard";
@@ -42,7 +42,10 @@ export default function ActionMenu({
   const hasSickness = instance.deployedTurn === state.turnNumber && !(def.traits?.includes("rush"));
   const isFrozen = instance.statusEffects.some((e) => e.type === "freeze");
   const isImmobilized = instance.statusEffects.some((e) => e.type === "immobilize");
-  const playerVol = state.players[instance.owner].volonte;
+  // Decision §8.37 (`betrayal`) : un corps emprunte agit — et paie — pour son
+  // emprunteur, donc la Volonte affichee (et les seuils des boutons) est celle
+  // du controleur. `controllerOf` vaut `owner` hors pret.
+  const playerVol = state.players[controllerOf(instance)].volonte;
   const base = def.baseAction;
   const isSupport = base?.isSupport;
 

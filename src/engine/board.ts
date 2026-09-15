@@ -6,7 +6,7 @@ import type {
   CardInstance,
   Trait,
 } from "@/types";
-import type { CardDef, CaptainDef, ObjectSubtype } from "@/types";
+import type { CardDef, CaptainDef, ObjectSubtype, AttackTrait } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
 import { spendVolonte, canAfford } from "./volonte";
 import { addLog, getOpponent } from "./gameState";
@@ -15,6 +15,29 @@ import { ADJACENCY, FRONT_SLOTS, BACK_SLOTS, ALL_SLOTS } from "./utils";
 // ============================================================
 // Queries
 // ============================================================
+
+/**
+ * Decision §8.37 (`betrayal`, BW-024) — who *controls* a body right now.
+ *
+ * `BW-024` Trahison lends an enemy character for one turn: the loan writes
+ * `controlledBy`, never `owner`, "so KO bonuses and win conditions keep
+ * pointing at the original owner". Every turn-scoped question (who may attack
+ * with it, whose enemies are its targets, which board cell holds it, who may
+ * move it) reads this; every ownership question (graveyard, KO bonus, win
+ * condition, equipment) keeps reading `owner`.
+ * Rust: `CardInstance::controller()`.
+ */
+export function controllerOf(card: CardInstance): PlayerId {
+  return card.controlledBy ?? card.owner;
+}
+
+/**
+ * Decision §8.37 (`embargo`, MR-027) — "L'adversaire ne peut ni équiper ni
+ * jouer de Navire à son prochain tour." Rust: `PlayerState::is_embargoed()`.
+ */
+export function isEmbargoed(state: GameState, playerId: PlayerId): boolean {
+  return (state.players[playerId].embargoTurns ?? 0) > 0;
+}
 
 /** Get all characters on the board for a player */
 export function getBoardCharacters(
@@ -162,10 +185,52 @@ export function attachmentsGrantTrait(
     const objCard = state.cards[objId];
     if (!objCard) continue;
     const objDef = getCardDef(objCard.defId);
+    // Decision §8.47 : `CardDef.grantsTraits` est lu. Le champ TS est une union
+    // `(Trait | AttackTrait)[]` là où le Rust porte un `GrantedTrait` à deux
+    // bras ; la seule lecture déterministe côté TS est « la valeur est-elle un
+    // `Trait` ? » — ce qui reproduit exactement les données livrées, où les
+    // trois fusils `RH-011/012/013` portent `GrantedTrait::Trait(Trait::Range)`.
+    // Ici `trait` est typé `Trait`, donc l'appartenance suffit : une entrée
+    // purement `AttackTrait` (zone / total / impact) ne peut jamais l'égaler.
+    if (objDef.grantsTraits?.includes(trait)) return true;
     if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
     if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
   }
   return false;
+}
+
+/** Les huit `Trait` du jeu — le bras « trait du porteur » de `grantsTraits`. */
+const ALL_TRAITS = ["shield", "range", "stealth", "rush", "cursed", "logia", "piercing", "conqueror"] as const;
+
+/**
+ * Decision §8.47 — le bras `AttackTrait` de `grantsTraits` des objets portés :
+ * les mots-clés qui décrivent l'*attaque* et non l'unité (`zone`, `total`,
+ * `impact`), fusionnés dans les `attackTraits` de **chaque** déclaration du
+ * porteur (base, spéciale, spéciale de fruit éveillé — et les mêmes pour un
+ * capitaine porteur, §8.28). En ordre d'attachement, dédupliqués.
+ * Rust: `board::attachments_granted_attack_traits`.
+ */
+export function attachmentsGrantedAttackTraits(
+  state: GameState,
+  attached: readonly string[]
+): AttackTrait[] {
+  const out: AttackTrait[] = [];
+  for (const objId of attached) {
+    const objCard = state.cards[objId];
+    if (!objCard) continue;
+    for (const g of getCardDef(objCard.defId).grantsTraits ?? []) {
+      if ((ALL_TRAITS as readonly string[]).includes(g)) continue; // bras « trait du porteur »
+      if (!out.includes(g as AttackTrait)) out.push(g as AttackTrait);
+    }
+  }
+  return out;
+}
+
+/** [`attachmentsGrantedAttackTraits`] pour un personnage du plateau. */
+export function grantedAttackTraits(state: GameState, instanceId: string): AttackTrait[] {
+  const card = state.cards[instanceId];
+  if (!card) return [];
+  return attachmentsGrantedAttackTraits(state, card.attachedObjects);
 }
 
 /** Check if a character has a specific trait (including from Devil Fruits) */
@@ -512,7 +577,13 @@ export function deployCharacter(
     const delta = bestAtk - (def.atk ?? 0);
     if (delta > 0) {
       next = produce(next, (d) => {
-        d.cards[instanceId].modifiers.push({ id: `manemane_${instanceId}`, stat: "atk", amount: delta, source: `passive_${instanceId}`, duration: "permanent" });
+        // Decision §8.1/§8.2 (même classe de bug) : le modificateur portait
+        // `source: passive_<id>`, et le `recalculatePassiveBuffs` qui clôt
+        // `deployCharacter` efface tout modificateur de source `passive_*` — la
+        // copie de Mr. 2 ne survivait donc jamais à son propre déploiement.
+        // Comme la rage de synergie (§8.1) et la Vantardise (§8.2), elle reçoit
+        // une source qui lui est propre ; l'identifiant ne bouge pas.
+        d.cards[instanceId].modifiers.push({ id: `manemane_${instanceId}`, stat: "atk", amount: delta, source: `manemane_${instanceId}`, duration: "permanent" });
       });
     }
   }
@@ -861,7 +932,9 @@ export function moveCharacter(
 
   const card = state.cards[instanceId];
   if (!card || card.zone !== "board") throw new Error("Card not on board");
-  if (card.owner !== playerId) throw new Error("Not your card");
+  // Decision §8.37 (`betrayal`): a borrowed body is the borrower's to move
+  // while the loan lasts — `controllerOf` is `owner` for everything else.
+  if (controllerOf(card) !== playerId) throw new Error("Not your card");
 
   const currentSlot = card.slot;
   if (!currentSlot) throw new Error("Card has no slot");
@@ -900,11 +973,17 @@ export function removeFromBoard(
   return produce(state, (draft) => {
     const c = draft.cards[instanceId];
     const player = draft.players[c.owner];
+    // Decision §8.37 (`betrayal`): a borrowed body sits in the *controller's*
+    // board, so that is the cell to clear — `owner` still owns the graveyard.
+    const controller = draft.players[controllerOf(c)];
     const slot = c.slot;
 
     if (slot) {
-      player.board[slot] = null;
+      controller.board[slot] = null;
     }
+    // A body that leaves the board is no longer on loan.
+    c.controlledBy = undefined;
+    c.loanReturnSlot = undefined;
 
     // Vivre Card: if the KO'd bearer held one, tutor a Mugiwara (cost <= 3) to hand.
     const hadVivre = c.attachedObjects.some((id) => draft.cards[id]?.defId === "MG-019");
@@ -966,7 +1045,11 @@ export function getValidTargets(
   const attackerSlot = attacker.slot;
   if (!attackerSlot) return { characterTargets: [], canTargetCaptain: false };
 
-  const opponentId = getOpponent(attacker.owner);
+  // Decision §8.37 (`betrayal`): a borrowed body fights for whoever controls
+  // it this turn, so its legal targets are its *former* allies — reading
+  // `owner` here offered it the borrower's own units instead, the inverse of
+  // the rule. `controllerOf` is `owner` for every card that is not on loan.
+  const opponentId = getOpponent(controllerOf(attacker));
   const opponent = state.players[opponentId];
 
   // Check range from character trait OR from the specific attack's traits
