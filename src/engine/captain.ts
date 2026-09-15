@@ -398,6 +398,11 @@ export function declareCaptainBaseAttack(
   if (!captain.flipped) throw new Error("Captain not flipped (verso required)");
   if (captain.tapped) throw new Error("Captain is tapped");
   if (captain.usedBaseAction) throw new Error("Captain base action already used");
+  // Decision §8.1 item 35 : un capitaine gelé / immobilisé / endormi n'agit
+  // pas. L'énumérateur le savait déjà, l'exécuteur non — ses deux voisins
+  // (`declareCaptainSpecAttack`, `declareCaptainFruitSpecialAttack`) le
+  // vérifient. Rust : `captain::declare_captain_base_attack`.
+  if (captainCannotAct(captain)) throw new Error(CAPTAIN_CANNOT_ACT);
 
   const def = getCaptainDef(captain.defId);
   const baseAction = def.verso.baseAction;

@@ -237,7 +237,19 @@ function scoreAttack(
 
   // Special attacks are big commitments — slightly lower base score
   // (§8.19: `fruitSpecialAttack` is a special attack too).
-  if (action.type === "specialAttack" || action.type === "fruitSpecialAttack") {
+  //
+  // ÉCART ASSUMÉ avec `ai.rs` (§8.34 × §8.19) : le Rust liste ici les variantes
+  // `SpecialAttack | FruitSpecialAttack` et oublie la spéciale du capitaine,
+  // arrivée plus tard avec §8.34. Or elle *est* une spéciale — `isSpecial` sur
+  // l'attaque en attente, un coût en Volonté, +4 ATK — et sans ce bonus elle
+  // score exactement comme l'attaque de base du capitaine, gratuite : à égalité
+  // `chooseByScore` garde la première, donc l'IA ne la joue JAMAIS (mesuré :
+  // 1636 propositions, 0 coup joué sur 40 parties). C'est le bug que §8.19 a
+  // corrigé pour `fruitSpecialAttack` — « scoring them below `moveCharacter` is
+  // a scoring bug, not a design choice » — appliqué au dernier porteur.
+  const isCaptainSpecial =
+    (action.type === "captainAttack" && !!action.isSpecial) || action.type === "useSurcharge";
+  if (action.type === "specialAttack" || action.type === "fruitSpecialAttack" || isCaptainSpecial) {
     score += 5; // But they do more damage
   }
 

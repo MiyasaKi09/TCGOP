@@ -302,7 +302,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       resetUI();
       return;
     }
-    if (uiMode.type === "selectingTarget" && !isPlayerSide && attackTargets.has(instanceId)) {
+    // C'est l'appartenance à `attackTargets` qui fait autorité, PAS le camp :
+    // une spéciale peut viser un allié (soin, buff) ou son propre lanceur
+    // (Monster Block de Chopper). Exiger le camp adverse rendait ces attaques
+    // injouables — le clic était simplement avalé.
+    if (uiMode.type === "selectingTarget" && attackTargets.has(instanceId)) {
       fireAtTarget(uiMode, instanceId, false);
       resetUI();
       return;
@@ -397,7 +401,9 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       const instance = charId ? state.cards[charId] : null;
       const def = instance ? getCardDef(instance.defId) : null;
       const isValidDeploy = isPlayerSide && deploySlots.has(slot);
-      const isValidTarget = (!isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
+      // Idem au rendu : une case s'allume si le moteur la propose, quel que
+      // soit le camp — sinon une spéciale alliée ou auto-ciblée reste invisible.
+      const isValidTarget = (uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
         || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
       const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
       const isImpact = !isPlayerSide && attackIsZone && slot.startsWith("V") && isValidTarget;
@@ -871,6 +877,10 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
                 resetUI();
               }
             }}
+            onAwakenFruit={(fruitInstanceId) => { dispatch({ type: "awakenFruit", fruitInstanceId }); resetUI(); }}
+            onFruitSpecial={(fruitInstanceId) =>
+              setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true, fruitInstanceId })
+            }
             onViewDetail={() => setUiMode({ type: "cardDetail", defId: inst.defId, instanceId: uiMode.instanceId })}
             onClose={resetUI}
           />

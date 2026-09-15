@@ -142,8 +142,7 @@ export function buildAnnouncement(
     // Decision §8.34: la grosse attaque du capitaine et sa surcharge ont un nom
     // imprime — l'annonce le dit plutot qu'un « Le Capitaine attaque » generique.
     case "captainAttack": {
-      const capDef = safeCaptainDef(state, actor);
-      const name = action.isSpecial ? capDef?.verso.specialAttack.name : capDef?.verso.baseAction.name;
+      const name = action.isSpecial ? safeCaptainDef(state, actor)?.verso.specialAttack.name : undefined;
       return { ...base, big: false, defId: null, kind: action.type, destId: `captain_${actor}`, caption: action.isSpecial ? `Capitaine ★ ${name ?? "Spéciale"} !` : `Le Capitaine attaque`, toast: true };
     }
     case "useSurcharge": {

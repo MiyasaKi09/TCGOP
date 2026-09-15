@@ -2,6 +2,7 @@
 
 import type { CaptainInstance, CaptainDef, GameState, GameAction, SpecialAttack, BaseAction } from "@/types";
 import { getCardDef } from "@/engine/cardRegistry";
+import { onceSurchargeKey } from "@/engine/captain";
 import { faction, hpColor, TRAIT_LABEL } from "@/data/cardArt";
 import { useFlipZoom } from "@/lib/useFlipZoom";
 import StatusBadges from "./StatusBadges";
@@ -252,7 +253,7 @@ export default function CaptainMenu({
             {/* Decision §8.34(b) — la surcharge de la face active, si la carte en imprime une. */}
             {captain.flipped && def.verso.surcharge && (() => {
               const sur = def.verso.surcharge!;
-              const reason = powerReason(sur, `surcharge_${sur.name}`, canSurcharge);
+              const reason = powerReason(sur, onceSurchargeKey(sur.name), canSurcharge);
               return (
                 <button onClick={onSurcharge} disabled={!canSurcharge} className="btn btn-gold action-btn px-3 py-2 text-xs">
                   ⚡ {sur.name} ({sur.cost} Vol.){reason ? ` — ${reason}` : ""}
