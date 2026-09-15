@@ -102,6 +102,12 @@ export interface SpecialAttack {
   noHeal?: boolean;
   /** Self-transformation special (Chopper Monster Point): set stats + Rush for N turns, then self-KO */
   transform?: { atk: number; def: number; pv: number; turns: number };
+  /** Support: the target must attack the caster on its next turn (RH-004, BW-005) */
+  taunt?: boolean;
+  /** Support: the ally loses gelé / immobilisé (RH-009 Stimulant) */
+  cleanse?: boolean;
+  /** Support: one ally gains +N ATK this turn (RH-009 Stimulant) */
+  buffAllyAtk?: number;
   description?: string;
 }
 
@@ -221,6 +227,10 @@ export interface CardDef {
         name: string; cost: number; atkBonus: number; description: string; oncePerGame?: boolean;
         attackTraits?: AttackTrait[]; element?: Element; ignoreDef?: number;
         immobilize?: boolean; sleep?: boolean; pushback?: boolean; ignoreShield?: boolean; stripStealth?: boolean;
+        /** §8.38 x §8.48 — "La cible perd N PV permanent" (BW-011 Ground Death). */
+        permanentPvLoss?: number;
+        /** §8.38 x §8.48 — "...et ne peut plus etre soignee" (BW-011 Ground Death). */
+        noHeal?: boolean;
       };
     };
   };
@@ -355,7 +365,7 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal" | "taunt";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;
@@ -400,6 +410,11 @@ export interface CaptainInstance {
   usedBaseAction: boolean;
   usedSpecialAttack: boolean;
   usedOnceAbilities: string[];
+  /** Decision §8.28 (follow-up): objects the captain wears — the three
+   *  signature SR Devil Fruits are printed "Équipable sur Luffy / Crocodile /
+   *  Akainu", names that exist in the game only as captains. Absent when the
+   *  captain wears nothing. */
+  attachedObjects?: string[];
 }
 
 export interface PlayerState {
@@ -485,7 +500,7 @@ export interface GameState {
 
 export type GameAction =
   | { type: "deployCharacter"; instanceId: string; slot: Slot }
-  | { type: "equipObject"; objectInstanceId: string; targetInstanceId: string }
+  | { type: "equipObject"; objectInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "deployShip"; instanceId: string }
   | { type: "baseAttack"; attackerInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "specialAttack"; attackerInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }

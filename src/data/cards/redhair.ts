@@ -33,7 +33,7 @@ export const redhairCards: CardDef[] = [
     atk: 3, def: 2, pv: 4, tags: ["redhair"], preferredRow: "front",
     synergies: [{ partnerId: "CAP-SHANKS", atkBonus: 1 }],
     baseAction: { name: "Coup Insolent", atk: 3, description: "Il défie l'adversaire." },
-    specialAttack: { name: "Provocation", cost: 1, atkBonus: 0, isSupport: true, description: "Un ennemi doit cibler Rockstar à son prochain tour." },
+    specialAttack: { name: "Provocation", cost: 1, atkBonus: 0, isSupport: true, taunt: true, description: "Un ennemi doit cibler Rockstar à son prochain tour." },
   },
   {
     id: "RH-005", name: "Limejuice", type: "character", cost: 3,
@@ -72,7 +72,7 @@ export const redhairCards: CardDef[] = [
     atk: 1, def: 2, pv: 4, tags: ["redhair", "medecin"], preferredRow: "back",
     passive: { name: "Médecin de l'Équipage", description: "Début de votre tour : soignez 1 PV à un allié adjacent.", effects: [{ type: "healAdjacent", amount: 1 }] },
     baseAction: { name: "Soins", atk: 0, isSupport: true, healAmount: 2, description: "Soigne 2 PV à un allié." },
-    specialAttack: { name: "Stimulant", cost: 2, atkBonus: 0, isSupport: true, description: "Un allié gagne +2 ATK et perd gelé/immobilisé." },
+    specialAttack: { name: "Stimulant", cost: 2, atkBonus: 0, isSupport: true, buffAllyAtk: 2, cleanse: true, description: "Un allié gagne +2 ATK et perd gelé/immobilisé." },
   },
 
   // === OBJETS - ARMES ===

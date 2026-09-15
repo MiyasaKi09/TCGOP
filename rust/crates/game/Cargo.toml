@@ -1,0 +1,33 @@
+[package]
+name = "tcgop_game"
+description = "TCGOP — native One Piece TCG built with Bevy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tcgop"
+path = "src/main.rs"
+
+[dependencies]
+tcgop_engine = { path = "../engine" }
+serde.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+# Trimmed Bevy: no audio (alsa), no gamepads (udev), no Wayland, no 3D.
+[dependencies.bevy]
+version = "0.19.1"
+default-features = false
+features = [
+  # app core — hand-picked instead of `default_app`/`default_platform`
+  # (those would pull bevy_gilrs → libudev and wayland → libwayland, absent here).
+  "std", "async_executor", "multi_threaded",
+  "bevy_asset", "bevy_log", "bevy_state", "reflect_auto_register", "scene",
+  "bevy_winit", "x11", "custom_cursor", "default_font",
+  # rendering: 2D sprites/text + UI, with picking (mouse/touch hit-testing)
+  "2d_bevy_render", "ui_bevy_render", "bevy_ui_widgets",
+  "picking", "bevy_picking", "sprite_picking", "ui_picking",
+  # image formats used by the card art
+  "png", "jpeg",
+]
