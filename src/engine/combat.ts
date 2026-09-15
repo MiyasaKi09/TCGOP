@@ -51,8 +51,12 @@ function attackerStripsStealth(state: GameState, attackerInstanceId: string): bo
   return getCardDef(card.defId).passive?.effects.some((e) => e.type === "stripStealthOnAttack") ?? false;
 }
 
-/** Conditional ATK bonus from a special when the target matches a trait/faction. */
-function conditionalAtkBonus(
+/**
+ * Conditional ATK bonus from a special when the target matches a trait/faction.
+ * Exported since decision §8.34(a): the captain's special attack reads it too
+ * (Rust `combat::conditional_atk_bonus`, `pub` for `captain.rs`).
+ */
+export function conditionalAtkBonus(
   state: GameState,
   cond: { vsTrait?: import("@/types").Trait; vsFaction?: import("@/types").Faction; amount: number } | undefined,
   targetInstanceId: string,

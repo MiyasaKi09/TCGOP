@@ -114,7 +114,11 @@ function scoreAction(
     case "baseAttack":
     case "specialAttack":
       return scoreAttack(state, playerId, action);
+    // Decision §8.34: the captain's special attack rides on `captainAttack`
+    // (`isSpecial`), and its `surcharge` on `useSurcharge` — both are captain
+    // swings and are scored like one.
     case "captainAttack":
+    case "useSurcharge":
       return scoreAttack(state, playerId, action);
     // Decision §8.19: an awakened-fruit swing is one of the strongest attacks in
     // the game; the switch omitted it, so it scored 0 — below `moveCharacter`.
@@ -207,7 +211,7 @@ function scoreAttack(
   // old `"attackerInstanceId" in action` guard skipped the whole KO block and a
   // lethal captain swing scored a flat 5/20. The attacker's ATK for a captain
   // attack comes from the **active** face plus the captain's ATK modifiers.
-  const isCaptainAttack = action.type === "captainAttack";
+  const isCaptainAttack = action.type === "captainAttack" || action.type === "useSurcharge";
   if (("attackerInstanceId" in action || isCaptainAttack) && "targetInstanceId" in action) {
     if (!("targetIsCaptain" in action && action.targetIsCaptain)) {
       const targetId = (action as { targetInstanceId: string }).targetInstanceId;

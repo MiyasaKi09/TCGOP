@@ -521,6 +521,10 @@ export type GameAction =
   | { type: "passCounter" }
   | { type: "flipCaptain"; slot: Slot }
   | { type: "captainAttack"; targetInstanceId: string; targetIsCaptain?: boolean; isSpecial?: boolean }
+  /** Decision §8.34(b): the captain's `surcharge` block — same resolution path
+   *  as the special attack, driven by the active (verso) face's data.
+   *  Rust: `GameAction::UseSurcharge`. */
+  | { type: "useSurcharge"; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "useHaki"; hakiType: HakiType; targetInstanceId?: string }
   | { type: "moveCharacter"; instanceId: string; targetSlot: Slot }
   | { type: "activateShip"; shipInstanceId: string }

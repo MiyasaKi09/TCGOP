@@ -39,7 +39,9 @@ interface GameProps {
 type UIMode =
   | { type: "idle" }
   | { type: "selectingSlot"; cardId: string }
-  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string }
+  /** `surcharge` (decision §8.34(b)) aims the captain's `useSurcharge` instead
+   *  of a `captainAttack`; `isSpecial` picks the captain's ★ special attack. */
+  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string; surcharge?: boolean }
   | { type: "selectingSupportTarget"; instanceId: string }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
@@ -141,10 +143,18 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       return targets;
     }
     const isCaptainAttack = uiMode.attackerId.startsWith("captain_");
-    const actionType = isCaptainAttack ? "captainAttack" : (uiMode.isSpecial ? "specialAttack" : "baseAttack");
+    // Decision §8.34: the captain's base attack, its ★ special (same action,
+    // `isSpecial`) and its `surcharge` are three separate aims.
+    const actionType = isCaptainAttack
+      ? (uiMode.surcharge ? "useSurcharge" : "captainAttack")
+      : (uiMode.isSpecial ? "specialAttack" : "baseAttack");
     for (const a of validActions) {
       if (a.type === actionType) {
-        if (isCaptainAttack && a.type === "captainAttack") {
+        if (isCaptainAttack && a.type === "useSurcharge") {
+          if (a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
+          else targets.add(a.targetInstanceId);
+        } else if (isCaptainAttack && a.type === "captainAttack") {
+          if (!!a.isSpecial !== uiMode.isSpecial) continue;
           if (a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
           else targets.add(a.targetInstanceId);
         } else if ("attackerInstanceId" in a && a.attackerInstanceId === uiMode.attackerId) {
@@ -170,7 +180,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     if (attackerId.startsWith("captain_")) {
       const pid = attackerId.replace("captain_", "") as PlayerId;
       const cd = getCaptainDef(state.players[pid].captain.defId);
-      const atk = isSpecial ? cd.verso.specialAttack : cd.verso.baseAction;
+      const atk = uiMode.surcharge
+        ? cd.verso.surcharge
+        : isSpecial
+          ? cd.verso.specialAttack
+          : cd.verso.baseAction;
       return !!atk?.attackTraits?.includes("zone");
     }
     const inst = state.cards[attackerId];
@@ -259,10 +273,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
         ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
       } as GameAction);
     } else if (mode.attackerId.startsWith("captain_")) {
+      // Decision §8.34: `isSpecial` carries the captain's signature move, and
+      // the `surcharge` is its own action.
       dispatch({
-        type: "captainAttack",
+        type: mode.surcharge ? "useSurcharge" : "captainAttack",
         targetInstanceId: targetId,
         ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
+        ...(!mode.surcharge && mode.isSpecial ? { isSpecial: true } : {}),
       } as GameAction);
     } else {
       dispatch({
@@ -869,6 +886,8 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             captain={ps.captain} def={capDef} state={state} validActions={validActions} isYou={isYou} originRect={zoomFromRef.current}
             onFlip={() => setUiMode({ type: "selectingCaptainSlot" })}
             onAttack={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: false })}
+            onSpecialAttack={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true })}
+            onSurcharge={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, surcharge: true })}
             /* Decision §8.28 (follow-up): the fruit the captain wears awakens
                and fires from the captain's own menu. */
             onAwakenFruit={(fruitInstanceId) => { dispatch({ type: "awakenFruit", fruitInstanceId }); resetUI(); }}

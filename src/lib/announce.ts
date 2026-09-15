@@ -3,8 +3,8 @@
 // reveal + a short French caption so every play (both sides) is legible.
 // ============================================================
 
-import type { GameAction, GameState, PlayerId, CardDef } from "@/types";
-import { getCardDef } from "@/engine/cardRegistry";
+import type { GameAction, GameState, PlayerId, CardDef, CaptainDef } from "@/types";
+import { getCardDef, getCaptainDef } from "@/engine/cardRegistry";
 import { getOpponent } from "@/engine/gameState";
 
 export interface PlayAnnouncement {
@@ -24,6 +24,11 @@ let counter = 1;
 function safeDef(state: GameState, instId?: string): CardDef | null {
   if (!instId) return null;
   try { return getCardDef(state.cards[instId].defId); } catch { return null; }
+}
+
+/** Decision §8.34: the acting captain's definition, for the named captain powers. */
+function safeCaptainDef(state: GameState, playerId: PlayerId): CaptainDef | null {
+  try { return getCaptainDef(state.players[playerId].captain.defId); } catch { return null; }
 }
 
 function describeEvent(e: NonNullable<CardDef["eventEffect"]>): string {
@@ -134,8 +139,17 @@ export function buildAnnouncement(
     }
     case "flipCaptain":
       return { ...base, defId: null, kind: action.type, destId: `captain_${actor}`, caption: `Retourne son Capitaine !`, toast: true };
-    case "captainAttack":
-      return { ...base, big: false, defId: null, kind: action.type, destId: `captain_${actor}`, caption: `Le Capitaine attaque`, toast: true };
+    // Decision §8.34: la grosse attaque du capitaine et sa surcharge ont un nom
+    // imprime — l'annonce le dit plutot qu'un « Le Capitaine attaque » generique.
+    case "captainAttack": {
+      const capDef = safeCaptainDef(state, actor);
+      const name = action.isSpecial ? capDef?.verso.specialAttack.name : capDef?.verso.baseAction.name;
+      return { ...base, big: false, defId: null, kind: action.type, destId: `captain_${actor}`, caption: action.isSpecial ? `Capitaine ★ ${name ?? "Spéciale"} !` : `Le Capitaine attaque`, toast: true };
+    }
+    case "useSurcharge": {
+      const capDef = safeCaptainDef(state, actor);
+      return { ...base, big: false, defId: null, kind: "captainAttack", destId: `captain_${actor}`, caption: `Capitaine ⚡ ${capDef?.verso.surcharge?.name ?? "Surcharge"} !`, toast: true };
+    }
     case "useHaki":
       return { ...base, defId: null, kind: action.type, caption: action.hakiType === "king" ? `👑 Haki des Rois !` : action.hakiType === "observation" ? `Esquive (Haki Observation)` : `Haki`, toast: true };
     case "passCounter":

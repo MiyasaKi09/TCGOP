@@ -41,7 +41,16 @@ import {
   supportHitsEnemy,
   supportHelpsAlly,
 } from "./combat";
-import { canFlipCaptain, flipCaptain, declareCaptainBaseAttack, captainCannotAct, captainHasTraitNow } from "./captain";
+import {
+  canFlipCaptain,
+  flipCaptain,
+  declareCaptainBaseAttack,
+  declareCaptainSpecialAttack,
+  useCaptainSurcharge,
+  onceSurchargeKey,
+  captainCannotAct,
+  captainHasTraitNow,
+} from "./captain";
 import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
 import { produce } from "immer";
 
@@ -110,8 +119,28 @@ export function executeAction(
     case "flipCaptain":
       return flipCaptain(state, state.currentPlayer, action.slot);
 
+    // Decision §8.34(a): `isSpecial` is honoured — the arm used to drop it on
+    // the floor and always declare the base attack, so the captain's signature
+    // move (Gomu Gomu no Bazooka, Ryusei Kazan, Desert Girasol, Divin Départ)
+    // was unreachable. Rust: `execute::execute_action`, `GameAction::CaptainAttack`.
     case "captainAttack":
-      return declareCaptainBaseAttack(
+      return action.isSpecial
+        ? declareCaptainSpecialAttack(
+            state,
+            state.currentPlayer,
+            action.targetInstanceId,
+            action.targetIsCaptain ?? false
+          )
+        : declareCaptainBaseAttack(
+            state,
+            state.currentPlayer,
+            action.targetInstanceId,
+            action.targetIsCaptain ?? false
+          );
+
+    // Decision §8.34(b): the captain's `surcharge` block.
+    case "useSurcharge":
+      return useCaptainSurcharge(
         state,
         state.currentPlayer,
         action.targetInstanceId,
@@ -1202,10 +1231,11 @@ export function getValidActions(
     }
   }
 
-  // Captain attacks (if verso and on board) — frozen/immobilized captains can't act
-  const captainDisabled = player.captain.statusEffects.some(
-    (e) => e.type === "freeze" || e.type === "immobilize"
-  );
+  // Captain attacks (if verso and on board) — frozen / immobilized / sleeping
+  // captains can't act (§8.1 item 35: the enumerator and the executors share
+  // `captainCannotAct`, so a sleeping captain is no longer offered an attack
+  // the declaration would refuse).
+  const captainDisabled = captainCannotAct(player.captain);
   if (player.captain.flipped && player.captain.slot && !player.captain.tapped && !captainDisabled) {
     // Decision §8.28 (follow-up) × §8.40: the same union the executor reads
     // (`declareCaptainBaseAttack`) — an awakened Gomu Gomu no Mi grants `rush`
@@ -1223,6 +1253,56 @@ export function getValidActions(
           type: "captainAttack",
           targetInstanceId: opp.instanceId,
         });
+      }
+
+      // Decision §8.34(a) — the captain's special attack, on the same
+      // `captainAttack` action with `isSpecial: true`, over the same targets
+      // as the base attack. Rust: `actions::get_valid_actions`.
+      const capDefAtk = getCaptainDef(player.captain.defId);
+      const capSpec = capDefAtk.verso.specialAttack;
+      const capSpecOnceUsed =
+        !!capSpec.oncePerGame && player.captain.usedOnceAbilities.includes(capSpec.name);
+      if (
+        !player.captain.usedSpecialAttack &&
+        !capSpecOnceUsed &&
+        canAfford(state, playerId, capSpec.cost)
+      ) {
+        actions.push({
+          type: "captainAttack",
+          targetInstanceId: `captain_${getOpponent(playerId)}`,
+          targetIsCaptain: true,
+          isSpecial: true,
+        });
+        for (const opp of oppChars) {
+          actions.push({
+            type: "captainAttack",
+            targetInstanceId: opp.instanceId,
+            isSpecial: true,
+          });
+        }
+      }
+
+      // Decision §8.34(b) — the active (verso) face's `surcharge`, offered only
+      // when the data defines one (never on the shipped catalogue).
+      const capSurcharge = capDefAtk.verso.surcharge;
+      if (capSurcharge) {
+        const surchargeOnceUsed =
+          !!capSurcharge.oncePerGame &&
+          player.captain.usedOnceAbilities.includes(onceSurchargeKey(capSurcharge.name));
+        if (
+          !player.captain.usedSpecialAttack &&
+          !surchargeOnceUsed &&
+          canAfford(state, playerId, capSurcharge.cost)
+        ) {
+          actions.push({
+            type: "useSurcharge",
+            targetInstanceId: `captain_${getOpponent(playerId)}`,
+            targetIsCaptain: true,
+          });
+          for (const opp of oppChars) {
+            actions.push({ type: "useSurcharge", targetInstanceId: opp.instanceId });
+          }
+        }
       }
 
       // Decision §8.28 (follow-up) — the awakened-fruit special of a fruit the

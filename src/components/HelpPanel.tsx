@@ -143,6 +143,24 @@ export default function HelpPanel({ state, humanPlayer, onClose }: HelpPanelProp
           </p>
         </Section>
 
+        {/* --- Équipement : la règle la plus opaque, car le refus est silencieux --- */}
+        <Section title="Armes, Fruits et équipement">
+          <p>
+            Un objet ne s&apos;équipe pas sur n&apos;importe qui. La carte porte une
+            <strong className="text-white/85"> restriction imprimée</strong> : un nom, comme
+            « Nami » pour le Clima-Tact, ou un rôle, comme « bretteur » pour les sabres.
+          </p>
+          <ul className="list-disc pl-5 flex flex-col gap-0.5 text-white/70">
+            <li>Sans restriction, l&apos;objet va sur <strong className="text-white/85">n&apos;importe quel personnage</strong>, mais jamais sur un Capitaine.</li>
+            <li>
+              Ton <strong className="text-white/85">Capitaine</strong> ne porte que l&apos;objet imprimé à
+              son nom, et un seul : ce sont les Fruits signature, comme le Gomu Gomu no Mi pour Luffy.
+              Il l&apos;accepte aussi bien avant qu&apos;après avoir été engagé.
+            </li>
+            <li>Une cible illégale ne s&apos;allume pas quand tu tiens la carte : si rien ne s&apos;éclaire, aucun porteur n&apos;est valide.</li>
+          </ul>
+        </Section>
+
         {/* --- Plateau --- */}
         <Section title="Placement et actions">
           <p>
