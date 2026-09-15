@@ -5,12 +5,101 @@ import { getBoardCharacters, getEffectiveDef, removeFromBoard } from "./board";
 import { getCaptainDef } from "./cardRegistry";
 import { grantKOBonus } from "./volonte";
 
-/** Haki unlock thresholds */
-const HAKI_THRESHOLDS: Record<HakiType, number> = {
+/** Haki unlock thresholds (manche à partir de laquelle le Haki existe) */
+export const HAKI_THRESHOLDS: Record<HakiType, number> = {
   observation: 5,
   armament: 7,
   king: 10,
 };
+
+/** Libellé et règle affichés au joueur — source unique, lue par l'UI. */
+export const HAKI_INFO: Record<
+  HakiType,
+  { label: string; glyph: string; effect: string; limit: string }
+> = {
+  observation: {
+    label: "Haki de l'Observation",
+    glyph: "👁",
+    effect: "En défense, esquive entièrement une attaque qui te vise.",
+    limit: "Une fois par manche. Sans coût en Volonté.",
+  },
+  armament: {
+    label: "Haki de l'Armement",
+    glyph: "✊",
+    effect: "Passif : tes attaques touchent les Logia, normalement intouchables.",
+    limit: "Toujours actif une fois débloqué. Rien à activer.",
+  },
+  king: {
+    label: "Haki des Rois",
+    glyph: "👑",
+    effect: "Met KO tous les personnages ennemis de DEF inférieure ou égale à 3.",
+    limit: "Une fois par partie. Exige une unité Conquérant en jeu.",
+  },
+};
+
+/** État complet d'un Haki pour un joueur, tel que l'UI doit l'afficher. */
+export interface HakiStatus {
+  type: HakiType;
+  label: string;
+  glyph: string;
+  effect: string;
+  limit: string;
+  /** Manche de déblocage. */
+  unlockTurn: number;
+  /** La manche courante a atteint le seuil. */
+  unlocked: boolean;
+  /** Manches restantes avant déblocage (0 si débloqué). */
+  turnsUntilUnlock: number;
+  /** Utilisable immédiatement (hors fenêtre de contre pour l'Observation). */
+  available: boolean;
+  /** Déjà dépensé (Observation : cette manche ; Rois : cette partie). */
+  spent: boolean;
+  /** Pourquoi ce Haki n'est pas utilisable, en clair. `null` s'il l'est. */
+  blockedReason: string | null;
+}
+
+/**
+ * Décrit les trois Haki pour un joueur. L'UI ne recalcule jamais les règles :
+ * elle affiche ce que le moteur applique réellement.
+ */
+export function getHakiStatus(state: GameState, playerId: PlayerId): HakiStatus[] {
+  const player = state.players[playerId];
+
+  return (Object.keys(HAKI_THRESHOLDS) as HakiType[]).map((type) => {
+    const unlockTurn = HAKI_THRESHOLDS[type];
+    const unlocked = state.turnNumber >= unlockTurn;
+    const turnsUntilUnlock = Math.max(0, unlockTurn - state.turnNumber);
+
+    const spent =
+      type === "observation" ? player.observationUsed : type === "king" ? player.kingUsed : false;
+
+    let blockedReason: string | null = null;
+    if (!unlocked) {
+      blockedReason = `Débloqué à la manche ${unlockTurn} (encore ${turnsUntilUnlock})`;
+    } else if (type === "armament") {
+      blockedReason = null; // passif : actif, rien à activer
+    } else if (spent) {
+      blockedReason = type === "king" ? "Déjà utilisé cette partie" : "Déjà utilisé cette manche";
+    } else if (type === "king" && !hasConquerorInPlay(state, playerId)) {
+      blockedReason = "Aucune unité Conquérant en jeu";
+    }
+
+    // `available` suit isHakiAvailable, qui renvoie false pour l'Armement (passif).
+    const available =
+      type === "armament" ? unlocked : blockedReason === null && isHakiAvailable(state, playerId, type);
+
+    return {
+      type,
+      ...HAKI_INFO[type],
+      unlockTurn,
+      unlocked,
+      turnsUntilUnlock,
+      available,
+      spent,
+      blockedReason,
+    };
+  });
+}
 
 /** Check if a Haki type is available this turn */
 export function isHakiAvailable(

@@ -22,6 +22,9 @@ import {
   getEffectiveAtk,
   getEffectiveDef,
   deployCost,
+  healUnit,
+  equipRestrictionOk,
+  hasFreeObjectSlot,
 } from "./board";
 import {
   declareBaseAttack,
@@ -33,6 +36,8 @@ import {
   applyCounterCancel,
   applyShieldBlock,
   getEligibleCounters,
+  supportHitsEnemy,
+  supportHelpsAlly,
 } from "./combat";
 import { canFlipCaptain, flipCaptain, declareCaptainBaseAttack } from "./captain";
 import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
@@ -105,8 +110,18 @@ export function executeAction(
     case "activateShip":
       return activateShipAbility(state, state.currentPlayer, action.shipInstanceId);
 
-    case "useHaki":
-      return handleHaki(state, state.currentPlayer, action);
+    case "useHaki": {
+      // L'Observation est la réaction du DÉFENSEUR : pendant une fenêtre de contre,
+      // l'acteur est getOpponent(currentPlayer) — exactement ce que getValidActions
+      // propose. L'appliquer au joueur actif consommait le compteur du mauvais camp
+      // et privait définitivement le défenseur de son esquive.
+      // Le Haki des Rois (et l'Armement, passif) restent au joueur actif.
+      const hakiActor =
+        action.hakiType === "observation" && state.pendingAttack
+          ? getOpponent(state.currentPlayer)
+          : state.currentPlayer;
+      return handleHaki(state, hakiActor, action);
+    }
 
     case "moveCharacter":
       return moveCharacter(state, state.currentPlayer, action.instanceId, action.targetSlot);
@@ -218,12 +233,11 @@ function resolveEventEffect(
           for (const slot of Object.values(p.board)) {
             if (slot) {
               const card = draft.cards[slot];
-              if (card) {
+              // Decision §8.5: the single heal path.
+              if (card && !card.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) {
                 const def = getCardDef(card.defId);
-                card.currentPv = Math.min(
-                  card.currentPv + effect.amount,
-                  def.pv ?? card.currentPv + effect.amount
-                );
+                const maxPv = def.pv === undefined ? card.currentPv + effect.amount : def.pv - (card.pvMaxLoss ?? 0);
+                card.currentPv = Math.max(Math.min(card.currentPv + effect.amount, maxPv), card.currentPv);
               }
             }
           }
@@ -314,7 +328,9 @@ function resolveEventEffect(
           const c = draft.cards[slot];
           if (!c || c.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) continue;
           const d = getCardDef(c.defId);
-          c.currentPv = Math.min(c.currentPv + effect.heal, d.pv ?? c.currentPv);
+          // Decision §8.5: the cap follows the permanent max-PV loss.
+          const maxPv = d.pv === undefined ? c.currentPv : d.pv - (c.pvMaxLoss ?? 0);
+          c.currentPv = Math.max(Math.min(c.currentPv + effect.heal, maxPv), c.currentPv);
           c.modifiers.push({ id: `feast_${slot}_${Date.now()}`, stat: "atk", amount: effect.atk, source: cardName, duration: "turn" });
         }
       });
@@ -368,7 +384,11 @@ function resolveEventEffect(
           const d = getCardDef(c.defId);
           c.modifiers.push({ id: `rally_atk_${slot}_${Date.now()}`, stat: "atk", amount: effect.atk, source: cardName, duration: "turn" });
           c.modifiers.push({ id: `rally_def_${slot}_${Date.now()}`, stat: "def", amount: effect.def, source: cardName, duration: "turn" });
-          c.currentPv = Math.min(c.currentPv + effect.heal, d.pv ?? c.currentPv);
+          // Decision §8.5: the single heal path.
+          if (!c.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) {
+            const maxPv = d.pv === undefined ? c.currentPv : d.pv - (c.pvMaxLoss ?? 0);
+            c.currentPv = Math.max(Math.min(c.currentPv + effect.heal, maxPv), c.currentPv);
+          }
         }
       });
       break;
@@ -693,16 +713,37 @@ function executeSupportAction(
     draft.cards[instanceId].usedSpecialAttack = true;
   });
 
-  // Scry / reorder (Nami Prévisions): reorder the top N — keep the cheapest on top.
+  // Scry / reorder (Nami Prévisions): reorder the top N — keep the cheapest on
+  // top (Rust `execute_support_action_inner`, decision §8.38/§8.60).
   if (ba.scry) {
+    const p0 = next.players[playerId];
+    const n = Math.min(ba.scry, p0.deck.length);
     next = produce(next, (draft) => {
       const p = draft.players[playerId];
-      const n = Math.min(ba.scry!, p.deck.length);
       const top = p.deck.slice(0, n);
-      top.sort((a, b) => getCardDef(draft.cards[a].defId).cost - getCardDef(draft.cards[b].defId).cost);
+      // Rust reproduces the JS quirk: `Array.prototype.sort` never invokes the
+      // comparator on a 0/1-element slice, so a lone unknown top card reorders
+      // nothing instead of throwing.
+      if (n > 1) {
+        top.sort((a, b) => getCardDef(draft.cards[a].defId).cost - getCardDef(draft.cards[b].defId).cost);
+      }
       for (let i = 0; i < n; i++) p.deck[i] = top[i];
     });
-    return addLog(next, playerId, `${def.name} utilise ${ba.name} : réorganise le dessus du deck.`);
+    // The Rust log line, kept byte-for-byte …
+    next = addLog(next, playerId, `${def.name} utilise ${ba.name} : réorganise le dessus du deck.`);
+    // … plus the reveal the player needs: the reordered cards, cheapest first.
+    const revealed = next.players[playerId].deck.slice(0, n).map((id) => {
+      const d = getCardDef(next.cards[id].defId);
+      return `${d.name} (${d.cost})`;
+    });
+    if (revealed.length > 0) {
+      next = addLog(
+        next,
+        playerId,
+        `${def.name} voit le dessus du deck : ${revealed.join(", ")} — ${revealed.length > 1 ? "la moins chere est replacee au sommet" : "seule carte du deck"}.`
+      );
+    }
+    return next;
   }
 
   // Bluff (Usopp): an enemy of DEF <= 1 loses its next action.
@@ -765,16 +806,11 @@ function executeSupportAction(
   if (ba.healAmount && targetInstanceId) {
     const targetCard = state.cards[targetInstanceId];
     const targetDef = getCardDef(targetCard.defId);
-    next = produce(next, (draft) => {
-      const target = draft.cards[targetInstanceId];
-      if (target) {
-        target.currentPv = Math.min(
-          target.currentPv + ba.healAmount!,
-          targetDef.pv ?? target.currentPv + ba.healAmount!
-        );
-      }
-    });
-    next = addLog(next, playerId, `${def.name} utilise ${ba.name} : +${ba.healAmount} PV a ${targetDef.name}`);
+    // Decision §8.5: the single heal path (never lowers PV, honours `noHeal` /
+    // `desiccation` and the permanent max-PV cap).
+    const healed = healUnit(next, targetInstanceId, ba.healAmount);
+    next = healed.state;
+    next = addLog(next, playerId, `${def.name} utilise ${ba.name} : +${healed.healed} PV a ${targetDef.name}`);
     return next;
   }
 
@@ -903,6 +939,13 @@ export function getValidActions(
     const def = getCardDef(card.defId);
     if (def.type === "object" && canAfford(state, playerId, def.cost)) {
       for (const target of boardChars) {
+        // Decision §8.28 × §8.57: only the pairs `equipObject` would accept —
+        // a character that satisfies the printed restriction and still has a
+        // free slot of that subtype. Everything offered must be executable.
+        const targetDef = getCardDef(target.defId);
+        if (targetDef.type !== "character") continue;
+        if (def.restriction && !equipRestrictionOk(targetDef, def.restriction)) continue;
+        if (!hasFreeObjectSlot(state, target, def)) continue;
         actions.push({
           type: "equipObject",
           objectInstanceId: cardId,
@@ -917,6 +960,11 @@ export function getValidActions(
     const card = state.cards[cardId];
     const def = getCardDef(card.defId);
     if (def.type === "event" && canAfford(state, playerId, def.cost)) {
+      // Decision §8.57: everything offered must be executable — a `requiresOwnKO`
+      // event (MG-024 Flashback) throws until one of your characters has been
+      // KO'd this game, which used to cost the AI its whole turn.
+      const ee = def.eventEffect;
+      if (ee?.type === "buffSingle" && ee.requiresOwnKO && !player.charKOedThisGame) continue;
       actions.push({ type: "playEvent", instanceId: cardId });
     }
   }
@@ -971,8 +1019,11 @@ export function getValidActions(
     }
   }
 
-  // Base attacks — ALL characters with ATK > 0 can base attack
-  // (even support chars like Chopper ATK 1 — they do their effect + attack)
+  // Base attacks — ALL characters with ATK > 0 can base attack.
+  // A support character with ATK (Chopper ATK 1) chooses: `executeSupportAction`
+  // taps it and burns BOTH action flags, so its effect *is* the turn's action —
+  // one action per turn, Rulebook v3.1 §2.2/§6 (Rust `execute_support_action_inner`
+  // sets `tapped` + `used_base_action` + `used_special_attack` the same way).
   for (const char of boardChars) {
     if (char.tapped || char.usedBaseAction) continue;
     if (hasSummoningSickness(state, char.instanceId)) continue;
@@ -1030,8 +1081,28 @@ export function getValidActions(
       actions.push({ type: "specialAttack", attackerInstanceId: char.instanceId, targetInstanceId: char.instanceId });
       continue;
     }
-    // Other support specials (heal/buff with no target) — skip offering for now.
-    if (def.specialAttack.isSupport) continue;
+    // Decision §8.38: a support special is a real, playable action — it resolves
+    // its structured fields on one unit and never builds a pending attack.
+    // Enemy-facing fields (taunt / immobilize / sleep / stripStealth) pick from
+    // the legal attack targets, ally-facing ones (healAmount / buffAllyAtk /
+    // cleanse) from the caster's own board.
+    if (def.specialAttack.isSupport) {
+      const sa = def.specialAttack;
+      if (supportHitsEnemy(sa)) {
+        const tg = getValidTargets(state, char.instanceId, true);
+        for (const targetId of tg.characterTargets) {
+          actions.push({ type: "specialAttack", attackerInstanceId: char.instanceId, targetInstanceId: targetId });
+        }
+      } else if (supportHelpsAlly(sa)) {
+        for (const ally of boardChars) {
+          actions.push({ type: "specialAttack", attackerInstanceId: char.instanceId, targetInstanceId: ally.instanceId });
+        }
+      } else {
+        // Nothing structured to target: the special resolves on itself.
+        actions.push({ type: "specialAttack", attackerInstanceId: char.instanceId, targetInstanceId: char.instanceId });
+      }
+      continue;
+    }
 
     // Check cannotAttackFemale
     const cantFemale = def.passive?.effects.some(

@@ -40,14 +40,24 @@ export default function ActionMenu({
   const base = def.baseAction;
   const isSupport = base?.isSupport;
 
-  const baseReason = (() => {
+  // Ce qui bloque TOUTE action de base, indépendamment de l'effet ou de l'attaque.
+  const blockedReason = (() => {
     if (isFrozen) return "Gelé !";
     if (isImmobilized) return "Immobilisé !";
     if (hasSickness) return "Mal de terre";
     if (isTapped) return "Incliné";
-    if (usedBase) return "Déjà utilisé ce tour";
-    if (effectiveAtk <= 0 && !base?.isSupport) return "ATK 0";
-    if (!canBaseAttack && !canSupport) return "Pas de cible";
+    if (usedBase) return "Action déjà utilisée ce tour";
+    return null;
+  })();
+
+  // L'effet de soutien et l'attaque sont gardés séparément par le moteur :
+  // chacun affiche donc sa propre raison au lieu d'un motif fusionné trompeur.
+  const supportReason = blockedReason ?? (canSupport ? null : "Aucune cible valide");
+
+  const attackReason = (() => {
+    if (blockedReason) return blockedReason;
+    if (effectiveAtk <= 0) return "ATK 0";
+    if (!canBaseAttack) return "Pas de cible";
     return null;
   })();
 
@@ -63,7 +73,13 @@ export default function ActionMenu({
   })();
 
   const actions: CardActions = {
-    base: base ? { onClick: isSupport && canSupport ? onSupportAction : onBaseAttack, disabled: !(canBaseAttack || canSupport), reason: baseReason } : undefined,
+    support: isSupport
+      ? { onClick: onSupportAction, disabled: !canSupport, reason: supportReason }
+      : undefined,
+    // Un personnage de soutien sans ATK n'a pas de ligne d'attaque du tout.
+    base: base && (!isSupport || effectiveAtk > 0)
+      ? { onClick: onBaseAttack, disabled: !canBaseAttack, reason: attackReason }
+      : undefined,
     special: def.specialAttack ? { onClick: onSpecialAttack, disabled: !canSpecialAttack, reason: specReason } : undefined,
   };
 
@@ -71,7 +87,7 @@ export default function ActionMenu({
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-40 p-4" onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
       <div className="panel panel-gold halftone p-4 flex flex-col gap-3 animate-fade-in" style={{ userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Cliquez une attaque sur la carte</span>
+          <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Cliquez une action sur la carte</span>
           <span className="font-oswald font-bold text-sm text-gold">{playerVol} Vol.</span>
         </div>
 

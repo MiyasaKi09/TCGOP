@@ -14,6 +14,8 @@ import CaptainMenu from "./CaptainMenu";
 import ShipMenu from "./ShipMenu";
 import FullCard from "./FullCard";
 import EventConfirm from "./EventConfirm";
+import HakiBar from "./HakiBar";
+import HelpPanel from "./HelpPanel";
 import CombatVfxLayer from "./CombatVfxLayer";
 import PlayRevealLayer from "./PlayRevealLayer";
 import VfxStage from "./vfx/VfxStage";
@@ -49,9 +51,11 @@ type UIMode =
   | { type: "selectingCaptainSlot" };
 
 export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }: GameProps) {
-  const { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement } =
+  const { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement, notice } =
     useGameEngine(playerDeck, aiDeck, "player1", difficulty);
   const [uiMode, setUiMode] = useState<UIMode>({ type: "idle" });
+  const [showHelp, setShowHelp] = useState(false);
+  const [logExpanded, setLogExpanded] = useState(false);
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
   const [hoveredHand, setHoveredHand] = useState<{ id: string; rect: DOMRect } | null>(null);
   const [webglActive, setWebglActive] = useState(false);
@@ -415,9 +419,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex gap-2 font-oswald text-[10px] text-white/55">
               <span>✋ {ps.hand.length}</span><span>🂠 {ps.deck.length}</span>
             </div>
+            <HakiBar state={state} playerId={playerId} onOpenHelp={() => setShowHelp(true)} />
           </>
         ) : (
           <>
+            <HakiBar state={state} playerId={playerId} align="right" onOpenHelp={() => setShowHelp(true)} />
             <div className="flex gap-2 font-oswald text-[10px] text-white/55 justify-end"><span>✋ {ps.hand.length}</span><span>🂠 {ps.deck.length}</span></div>
             <div className="flex items-center gap-1.5 justify-end">
               <span className="font-oswald text-[8px] uppercase tracking-widest text-white/55">Volonté</span>
@@ -591,6 +597,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
         <div className={`ml-auto status-tag ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
           <span className="dot" />{statusText.text}
         </div>
+        <button
+          onClick={() => setShowHelp(true)}
+          title="Règles : Haki, fenêtre de contre, Volonté"
+          className="btn btn-ghost action-btn px-2.5 py-1 text-[11px] ml-2"
+        >
+          ? Règles
+        </button>
         <div className="flex items-center gap-2 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
           <Crest which={foeFac.crest} size={13} color={foeFac.accent} />
           <span className="font-oswald text-[11px] text-white/55">Main {opponent.hand.length} · Deck {opponent.deck.length}</span>
@@ -691,20 +704,59 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           </div>
         </div>
 
-        {/* Log */}
-        <div className="halftone rounded-lg px-2.5 py-1.5 max-h-[68px] overflow-y-auto" style={{ background: "rgba(8,12,18,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.05)" }}>
-          {state.log.slice(-12).reverse().map((entry, i) => (
-            <div key={i} className={`font-spectral py-0.5 text-xs ${i === 0 ? "text-white/80" : "text-white/45"}`}>
-              <span className="font-mono text-[10px] text-white/30">T{entry.turn}</span>{" "}
-              <span className={entry.player === humanPlayer ? "text-green-500/80" : "text-red-500/80"}>{entry.player === humanPlayer ? "►" : "◄"}</span>{" "}
-              {entry.message}
-            </div>
-          ))}
+        {/* Journal — repliable : lisible par défaut, déroulable pour reconstituer une manche */}
+        <div className="halftone rounded-lg" style={{ background: "rgba(8,12,18,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.05)" }}>
+          <button
+            onClick={() => setLogExpanded((v) => !v)}
+            className="w-full flex items-center gap-2 px-2.5 pt-1 pb-0.5 text-left"
+            style={{ background: "none", border: 0, cursor: "pointer" }}
+          >
+            <span className="font-oswald text-[8px] uppercase tracking-widest text-white/40">Journal</span>
+            <span className="font-oswald text-[9px] text-white/30 ml-auto">
+              {logExpanded ? "Replier ▲" : "Tout voir ▼"}
+            </span>
+          </button>
+          <div className="px-2.5 pb-1.5 overflow-y-auto" style={{ maxHeight: logExpanded ? "38vh" : "92px" }}>
+            {state.log.slice(logExpanded ? 0 : -14).reverse().map((entry, i) => {
+              const mine = entry.player === humanPlayer;
+              return (
+                <div
+                  key={`${entry.turn}-${i}-${entry.message}`}
+                  className={`font-spectral py-0.5 text-xs leading-snug ${i === 0 && !logExpanded ? "text-white/90" : "text-white/55"}`}
+                  style={i === 0 && !logExpanded ? { borderLeft: "2px solid var(--gold)", paddingLeft: 6, marginLeft: -6 } : undefined}
+                >
+                  <span className="font-mono text-[10px] text-white/30">M{entry.turn}</span>{" "}
+                  <span
+                    className="font-oswald text-[10px] font-bold"
+                    style={{ color: mine ? "var(--color-deploy, #5BC46A)" : "var(--color-target, #E0463F)" }}
+                    title={mine ? "Toi" : "Adversaire"}
+                  >
+                    {mine ? "► Toi" : "◄ Adv"}
+                  </span>{" "}
+                  {entry.message}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </footer>
 
       {/* Overlays */}
       {renderCounterWindow()}
+
+      {showHelp && <HelpPanel state={state} humanPlayer={humanPlayer} onClose={() => setShowHelp(false)} />}
+
+      {/* Refus du moteur : dire pourquoi, plutôt que de ne rien faire. */}
+      {notice && (
+        <div
+          className="fixed left-1/2 bottom-[22%] -translate-x-1/2 z-[60] panel halftone px-4 py-2 animate-fade-in pointer-events-none"
+          style={{ boxShadow: "inset 0 0 0 1.5px rgba(224,70,63,.55), var(--shadow-modal)" }}
+          role="status"
+        >
+          <span className="font-oswald text-[11px] uppercase tracking-wider text-red-300">Action refusée</span>
+          <div className="font-spectral text-sm text-white/85">{notice}</div>
+        </div>
+      )}
 
       {uiMode.type === "actionMenu" && (() => {
         const inst = state.cards[uiMode.instanceId];

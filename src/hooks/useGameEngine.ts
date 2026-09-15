@@ -15,6 +15,8 @@ interface UseGameEngineReturn {
   humanPlayer: PlayerId;
   announcements: PlayAnnouncement[];
   dismissAnnouncement: (id: number) => void;
+  /** Dernier refus du moteur, à afficher au joueur. Se vide tout seul. */
+  notice: string | null;
 }
 
 export function useGameEngine(
@@ -26,6 +28,7 @@ export function useGameEngine(
   const [state, setState] = useState<GameState>(() => createGame(humanDeck, aiDeck));
   const [stateVersion, setStateVersion] = useState(0);
   const [announcements, setAnnouncements] = useState<PlayAnnouncement[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const aiPlayer: PlayerId = humanPlayer === "player1" ? "player2" : "player1";
 
   const stateRef = useRef(state);
@@ -54,11 +57,18 @@ export function useGameEngine(
   }, []);
 
   // Human dispatch — announce from the current state, then apply.
+  // Un refus du moteur ne doit JAMAIS être silencieux : sans retour, le joueur
+  // clique et croit que le jeu ne répond pas.
   const dispatch = useCallback((action: GameAction) => {
     announce(action, stateRef.current);
     updateState((prev) => {
       try { return executeAction(prev, action); }
-      catch (err) { console.error("Action failed:", err); return prev; }
+      catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("Action refusée:", action, err);
+        setNotice(msg);
+        return prev;
+      }
     });
   }, [announce, updateState]);
 
@@ -114,6 +124,14 @@ export function useGameEngine(
     return () => clearTimeout(timer);
   }, [needsAutoAction, stateVersion, aiPlayer, difficulty, updateState, announce, state.pendingAttack]);
 
+  // Le message de refus s'efface seul : c'est une information ponctuelle,
+  // pas un état bloquant.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   const validActions = useMemo(() => {
     if (state.winner) return [];
     if (state.pendingAttack && state.currentPlayer === aiPlayer) return getValidActions(state, humanPlayer);
@@ -123,5 +141,5 @@ export function useGameEngine(
 
   const isAiTurn = state.currentPlayer === aiPlayer && !state.pendingAttack;
 
-  return { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement };
+  return { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement, notice };
 }

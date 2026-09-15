@@ -6,7 +6,8 @@ import type {
   CardInstance,
   Trait,
 } from "@/types";
-import { getCardDef } from "./cardRegistry";
+import type { CardDef, ObjectSubtype } from "@/types";
+import { getCardDef, getCaptainDef } from "./cardRegistry";
 import { spendVolonte, canAfford } from "./volonte";
 import { addLog, getOpponent } from "./gameState";
 import { ADJACENCY, FRONT_SLOTS, BACK_SLOTS, ALL_SLOTS } from "./utils";
@@ -165,6 +166,146 @@ export function hasTrait(
   }
 
   return false;
+}
+
+/**
+ * Decision §8.5 — the maximum PV of a board instance: the printed `def.pv`
+ * minus its permanent max-PV loss. `undefined` when the definition has no `pv`.
+ * Rust: `board::max_pv_of`.
+ */
+export function maxPvOf(state: GameState, instanceId: string): number | undefined {
+  const card = state.cards[instanceId];
+  if (!card) return undefined;
+  const printed = getCardDef(card.defId).pv;
+  if (printed === undefined) return undefined;
+  return printed - (card.pvMaxLoss ?? 0);
+}
+
+/**
+ * Decision §8.36/§8.38/§8.40 — the single "perd N PV permanent (Sable)" path for
+ * a **character**: the maximum drops for good and the current PV follows it
+ * down, so `healUnit` can never climb back over the loss. A non-positive loss,
+ * a missing instance or one that already left the board is a no-op.
+ * Rust: `board::apply_permanent_pv_loss`.
+ */
+export function applyPermanentPvLoss(
+  state: GameState,
+  instanceId: string,
+  loss: number
+): GameState {
+  if (loss <= 0) return state;
+  const card = state.cards[instanceId];
+  if (!card || card.zone !== "board") return state;
+  return produce(state, (draft) => {
+    const c = draft.cards[instanceId];
+    c.pvMaxLoss = (c.pvMaxLoss ?? 0) + loss;
+    const printed = getCardDef(c.defId).pv;
+    if (printed !== undefined) {
+      const maxPv = printed - (c.pvMaxLoss ?? 0);
+      if (c.currentPv > maxPv) c.currentPv = maxPv;
+    }
+  });
+}
+
+/**
+ * Decision §8.40 — the captain counterpart of `applyPermanentPvLoss`: the same
+ * rule against `CaptainInstance.pvMaxLoss`, with the maximum read from the
+ * **active** face's printed PV. Rust: `board::apply_captain_permanent_pv_loss`.
+ */
+export function applyCaptainPermanentPvLoss(
+  state: GameState,
+  playerId: PlayerId,
+  loss: number
+): GameState {
+  if (loss <= 0) return state;
+  return produce(state, (draft) => {
+    const cap = draft.players[playerId].captain;
+    const capDef = getCaptainDef(cap.defId);
+    cap.pvMaxLoss = (cap.pvMaxLoss ?? 0) + loss;
+    const printed = cap.flipped ? capDef.verso.pv : capDef.recto.pv;
+    const maxPv = printed - (cap.pvMaxLoss ?? 0);
+    if (cap.currentPv > maxPv) cap.currentPv = maxPv;
+  });
+}
+
+/**
+ * Decision §8.5 — the single heal path: `new = min(current + amount, maxPv)`
+ * then `new = max(new, current)`, so "Soigne N PV" can only ever add PV. A unit
+ * carrying `noHeal` or `desiccation` is skipped entirely. Returns the PV
+ * actually restored. Rust: `board::heal_unit`.
+ */
+export function healUnit(
+  state: GameState,
+  instanceId: string,
+  amount: number
+): { state: GameState; healed: number } {
+  const card = state.cards[instanceId];
+  if (!card) return { state, healed: 0 };
+  if (card.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) {
+    return { state, healed: 0 };
+  }
+  const current = card.currentPv;
+  // A definition without `pv` caps at the pre-heal PV (TS `d.pv ?? c.currentPv`).
+  const maxPv = maxPvOf(state, instanceId) ?? current;
+  const newPv = Math.max(Math.min(current + amount, maxPv), current);
+  if (newPv === current) return { state, healed: 0 };
+  return {
+    state: produce(state, (draft) => {
+      draft.cards[instanceId].currentPv = newPv;
+    }),
+    healed: newPv - current,
+  };
+}
+
+/**
+ * Decision §8.28 — how many objects of `subtype` a character may wear: 1, or
+ * 3 / 2 weapons (`threeWeaponSlots`, `twoWeaponSlots`) and 2 accessories
+ * (`twoAccessorySlots`). Rust: `board::max_object_slots`.
+ */
+export function maxObjectSlots(targetDef: CardDef, subtype: ObjectSubtype): number {
+  const effects = targetDef.passive?.effects ?? [];
+  if (subtype === "weapon") {
+    if (effects.some((e) => e.type === "threeWeaponSlots")) return 3;
+    if (effects.some((e) => e.type === "twoWeaponSlots")) return 2;
+    return 1;
+  }
+  if (subtype === "accessory") {
+    if (effects.some((e) => e.type === "twoAccessorySlots")) return 2;
+    return 1;
+  }
+  return 1;
+}
+
+/** Decision §8.28 — has `target` still room for `objDef`? Rust: `board::has_free_object_slot`. */
+export function hasFreeObjectSlot(
+  state: GameState,
+  target: CardInstance,
+  objDef: CardDef
+): boolean {
+  if (!objDef.subtype) return true;
+  const targetDef = getCardDef(target.defId);
+  let same = 0;
+  for (const id of target.attachedObjects) {
+    const inst = state.cards[id];
+    if (!inst) continue;
+    if (getCardDef(inst.defId).subtype === objDef.subtype) same += 1;
+  }
+  return same < maxObjectSlots(targetDef, objDef.subtype);
+}
+
+/**
+ * Decision §8.28 — may `targetDef` wear an object printed "Équipable sur
+ * {restriction}"? The restriction is either a character **name** (a substring
+ * of the printed name: "Zoro", "Mr. 4", "Nami") or a **tag** ("bretteur",
+ * "tireur"). An empty restriction is JS-falsy and never checked.
+ * Rust: `board::equip_restriction_ok` / `board::restriction_matches`.
+ */
+export function equipRestrictionOk(targetDef: CardDef, restriction: string): boolean {
+  if (!restriction) return true;
+  return (
+    targetDef.name.includes(restriction) ||
+    (targetDef.tags?.some((t) => t === restriction) ?? false)
+  );
 }
 
 /** Check if character has summoning sickness (deployed this turn, no Rush) */
@@ -345,6 +486,19 @@ export function equipObject(
   if (targetCard.owner !== playerId) throw new Error("Not your character");
   if (targetCard.zone !== "board") throw new Error("Target not on board");
 
+  // Decision §8.28: an object is worn by a *character* — never by the active
+  // ship, which also lives in zone "board".
+  const targetDefEarly = getCardDef(targetCard.defId);
+  if (targetDefEarly.type !== "character") throw new Error("Target is not a character");
+  // Decision §8.28: "Équipable sur …" is enforced — the bearer must match the
+  // printed restriction by name ("Zoro", "Nami", "Mr. 4") or by tag
+  // ("bretteur", "tireur").
+  if (objDef.restriction && !equipRestrictionOk(targetDefEarly, objDef.restriction)) {
+    throw new Error(
+      `${targetDefEarly.name} ne peut pas equiper ${objDef.name} (reserve a ${objDef.restriction})`
+    );
+  }
+
   // Clima-Tact combo: costs 0 if both Usopp (MG-004) and Nami (MG-003) are in play.
   let effectiveCost = objDef.cost;
   if (objDef.id === "MG-012") {
@@ -365,21 +519,9 @@ export function equipObject(
     const sameSubtype = existingObjects.filter(
       (d) => d.subtype === objDef.subtype
     );
-    // Check for exceptions (Zoro 3 weapons, Franky 2 accessories)
-    let maxSlots = 1;
-    const passiveEffects = targetDef.passive?.effects ?? [];
-    if (objDef.subtype === "weapon") {
-      if (passiveEffects.some((e) => e.type === "threeWeaponSlots")) {
-        maxSlots = 3;
-      } else if (passiveEffects.some((e) => e.type === "twoWeaponSlots")) {
-        maxSlots = 2;
-      }
-    }
-    if (objDef.subtype === "accessory") {
-      if (passiveEffects.some((e) => e.type === "twoAccessorySlots")) {
-        maxSlots = 2;
-      }
-    }
+    // Decision §8.28: one cap helper shared with `getValidActions`
+    // (Zoro 3 weapons, Franky 2 accessories).
+    const maxSlots = maxObjectSlots(targetDef, objDef.subtype);
     if (sameSubtype.length >= maxSlots) {
       throw new Error(
         `${targetDef.name} already has max ${objDef.subtype} equipped`
@@ -470,7 +612,13 @@ export function deployShip(
             for (const s of Object.values(p.board)) {
               if (!s) continue;
               const c = draft.cards[s];
-              if (c) c.currentPv = Math.min(c.currentPv + de.healAll, getCardDef(c.defId).pv ?? c.currentPv);
+              // Decision §8.5: the single heal path — honours `noHeal` /
+              // `desiccation` and the permanent max-PV loss, never lowers PV.
+              if (c && !c.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) {
+                const printed = getCardDef(c.defId).pv;
+                const maxPv = printed === undefined ? c.currentPv : printed - (c.pvMaxLoss ?? 0);
+                c.currentPv = Math.max(Math.min(c.currentPv + de.healAll, maxPv), c.currentPv);
+              }
             }
           }
           if (de.draw && p.deck.length > 0) {
@@ -690,8 +838,24 @@ export function getValidTargets(
     canTargetCaptain = opponentChars.length === 0;
   }
 
+  let characterTargets = targetable.map((c) => c.instanceId);
+
+  // Decision §8.38 — Provocation (RH-004) / Peinture de la Colère (BW-005):
+  // "Un ennemi doit cibler X a son prochain tour". While the `taunt` status
+  // lives on this attacker and the unit that taunted it is still a legal
+  // target, that unit is the **only** legal target; a taunter that died, went
+  // Furtif or slipped out of range releases the attacker.
+  const tauntSource = attacker.statusEffects
+    .filter((e) => e.type === "taunt")
+    .map((e) => e.source)
+    .find((src) => characterTargets.includes(src));
+  if (tauntSource !== undefined) {
+    characterTargets = [tauntSource];
+    canTargetCaptain = false;
+  }
+
   return {
-    characterTargets: targetable.map((c) => c.instanceId),
+    characterTargets,
     canTargetCaptain,
   };
 }
