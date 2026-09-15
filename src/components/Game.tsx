@@ -741,7 +741,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex items-center gap-2 mb-1">
               <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Main</span>
               <span className="font-oswald text-[11px] font-bold text-white/60">{player.hand.length}</span>
-              <div className="hidden md:block"><StatusLegend types={["freeze", "burn", "poison", "immobilize", "desiccation"]} /></div>
+              <div className="hidden md:block"><StatusLegend types={["freeze", "burn", "poison", "immobilize", "desiccation", "untargetable"]} /></div>
               <div className="flex-1 h-px bg-white/10" />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1 items-end" style={{ minHeight: "170px" }}>

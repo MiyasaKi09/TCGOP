@@ -19,6 +19,7 @@ import {
   getAdjacentSlots,
   getBoardCharacters,
   getValidTargets,
+  assertTargetable,
   healUnit,
   applyPermanentPvLoss,
   applyCaptainPermanentPvLoss,
@@ -150,6 +151,31 @@ export function enforceTaunt(
   const taunterCard = state.cards[bound];
   const taunterName = taunterCard ? getCardDef(taunterCard.defId).name : bound;
   throw new Error(`${attackerName} doit cibler ${taunterName} (Provocation)`);
+}
+
+/**
+ * Decision §8.58 — garde unique de legalite de cible a la declaration.
+ *
+ * `getValidTargets` decide ce que l'interface et l'IA PEUVENT proposer, mais
+ * aucune des fonctions `declare*` ne recoupait la cible recue : un appel direct
+ * au moteur passait outre. On enchaine donc ici les deux liens qui retirent une
+ * cible — l'Inciblable (BW-026) puis la Provocation (§8.38).
+ *
+ * Rust : `combat::enforce_target_legality`.
+ */
+export function enforceTargetLegality(
+  state: GameState,
+  attackerInstanceId: string,
+  targetInstanceId: string,
+  targetIsCaptain: boolean,
+  forSpecial: boolean
+): void {
+  const attacker = state.cards[attackerInstanceId];
+  const attackerSide = attacker
+    ? controllerOf(attacker)
+    : getAttackerOwner(state, attackerInstanceId);
+  assertTargetable(state, getOpponent(attackerSide), targetInstanceId, targetIsCaptain);
+  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, forSpecial);
 }
 
 /**
@@ -298,7 +324,7 @@ export function declareBaseAttack(
 
   // Decision §8.38: a taunted unit may only declare against its taunter.
   // Checked before the trap so a refused declaration cannot eat it (§8.12).
-  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, false);
+  enforceTargetLegality(state, attackerInstanceId, targetInstanceId, targetIsCaptain, false);
 
   // Trigger trap on attacker if present
   const trapEffect = attacker.statusEffects.find((e) => e.type === "trap");
@@ -439,7 +465,7 @@ export function declareSpecialAttack(
     !def.specialAttack.transform &&
     (!def.specialAttack.isSupport || supportHitsEnemy(def.specialAttack))
   ) {
-    enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
+    enforceTargetLegality(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
   }
 
   // Trigger trap on attacker if present
@@ -629,7 +655,7 @@ export function declareFruitSpecialAttack(
   }
 
   // Decision §8.38: a taunted unit may only declare against its taunter.
-  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
+  enforceTargetLegality(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
 
   const fruitCard = state.cards[fruitInstanceId];
   if (!fruitCard || !fruitCard.isAwakened) throw new Error("Fruit not awakened");
@@ -789,7 +815,7 @@ export function declareCaptainFruitSpecialAttack(
 
   // Decision §8.38: every declaration path is bound by a taunt (inert while
   // nothing in the catalogue can taunt a captain).
-  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
+  enforceTargetLegality(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
 
   let next: GameState = spendVolonte(state, playerId, spec.cost);
 
@@ -950,6 +976,12 @@ export function applyCounterCancel(state: GameState, counterInstanceId: string):
     }
   }
 
+  // Lu AVANT que le `produce` ne vide `pendingAttack` : c'est la cible de
+  // l'attaque en cours qui devient Inciblable (decision §8.58).
+  const protectedTarget = ce.type === "untargetable"
+    ? { id: state.pendingAttack.targetId, isCaptain: state.pendingAttack.targetIsCaptain }
+    : null;
+
   let next = spendVolonte(state, owner, cdef.cost);
   next = produce(next, (draft) => {
     const p = draft.players[owner];
@@ -957,8 +989,32 @@ export function applyCounterCancel(state: GameState, counterInstanceId: string):
     draft.cards[counterInstanceId].zone = "graveyard";
     p.graveyard.push(counterInstanceId);
     draft.pendingAttack = null;
+
+    // Decision §8.58 — jusqu'ici le bras `untargetable` ne se distinguait en
+    // rien d'un `cancel` : l'attaque tombait et la cible ne gardait aucune
+    // trace, donc la deuxieme attaque du meme tour la touchait. On pose
+    // maintenant un vrai statut, purge au debut du tour suivant.
+    if (protectedTarget) {
+      const holder = protectedTarget.isCaptain
+        ? draft.players[owner].captain
+        : draft.cards[protectedTarget.id];
+      if (holder && !holder.statusEffects.some((e) => e.type === "untargetable")) {
+        holder.statusEffects.push({
+          type: "untargetable",
+          turnsRemaining: 1,
+          damagePerTurn: 0,
+          source: counterInstanceId,
+        });
+      }
+    }
   });
-  next = addLog(next, owner, `${cdef.name} : attaque annulée !`);
+  next = addLog(
+    next,
+    owner,
+    protectedTarget
+      ? `${cdef.name} : attaque annulée — la cible est Inciblable jusqu'à la fin du tour.`
+      : `${cdef.name} : attaque annulée !`
+  );
 
   if (ce.type === "cancel" && ce.selfCaptainDamage) {
     next = produce(next, (draft) => { draft.players[owner].captain.currentPv -= ce.selfCaptainDamage!; });

@@ -365,7 +365,7 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal" | "taunt";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal" | "taunt" | "untargetable";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;

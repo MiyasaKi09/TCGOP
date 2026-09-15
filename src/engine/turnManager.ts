@@ -16,6 +16,8 @@ import {
   moveCharacter,
   getEmptySlots,
   getBoardCharacters,
+  isUntargetableNow,
+  captainIsUntargetable,
   getValidTargets,
   hasSummoningSickness,
   hasTrait,
@@ -1362,13 +1364,22 @@ export function getValidActions(
     // (`declareCaptainBaseAttack`) — an awakened Gomu Gomu no Mi grants `rush`
     // to the captain wearing it, so the enumerator must see it too.
     if (player.captain.deployedTurn !== state.turnNumber || captainHasTraitNow(state, playerId, "rush")) {
-      // Can attack — simplified: target any enemy front or captain
-      actions.push({
-        type: "captainAttack",
-        targetInstanceId: `captain_${getOpponent(playerId)}`,
-        targetIsCaptain: true,
-      });
-      const oppChars = getBoardCharacters(state, getOpponent(playerId));
+      // Can attack — simplified: target any enemy front or captain.
+      // Decision §8.58 — une cible Inciblable est retiree ici aussi : sans ce
+      // filtre l'enumerateur proposait une attaque que `declareCaptainBaseAttack`
+      // refusait ensuite, ce qui viole l'invariant §8.57 (« tout ce qui est
+      // propose doit etre jouable »).
+      const oppId = getOpponent(playerId);
+      if (!captainIsUntargetable(state, oppId)) {
+        actions.push({
+          type: "captainAttack",
+          targetInstanceId: `captain_${oppId}`,
+          targetIsCaptain: true,
+        });
+      }
+      const oppChars = getBoardCharacters(state, oppId).filter(
+        (c) => !isUntargetableNow(state, c.instanceId)
+      );
       for (const opp of oppChars) {
         actions.push({
           type: "captainAttack",
@@ -1388,12 +1399,14 @@ export function getValidActions(
         !capSpecOnceUsed &&
         canAfford(state, playerId, capSpec.cost)
       ) {
-        actions.push({
-          type: "captainAttack",
-          targetInstanceId: `captain_${getOpponent(playerId)}`,
-          targetIsCaptain: true,
-          isSpecial: true,
-        });
+        if (!captainIsUntargetable(state, oppId)) {
+          actions.push({
+            type: "captainAttack",
+            targetInstanceId: `captain_${oppId}`,
+            targetIsCaptain: true,
+            isSpecial: true,
+          });
+        }
         for (const opp of oppChars) {
           actions.push({
             type: "captainAttack",
@@ -1415,11 +1428,13 @@ export function getValidActions(
           !surchargeOnceUsed &&
           canAfford(state, playerId, capSurcharge.cost)
         ) {
-          actions.push({
-            type: "useSurcharge",
-            targetInstanceId: `captain_${getOpponent(playerId)}`,
-            targetIsCaptain: true,
-          });
+          if (!captainIsUntargetable(state, oppId)) {
+            actions.push({
+              type: "useSurcharge",
+              targetInstanceId: `captain_${oppId}`,
+              targetIsCaptain: true,
+            });
+          }
           for (const opp of oppChars) {
             actions.push({ type: "useSurcharge", targetInstanceId: opp.instanceId });
           }

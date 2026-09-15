@@ -128,6 +128,24 @@ export function createInitialState(
 export function startTurn(state: GameState): GameState {
   let next = state;
 
+  // 0. Decision §8.58 — « Inciblable jusqu'a la fin du tour » (BW-026).
+  // Le statut est pose pendant le tour de l'attaquant ; il doit donc tomber
+  // au changement de tour, des DEUX cotes (le defenseur qui l'a recu n'est
+  // pas force d'etre le joueur qui commence). `processStartOfTurnEffects` ne
+  // balaie que le joueur actif, d'ou cette passe dediee.
+  next = produce(next, (draft) => {
+    const strip = (list: { type: string }[]) => list.filter((e) => e.type !== "untargetable");
+    for (const pid of ["player1", "player2"] as const) {
+      const p = draft.players[pid];
+      p.captain.statusEffects = strip(p.captain.statusEffects) as typeof p.captain.statusEffects;
+      for (const slot of Object.values(p.board)) {
+        if (!slot) continue;
+        const card = draft.cards[slot];
+        if (card) card.statusEffects = strip(card.statusEffects) as typeof card.statusEffects;
+      }
+    }
+  });
+
   // 1. Untap all characters
   next = untapAll(next);
 

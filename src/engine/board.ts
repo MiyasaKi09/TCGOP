@@ -1033,6 +1033,52 @@ export function removeFromBoard(
  * - Captain (verso, on board) → targetable like a normal character
  * - Captain (recto, off board) → targetable if no enemy Front
  */
+/**
+ * Decision §8.58 — « Inciblable jusqu'a la fin du tour » (BW-026 Mirage du
+ * Desert).
+ *
+ * Le contre posait jusqu'ici la meme chose qu'une annulation seche : l'attaque
+ * en cours disparaissait et RIEN n'etait ecrit sur la cible. Une deuxieme
+ * attaque du meme tour touchait donc a plein tarif, alors que la carte, le log
+ * et l'annonce promettent tous les trois un etat qui dure. L'Inciblable est
+ * desormais un vrai statut, purge au debut du tour suivant.
+ *
+ * Contrairement au Furtif, il n'a pas d'echappatoire « si tout le monde l'est,
+ * tout le monde redevient visible » : le texte est absolu.
+ *
+ * Rust : `board::is_untargetable_now`.
+ */
+export function isUntargetableNow(state: GameState, instanceId: string): boolean {
+  const c = state.cards[instanceId];
+  return !!c && c.statusEffects.some((e) => e.type === "untargetable");
+}
+
+/**
+ * Meme test pour un capitaine, dont les statuts vivent sur `player.captain`
+ * et non dans `state.cards`. Rust : `board::captain_is_untargetable`.
+ */
+export function captainIsUntargetable(state: GameState, playerId: PlayerId): boolean {
+  return state.players[playerId].captain.statusEffects.some((e) => e.type === "untargetable");
+}
+
+/**
+ * Garde de declaration. `getValidTargets` suffit a l'interface et a l'IA, qui
+ * passent toutes deux par `getValidActions` ; mais `declareBaseAttack` et ses
+ * jumelles ne recoupaient la legalite de la cible nulle part, donc un appel
+ * direct au moteur contournait le filtre. Rust : `board::assert_targetable`.
+ */
+export function assertTargetable(
+  state: GameState,
+  defenderId: PlayerId,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): void {
+  const hidden = targetIsCaptain
+    ? captainIsUntargetable(state, defenderId)
+    : isUntargetableNow(state, targetInstanceId);
+  if (hidden) throw new Error("La cible est Inciblable jusqu'a la fin du tour");
+}
+
 export function getValidTargets(
   state: GameState,
   attackerInstanceId: string,
@@ -1090,6 +1136,11 @@ export function getValidTargets(
     targetable = targetable.filter((c) => !isStealthed(c));
   }
 
+  // Decision §8.58 — l'Inciblable retire la cible de la liste, sans la clause
+  // de secours du Furtif : si toute la ligne est Inciblable, il n'y a pas de
+  // cible, et c'est exactement ce que la carte promet.
+  targetable = targetable.filter((c) => !isUntargetableNow(state, c.instanceId));
+
   // Can target captain?
   let canTargetCaptain = false;
   if (opponent.captain.flipped && opponent.captain.slot) {
@@ -1105,6 +1156,10 @@ export function getValidTargets(
     // on the board — the crew is wiped (Rulebook v3.1 §2.1). Re-protected as soon as
     // any ally returns to the board.
     canTargetCaptain = opponentChars.length === 0;
+  }
+
+  if (canTargetCaptain && captainIsUntargetable(state, opponentId)) {
+    canTargetCaptain = false;
   }
 
   let characterTargets = targetable.map((c) => c.instanceId);

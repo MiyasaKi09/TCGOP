@@ -134,6 +134,8 @@ export const STATUS_COLOR: Record<string, string> = {
   selfKO: "#E0463F",
   noStealth: "#7FB0E8",
   noHeal: "#FF8A80",
+  taunt: "#E8A33D",
+  untargetable: "#B98CF0",
 };
 
 // --- Deck identities for the setup screen -------------------

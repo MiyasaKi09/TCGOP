@@ -409,8 +409,8 @@ export function declareCaptainBaseAttack(
   const baseAction = def.verso.baseAction;
 
   // Decision §8.38: a taunted attacker may only declare against its taunter.
-  const { enforceTaunt } = require("./combat");
-  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, false);
+  const { enforceTargetLegality } = require("./combat");
+  enforceTargetLegality(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, false);
 
   // Captain summoning sickness
   if (captain.deployedTurn === state.turnNumber) {
@@ -613,8 +613,8 @@ function declareCaptainSpecAttack(
 
   // Decision §8.38: the taunt binds the captain's special too (inert while
   // nothing in the shipped catalogue can taunt a captain).
-  const { enforceTaunt, conditionalAtkBonus } = require("./combat");
-  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
+  const { enforceTargetLegality, conditionalAtkBonus } = require("./combat");
+  enforceTargetLegality(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
 
   const facePiercing = captainHasTraitNow(state, playerId, "piercing");
   const hasNaturalHaki = (def.verso.naturalHaki?.length ?? 0) > 0;
