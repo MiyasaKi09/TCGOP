@@ -25,6 +25,8 @@ import {
   healUnit,
   equipRestrictionOk,
   hasFreeObjectSlot,
+  captainEquipRestrictionOk,
+  captainHasFreeObjectSlot,
 } from "./board";
 import {
   declareBaseAttack,
@@ -39,7 +41,7 @@ import {
   supportHitsEnemy,
   supportHelpsAlly,
 } from "./combat";
-import { canFlipCaptain, flipCaptain, declareCaptainBaseAttack } from "./captain";
+import { canFlipCaptain, flipCaptain, declareCaptainBaseAttack, captainCannotAct, captainHasTraitNow } from "./captain";
 import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
 import { produce } from "immer";
 
@@ -59,7 +61,16 @@ export function executeAction(
       return deployCharacter(state, state.currentPlayer, action.instanceId, action.slot);
 
     case "equipObject":
-      return equipObject(state, state.currentPlayer, action.objectInstanceId, action.targetInstanceId);
+      // Decision §8.28 (follow-up): `targetIsCaptain` routes the equip to the
+      // player's own captain, the printed bearer of the three signature SR
+      // Devil Fruits ("Équipable sur Luffy / Crocodile / Akainu").
+      return equipObject(
+        state,
+        state.currentPlayer,
+        action.objectInstanceId,
+        action.targetInstanceId,
+        action.targetIsCaptain ?? false
+      );
 
     case "deployShip":
       return deployShip(state, state.currentPlayer, action.instanceId);
@@ -952,6 +963,24 @@ export function getValidActions(
           targetInstanceId: target.instanceId,
         });
       }
+      // Decision §8.28 (follow-up) × §8.57: the captain is the printed bearer of
+      // the three signature SR fruits ("Équipable sur Luffy / Crocodile /
+      // Akainu" — names no character carries), so the equip is offered on it
+      // under exactly the two conditions `equipObjectOnCaptain` enforces: the
+      // object's own printed restriction names this captain, and the subtype
+      // slot is free.
+      const capDefEquip = getCaptainDef(player.captain.defId);
+      if (
+        captainEquipRestrictionOk(capDefEquip, def) &&
+        captainHasFreeObjectSlot(state, playerId, def)
+      ) {
+        actions.push({
+          type: "equipObject",
+          objectInstanceId: cardId,
+          targetInstanceId: `captain_${playerId}`,
+          targetIsCaptain: true,
+        });
+      }
     }
   }
 
@@ -1178,8 +1207,10 @@ export function getValidActions(
     (e) => e.type === "freeze" || e.type === "immobilize"
   );
   if (player.captain.flipped && player.captain.slot && !player.captain.tapped && !captainDisabled) {
-    const capDef = getCaptainDef(player.captain.defId);
-    if (player.captain.deployedTurn !== state.turnNumber || capDef.verso.traits?.includes("rush")) {
+    // Decision §8.28 (follow-up) × §8.40: the same union the executor reads
+    // (`declareCaptainBaseAttack`) — an awakened Gomu Gomu no Mi grants `rush`
+    // to the captain wearing it, so the enumerator must see it too.
+    if (player.captain.deployedTurn !== state.turnNumber || captainHasTraitNow(state, playerId, "rush")) {
       // Can attack — simplified: target any enemy front or captain
       actions.push({
         type: "captainAttack",
@@ -1192,6 +1223,36 @@ export function getValidActions(
           type: "captainAttack",
           targetInstanceId: opp.instanceId,
         });
+      }
+
+      // Decision §8.28 (follow-up) — the awakened-fruit special of a fruit the
+      // *captain* wears (`MG-014` Kong Gun, `BW-011` Ground Death, `MR-011`
+      // Inugami Guren). Same gates as the captain's own attack, plus the
+      // fruit's: awakened, `oncePerGame` unused and affordable.
+      if (!player.captain.usedSpecialAttack && !captainCannotAct(player.captain)) {
+        for (const objId of player.captain.attachedObjects ?? []) {
+          const objCard = state.cards[objId];
+          if (!objCard || !objCard.isAwakened) continue;
+          const fruitSpec = getCardDef(objCard.defId).fruitEffects?.awakening?.specialAttack;
+          if (!fruitSpec) continue;
+          if (fruitSpec.oncePerGame && player.captain.usedOnceAbilities.includes(fruitSpec.name)) continue;
+          if (!canAfford(state, playerId, fruitSpec.cost)) continue;
+          actions.push({
+            type: "fruitSpecialAttack",
+            attackerInstanceId: `captain_${playerId}`,
+            fruitInstanceId: objId,
+            targetInstanceId: `captain_${getOpponent(playerId)}`,
+            targetIsCaptain: true,
+          });
+          for (const opp of oppChars) {
+            actions.push({
+              type: "fruitSpecialAttack",
+              attackerInstanceId: `captain_${playerId}`,
+              fruitInstanceId: objId,
+              targetInstanceId: opp.instanceId,
+            });
+          }
+        }
       }
     }
   }
@@ -1243,6 +1304,17 @@ export function getValidActions(
           actions.push({ type: "awakenFruit", fruitInstanceId: objId });
         }
       }
+    }
+  }
+  // Decision §8.28 (follow-up): a fruit worn by the captain awakens the same
+  // way — `porteurLegitime` on the three signature fruits *is* the captain's
+  // name, so `canAwakenFruit` matches it through the widened bearer search.
+  for (const objId of player.captain.attachedObjects ?? []) {
+    const objCard = state.cards[objId];
+    if (!objCard) continue;
+    const objDef = getCardDef(objCard.defId);
+    if (objDef.subtype === "fruit" && canAwakenFruit(state, playerId, objId)) {
+      actions.push({ type: "awakenFruit", fruitInstanceId: objId });
     }
   }
 

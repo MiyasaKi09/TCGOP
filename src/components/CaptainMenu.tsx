@@ -1,6 +1,7 @@
 "use client";
 
 import type { CaptainInstance, CaptainDef, GameState, GameAction, SpecialAttack, BaseAction } from "@/types";
+import { getCardDef } from "@/engine/cardRegistry";
 import { faction, hpColor, TRAIT_LABEL } from "@/data/cardArt";
 import { useFlipZoom } from "@/lib/useFlipZoom";
 import StatusBadges from "./StatusBadges";
@@ -13,6 +14,10 @@ interface CaptainMenuProps {
   isYou: boolean;
   onFlip: () => void;
   onAttack: () => void;
+  /** Decision §8.28 (follow-up): awaken a fruit the captain wears. */
+  onAwakenFruit: (fruitInstanceId: string) => void;
+  /** Decision §8.28 (follow-up): aim the awakened fruit's special attack. */
+  onFruitSpecial: (fruitInstanceId: string) => void;
   onKingHaki: () => void;
   onClose: () => void;
   originRect?: DOMRect | null;
@@ -38,7 +43,7 @@ function AbilityRow({ a, accent, kind }: { a: SpecialAttack | BaseAction; accent
 }
 
 export default function CaptainMenu({
-  captain, def, state, validActions, isYou, onFlip, onAttack, onKingHaki, onClose, originRect,
+  captain, def, state, validActions, isYou, onFlip, onAttack, onAwakenFruit, onFruitSpecial, onKingHaki, onClose, originRect,
 }: CaptainMenuProps) {
   const zoomRef = useFlipZoom<HTMLDivElement>(originRect);
   const fac = faction(def.faction);
@@ -50,6 +55,23 @@ export default function CaptainMenu({
   const canFlip = isYou && !captain.flipped && validActions.some((a) => a.type === "flipCaptain");
   const canAttack = isYou && captain.flipped && validActions.some((a) => a.type === "captainAttack");
   const canKingHaki = isYou && validActions.some((a) => a.type === "useHaki" && a.hakiType === "king");
+
+  // Decision §8.28 (follow-up) — the equipment the captain wears (the three
+  // signature SR Devil Fruits are printed "Équipable sur Luffy / Crocodile /
+  // Akainu", names only a captain carries), with its two captain-side actions:
+  // the awakening and, once awakened, the fruit's special attack.
+  const gear = (captain.attachedObjects ?? [])
+    .map((id) => state.cards[id])
+    .filter((c): c is NonNullable<typeof c> => !!c);
+  const capId = `captain_${captain.owner}`;
+  const awakenableIds = new Set(
+    validActions.flatMap((a) => (a.type === "awakenFruit" ? [a.fruitInstanceId] : []))
+  );
+  const fruitSpecialIds = new Set(
+    validActions.flatMap((a) =>
+      a.type === "fruitSpecialAttack" && a.attackerInstanceId === capId ? [a.fruitInstanceId] : []
+    )
+  );
 
   const isFrozen = captain.statusEffects.some((e) => e.type === "freeze");
   const isImmob = captain.statusEffects.some((e) => e.type === "immobilize");
@@ -110,6 +132,59 @@ export default function CaptainMenu({
             </div>
           )}
         </div>
+
+        {/* equipment worn by the captain (decision §8.28 follow-up) */}
+        {gear.length > 0 && (
+          <div className="rounded-lg px-2 py-1.5 flex flex-col gap-1" style={{ background: "rgba(232,184,75,.08)" }}>
+            <div className="font-oswald text-[9px] uppercase tracking-wider text-amber-400/80 font-bold">Équipement</div>
+            {gear.map((obj) => {
+              const objDef = getCardDef(obj.defId);
+              const fruitSpec = objDef.fruitEffects?.awakening?.specialAttack;
+              return (
+                <div key={obj.instanceId} className="flex flex-col gap-1">
+                  <div className="font-spectral text-[11px] text-amber-200/90">
+                    {obj.isAwakened ? "⭐" : "⚔"} {objDef.name}
+                    {obj.isAwakened ? " (éveillé)" : ""}
+                    {objDef.bonusAtk ? ` +${objDef.bonusAtk} ATK` : ""}
+                    {objDef.bonusDef ? ` +${objDef.bonusDef} DEF` : ""}
+                  </div>
+                  {isYou && awakenableIds.has(obj.instanceId) && (
+                    <button onClick={() => onAwakenFruit(obj.instanceId)} className="btn btn-gold action-btn px-3 py-1.5 text-[11px]">
+                      ⭐ Éveiller {objDef.name} ({objDef.fruitEffects?.awakening?.volCost ?? 0} Vol.)
+                    </button>
+                  )}
+                  {isYou && obj.isAwakened && fruitSpec && (() => {
+                    const ok = fruitSpecialIds.has(obj.instanceId);
+                    // Un bouton grisé sans motif laisse le joueur deviner : on
+                    // dit pourquoi, comme la ligne d'attaque du capitaine.
+                    const reason = ok
+                      ? null
+                      : !captain.flipped
+                        ? "Capitaine non engagé"
+                        : attackReason
+                          ? attackReason
+                          : captain.usedSpecialAttack
+                            ? "A déjà agi ce tour"
+                            : fruitSpec.oncePerGame && captain.usedOnceAbilities.includes(fruitSpec.name)
+                              ? "Déjà utilisé (1x/partie)"
+                              : state.players[captain.owner].volonte < fruitSpec.cost
+                                ? `Volonté insuffisante (${state.players[captain.owner].volonte}/${fruitSpec.cost})`
+                                : "Pas de cible";
+                    return (
+                      <button
+                        onClick={() => onFruitSpecial(obj.instanceId)}
+                        disabled={!ok}
+                        className="btn btn-danger action-btn px-3 py-1.5 text-[11px]"
+                      >
+                        ★ {fruitSpec.name} ({fruitSpec.cost} Vol.){reason ? ` — ${reason}` : ""}
+                      </button>
+                    );
+                  })()}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* what flipping unlocks (recto only preview) */}
         {!captain.flipped && (

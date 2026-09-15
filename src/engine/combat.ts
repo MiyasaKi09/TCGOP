@@ -584,6 +584,19 @@ export function declareFruitSpecialAttack(
   targetInstanceId: string,
   targetIsCaptain: boolean
 ): GameState {
+  // Decision §8.28 (follow-up): the three signature SR fruits are worn by a
+  // captain, so the awakened special can be declared *by* a captain — addressed
+  // by the same synthetic `captain_{playerId}` id every other captain target
+  // and attacker uses. Rust: `combat::declare_fruit_special_attack`.
+  if (attackerInstanceId.startsWith("captain_")) {
+    return declareCaptainFruitSpecialAttack(
+      state,
+      attackerInstanceId.replace("captain_", "") as PlayerId,
+      fruitInstanceId,
+      targetInstanceId,
+      targetIsCaptain
+    );
+  }
   const attacker = state.cards[attackerInstanceId];
   if (!attacker) throw new Error("Attacker not found");
   if (hasSummoningSickness(state, attackerInstanceId)) {
@@ -675,6 +688,148 @@ export function declareFruitSpecialAttack(
     next,
     attacker.owner,
     `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
+  );
+
+  return next;
+}
+
+/**
+ * Decision §8.28 (follow-up) — the awakened-fruit special declared by a
+ * **captain**, the printed bearer of `MG-014` / `BW-011` / `MR-011`.
+ *
+ * It is a captain attack that happens to be driven by a fruit's awakening
+ * `specialAttack`, so it follows `declareCaptainBaseAttack` wherever the two
+ * could differ — the verso stat plus the captain's ATK modifiers (the fruit's
+ * own `fruit_atk_*` / `fruit_awaken_atk_*` modifiers live there, so they are
+ * already in), the captain's flip / tap / one-action-per-turn / frozen /
+ * summoning-sickness gates, the captain's `usedOnceAbilities` for
+ * `oncePerGame`, the player-wide `hakiThisTurn` and the
+ * `"Capitaine {name} utilise …"` log line.
+ *
+ * Everything the *fruit* contributes is read exactly as
+ * `declareFruitSpecialAttack` reads it: `atkBonus`, `element`, `attackTraits`,
+ * `ignoreDef`, `ignoreShield`, `immobilize`, `sleep`, `pushback`,
+ * `stripStealth` and the §8.38 × §8.48 pair `permanentPvLoss` / `noHeal`
+ * (`BW-011`'s Ground Death).
+ * Rust: `combat::declare_captain_fruit_special_attack_inner`.
+ */
+export function declareCaptainFruitSpecialAttack(
+  state: GameState,
+  playerId: PlayerId,
+  fruitInstanceId: string,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): GameState {
+  const { captainCannotAct, captainHasTraitNow } = require("./captain");
+  const captain = state.players[playerId].captain;
+  if (!captain.flipped) throw new Error("Captain not flipped (verso required)");
+  if (captain.tapped) throw new Error("Captain is tapped");
+  if (captain.usedSpecialAttack) throw new Error("Captain special already used");
+  if (captainCannotAct(captain)) {
+    throw new Error("Captain cannot act (frozen, immobilized or asleep)");
+  }
+  if (!(captain.attachedObjects ?? []).includes(fruitInstanceId)) {
+    throw new Error("Captain is not wearing this fruit");
+  }
+
+  const capDef = getCaptainDef(captain.defId);
+  if (
+    captain.deployedTurn === state.turnNumber &&
+    !captainHasTraitNow(state, playerId, "rush")
+  ) {
+    throw new Error("Captain has summoning sickness");
+  }
+
+  const fruitCard = state.cards[fruitInstanceId];
+  if (!fruitCard || !fruitCard.isAwakened) throw new Error("Fruit not awakened");
+  const fruitDef = getCardDef(fruitCard.defId);
+  const spec = fruitDef.fruitEffects?.awakening?.specialAttack;
+  if (!spec) throw new Error("Fruit has no awakening special attack");
+
+  if (spec.oncePerGame && captain.usedOnceAbilities.includes(spec.name)) {
+    throw new Error("Already used this fruit ability (1x/game)");
+  }
+  if (!canAfford(state, playerId, spec.cost)) {
+    throw new Error(`Cannot afford fruit special (cost ${spec.cost})`);
+  }
+
+  // Decision §8.38: every declaration path is bound by a taunt (inert while
+  // nothing in the catalogue can taunt a captain).
+  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
+
+  let next: GameState = spendVolonte(state, playerId, spec.cost);
+
+  let baseAtk = capDef.verso.atk;
+  for (const mod of captain.modifiers) {
+    if (mod.stat === "atk") baseAtk += mod.amount;
+  }
+  const totalAtk = baseAtk + spec.atkBonus;
+
+  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+
+  let targetDefVal = 0;
+  if (targetIsCaptain) {
+    const opponent = getOpponent(playerId);
+    const cap = next.players[opponent].captain;
+    const oppCapDef = getCaptainDef(cap.defId);
+    targetDefVal = cap.flipped ? oppCapDef.verso.def : oppCapDef.recto.def;
+    for (const mod of cap.modifiers) {
+      if (mod.stat === "def") targetDefVal += mod.amount;
+    }
+  } else {
+    targetDefVal = getEffectiveDef(next, targetInstanceId);
+  }
+  // Decision §8.55: DEF is clamped at 0 before the halving.
+  if (attackTraits.includes("piercing") || captainHasTraitNow(next, playerId, "piercing")) {
+    targetDefVal = Math.floor(Math.max(0, targetDefVal) / 2);
+  }
+  if (spec.ignoreDef) targetDefVal = Math.max(0, targetDefVal - spec.ignoreDef);
+
+  const rawDamage = Math.max(0, totalAtk - targetDefVal);
+
+  const hasHaki =
+    ((capDef.verso.naturalHaki && capDef.verso.naturalHaki.length > 0) ?? false) ||
+    next.turnNumber >= 7 ||
+    spec.element === "water" ||
+    !!next.players[playerId].hakiThisTurn;
+
+  const pending: PendingAttack = {
+    attackerId: `captain_${playerId}`,
+    targetId: targetInstanceId,
+    targetIsCaptain,
+    isSpecial: true,
+    rawDamage,
+    attackPower: totalAtk,
+    element: spec.element,
+    attackTraits,
+    hasHaki,
+    ignoreShield: spec.ignoreShield,
+    immobilize: spec.immobilize,
+    sleep: spec.sleep,
+    pushback: spec.pushback,
+    stripStealth: spec.stripStealth,
+    // Decision §8.38 × §8.48: BW-011 "Ground Death" prints both clauses.
+    permanentPvLoss: spec.permanentPvLoss,
+    noHeal: spec.noHeal,
+  };
+
+  next = produce(next, (draft) => {
+    const cap = draft.players[playerId].captain;
+    cap.tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
+    cap.usedSpecialAttack = true;
+    cap.usedBaseAction = true;
+    if (spec.oncePerGame) cap.usedOnceAbilities.push(spec.name);
+    draft.pendingAttack = pending;
+  });
+
+  const targetName = targetIsCaptain
+    ? "Capitaine"
+    : getCardDef(next.cards[targetInstanceId].defId).name;
+  next = addLog(
+    next,
+    playerId,
+    `Capitaine ${capDef.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 
   return next;
@@ -1137,10 +1292,13 @@ function applyCaptainDamage(
   const opponentId = getOpponent(attackerOwner);
   const cap = state.players[opponentId].captain;
 
-  // Logia check on captain
+  // Logia check on captain — decision §8.28 (follow-up): the trait may come
+  // from the fruit the captain wears (`MR-011`, `BW-011`), not only from the
+  // printed verso list. Rust: `captain::captain_has_trait_now`.
   if (cap.flipped) {
     const capDef = getCaptainDef(cap.defId);
-    const isLogia = capDef.verso.traits?.includes("logia") ?? false;
+    const { captainHasTraitNow } = require("./captain");
+    const isLogia = captainHasTraitNow(state, opponentId, "logia") as boolean;
     if (isLogia && !pending.hasHaki && pending.rawDamage > 0) {
       return addLog(
         state,

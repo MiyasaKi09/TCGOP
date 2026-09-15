@@ -6,7 +6,7 @@ import type {
   CardInstance,
   Trait,
 } from "@/types";
-import type { CardDef, ObjectSubtype } from "@/types";
+import type { CardDef, CaptainDef, ObjectSubtype } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
 import { spendVolonte, canAfford } from "./volonte";
 import { addLog, getOpponent } from "./gameState";
@@ -145,6 +145,29 @@ export function getEffectiveDef(
   return Math.max(0, defVal);
 }
 
+/**
+ * Does any object of `attached` grant `trait` to whoever wears it?
+ *
+ * The object half of `hasTrait`, extracted so the captain reads its equipment
+ * with exactly the same rule (decision §8.28 follow-up): a fruit's
+ * `base.grantsTraits`, and its `awakening.grantsTraits` once awakened.
+ * Rust: `board::attachments_grant_trait`.
+ */
+export function attachmentsGrantTrait(
+  state: GameState,
+  attached: readonly string[],
+  trait: Trait
+): boolean {
+  for (const objId of attached) {
+    const objCard = state.cards[objId];
+    if (!objCard) continue;
+    const objDef = getCardDef(objCard.defId);
+    if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
+    if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
+  }
+  return false;
+}
+
 /** Check if a character has a specific trait (including from Devil Fruits) */
 export function hasTrait(
   state: GameState,
@@ -157,15 +180,7 @@ export function hasTrait(
   if (def.traits?.includes(trait)) return true;
 
   // Check traits from equipped Devil Fruits
-  for (const objId of card.attachedObjects) {
-    const objCard = state.cards[objId];
-    if (!objCard) continue;
-    const objDef = getCardDef(objCard.defId);
-    if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
-    if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
-  }
-
-  return false;
+  return attachmentsGrantTrait(state, card.attachedObjects, trait);
 }
 
 /**
@@ -301,11 +316,72 @@ export function hasFreeObjectSlot(
  * Rust: `board::equip_restriction_ok` / `board::restriction_matches`.
  */
 export function equipRestrictionOk(targetDef: CardDef, restriction: string): boolean {
+  return restrictionMatches(targetDef.name, targetDef.tags ?? [], restriction);
+}
+
+/**
+ * The name-or-tag half of `equipRestrictionOk`, shared with the captain bearer
+ * (decision §8.28 follow-up): the printed restriction is satisfied by a
+ * substring of the unit's **name** ("Zoro", "Mr. 4", "Luffy") or by one of its
+ * **tags** ("bretteur", "tireur"). An empty restriction is JS-falsy and never
+ * checked. Rust: `board::restriction_matches`.
+ */
+export function restrictionMatches(
+  name: string,
+  tags: readonly string[],
+  restriction: string
+): boolean {
   if (!restriction) return true;
-  return (
-    targetDef.name.includes(restriction) ||
-    (targetDef.tags?.some((t) => t === restriction) ?? false)
-  );
+  return name.includes(restriction) || tags.some((t) => t === restriction);
+}
+
+/**
+ * Decision §8.28 (follow-up) — may this player's captain wear `objDef`?
+ *
+ * The three signature SR Devil Fruits are printed "Équipable sur Luffy",
+ * "… sur Crocodile", "… sur Akainu", and those three names exist in the game
+ * **only** as captains: no character in any set is called Luffy, Crocodile or
+ * Akainu and no set carries a matching tag, so the character-only rule of
+ * §8.28 left all three unequippable — three dead SR cards, one in each of
+ * three shipped decklists, and with them the whole `BW-011` Ground Death
+ * awakening. The natural — and literal — reading of the printed line is taken:
+ * the fruit is worn by the captain it names.
+ *
+ * The rule is deliberately narrow so nothing else moves: an object reaches the
+ * captain **only** when its own printed `restriction` names that captain by
+ * name or tag, so an unrestricted object is refused and the rest of the
+ * catalogue is untouched. Rust: `board::captain_equip_restriction_ok`.
+ */
+export function captainEquipRestrictionOk(capDef: CaptainDef, objDef: CardDef): boolean {
+  if (!objDef.restriction) return false;
+  return restrictionMatches(capDef.name, capDef.tags ?? [], objDef.restriction);
+}
+
+/**
+ * Decision §8.28 (follow-up) — the captain's object-slot cap. A character's cap
+ * comes from its own passive (`threeWeaponSlots`, `twoAccessorySlots`); a
+ * captain has no such passive and no printed slot line, so it keeps the default
+ * of one object per subtype. Rust: `board::CAPTAIN_MAX_OBJECT_SLOTS`.
+ */
+export const CAPTAIN_MAX_OBJECT_SLOTS = 1;
+
+/**
+ * Has the captain a free slot for an object of `objDef`'s subtype?
+ * Rust: `board::captain_has_free_object_slot`.
+ */
+export function captainHasFreeObjectSlot(
+  state: GameState,
+  playerId: PlayerId,
+  objDef: CardDef
+): boolean {
+  if (!objDef.subtype) return true;
+  let same = 0;
+  for (const id of state.players[playerId].captain.attachedObjects ?? []) {
+    const inst = state.cards[id];
+    if (!inst) continue;
+    if (getCardDef(inst.defId).subtype === objDef.subtype) same += 1;
+  }
+  return same < CAPTAIN_MAX_OBJECT_SLOTS;
 }
 
 /** Check if character has summoning sickness (deployed this turn, no Rush) */
@@ -471,8 +547,15 @@ export function equipObject(
   state: GameState,
   playerId: PlayerId,
   objectInstanceId: string,
-  targetInstanceId: string
+  targetInstanceId: string,
+  targetIsCaptain = false
 ): GameState {
+  // Decision §8.28 (follow-up): "Équipable sur Luffy / Crocodile / Akainu"
+  // names a **captain**, so the captain is a legal bearer — see
+  // `equipObjectOnCaptain` for the rule and its bounds.
+  if (targetIsCaptain) {
+    return equipObjectOnCaptain(state, playerId, objectInstanceId);
+  }
   const objCard = state.cards[objectInstanceId];
   if (!objCard) throw new Error(`Object not found: ${objectInstanceId}`);
   if (objCard.owner !== playerId) throw new Error("Not your card");
@@ -574,6 +657,109 @@ export function equipObject(
   next = recalculatePassiveBuffs(next, playerId);
 
   return next;
+}
+
+/**
+ * Decision §8.28 (follow-up) — equip an object onto the player's own captain.
+ *
+ * The three signature SR Devil Fruits (`MG-014` Gomu Gomu no Mi, `BW-011` Suna
+ * Suna no Mi, `MR-011` Magu Magu no Mi) are printed "Équipable sur Luffy /
+ * Crocodile / Akainu"; those names exist in the game only as captains, so under
+ * the character-only rule of §8.28 each shipped decklist carried one
+ * permanently dead SR card. The captain is the printed bearer and is treated as
+ * one here.
+ *
+ * The rule is deliberately narrow, so nothing outside those printed lines
+ * changes: an object reaches the captain **only** through
+ * `captainEquipRestrictionOk`, i.e. only when its own printed `restriction`
+ * names that captain by name or tag. Everything else is the character path's
+ * rule read on the captain: the object must be an object card in the player's
+ * hand, the subtype cap is `CAPTAIN_MAX_OBJECT_SLOTS`, the cost is paid, the log
+ * line is the same `"Equipe {obj} sur {captain}"`, a fruit runs
+ * `applyFruitBaseEffectsOnCaptain` and the passive buffs are recalculated. No
+ * face requirement is invented: the captain is in play on both faces.
+ *
+ * The four signature-weapon wielder bonuses are character-keyed (Zoro /
+ * Tashigi / Ben Beckman / Yasopp) and no captain name matches one, so they are
+ * deliberately not repeated here.
+ *
+ * Rust: `board::equip_object_on_captain`.
+ */
+export function equipObjectOnCaptain(
+  state: GameState,
+  playerId: PlayerId,
+  objectInstanceId: string
+): GameState {
+  const objCard = state.cards[objectInstanceId];
+  if (!objCard) throw new Error(`Object not found: ${objectInstanceId}`);
+  if (objCard.owner !== playerId) throw new Error("Not your card");
+  if (objCard.zone !== "hand") throw new Error("Object not in hand");
+
+  const objDef = getCardDef(objCard.defId);
+  if (objDef.type !== "object") throw new Error("Not an object card");
+
+  const capDef = getCaptainDef(state.players[playerId].captain.defId);
+  if (!captainEquipRestrictionOk(capDef, objDef)) {
+    throw new Error(
+      `${capDef.name} ne peut pas equiper ${objDef.name} (reserve a ${objDef.restriction ?? ""})`
+    );
+  }
+
+  if (!canAfford(state, playerId, objDef.cost)) {
+    throw new Error(`Cannot afford ${objDef.name} (cost ${objDef.cost})`);
+  }
+
+  if (!captainHasFreeObjectSlot(state, playerId, objDef)) {
+    throw new Error(`${capDef.name} already has max ${objDef.subtype ?? "object"} equipped`);
+  }
+
+  let next = spendVolonte(state, playerId, objDef.cost);
+
+  next = produce(next, (draft) => {
+    const p = draft.players[playerId];
+    const obj = draft.cards[objectInstanceId];
+
+    // Remove from hand
+    p.hand = p.hand.filter((id) => id !== objectInstanceId);
+
+    // Attach to the captain. The object stands where its bearer stands —
+    // `undefined` while the captain is still recto (off-board), and
+    // `flipCaptain` writes the slot when the captain arrives (§8.29).
+    obj.zone = "board";
+    obj.slot = p.captain.slot;
+    p.captain.attachedObjects = [...(p.captain.attachedObjects ?? []), objectInstanceId];
+  });
+
+  next = addLog(next, playerId, `Equipe ${objDef.name} sur ${capDef.name}`);
+
+  // Apply Devil Fruit effects if it's a fruit
+  if (objDef.subtype === "fruit" && objDef.fruitEffects) {
+    const { applyFruitBaseEffectsOnCaptain } = require("./fruits");
+    next = applyFruitBaseEffectsOnCaptain(next, objectInstanceId, playerId);
+  }
+
+  // Recalculate passive buffs (never strips captain modifiers, so the fruit
+  // bonuses live).
+  const { recalculatePassiveBuffs } = require("./passives");
+  next = recalculatePassiveBuffs(next, playerId);
+
+  return next;
+}
+
+/**
+ * Decision §8.29 — the equipment stands where its bearer stands: write
+ * `targetSlot` onto every attached object. Rust: `board::move_attached_objects`.
+ * Called from inside an immer `produce` (the draft is passed in).
+ */
+export function moveAttachedObjectsInDraft(
+  draft: GameState,
+  attached: readonly string[],
+  targetSlot: Slot
+): void {
+  for (const objId of attached) {
+    const obj = draft.cards[objId];
+    if (obj) obj.slot = targetSlot;
+  }
 }
 
 /**

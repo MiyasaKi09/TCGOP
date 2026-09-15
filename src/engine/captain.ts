@@ -1,9 +1,16 @@
 import { produce } from "immer";
-import type { GameState, PlayerId, Slot, EntryEffect } from "@/types";
+import type { GameState, PlayerId, Slot, EntryEffect, Trait, CaptainInstance } from "@/types";
 import { getCaptainDef, getCardDef } from "./cardRegistry";
 import { canAfford, spendVolonte } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
-import { getBoardCharacters, getEffectiveAtk, getEffectiveDef, hasTrait } from "./board";
+import {
+  getBoardCharacters,
+  getEffectiveAtk,
+  getEffectiveDef,
+  hasTrait,
+  attachmentsGrantTrait,
+  moveAttachedObjectsInDraft,
+} from "./board";
 
 export type FreeFlipReason =
   | "allyKO"
@@ -11,6 +18,42 @@ export type FreeFlipReason =
   | "enemyCursed"
   | "alliesGte"
   | "turnGte";
+
+/**
+ * A frozen / immobilized / sleeping captain cannot act — the single predicate
+ * shared by the enumerator and the executors (decision §8.1 item 35).
+ * Rust: `captain::captain_cannot_act`.
+ */
+export function captainCannotAct(captain: CaptainInstance): boolean {
+  return captain.statusEffects.some(
+    (e) => e.type === "freeze" || e.type === "immobilize" || e.type === "sleep"
+  );
+}
+
+/**
+ * Decision §8.28 (follow-up) × §8.40 — the captain's *live* traits: its printed
+ * traits (card level, plus the verso list once flipped) **plus** the traits its
+ * equipment grants.
+ *
+ * This is `hasTrait` for a captain, and it exists for the same reason: once the
+ * captain can wear the fruit printed for it ("Équipable sur Luffy / Crocodile /
+ * Akainu"), that fruit's `grantsTraits` — `logia` and `cursed` on `BW-011` /
+ * `MR-011`, `cursed` on `MG-014`, plus the awakening list once awakened —
+ * belong to the captain exactly as they belong to a character. With no
+ * attachment it is the printed read, unchanged.
+ * Rust: `captain::captain_has_trait_now`.
+ */
+export function captainHasTraitNow(
+  state: GameState,
+  playerId: PlayerId,
+  trait: Trait
+): boolean {
+  const captain = state.players[playerId].captain;
+  const def = getCaptainDef(captain.defId);
+  if (def.traits?.includes(trait)) return true;
+  if (captain.flipped && def.verso.traits?.includes(trait)) return true;
+  return attachmentsGrantTrait(state, captain.attachedObjects ?? [], trait);
+}
 
 /**
  * Is an enemy Cursed unit in play? (`freeIfEnemyCursed`, decision §8.33.)
@@ -26,11 +69,9 @@ function enemyCursedInPlay(state: GameState, playerId: PlayerId): boolean {
   for (const c of getBoardCharacters(state, opponentId)) {
     if (hasTrait(state, c.instanceId, "cursed")) return true;
   }
-  const oppCap = state.players[opponentId].captain;
-  const oppCapDef = getCaptainDef(oppCap.defId);
-  if (oppCapDef.traits?.includes("cursed")) return true;
-  if (oppCap.flipped && oppCapDef.verso.traits?.includes("cursed")) return true;
-  return false;
+  // Decision §8.28 (follow-up): a captain wearing a Cursed fruit is a Cursed
+  // unit in play, exactly like a character wearing one.
+  return captainHasTraitNow(state, opponentId, "cursed");
 }
 
 /**
@@ -143,6 +184,10 @@ export function flipCaptain(
     cap.currentPv = def.verso.pv - dmgMarked;
     cap.slot = slot;
     cap.deployedTurn = draft.turnNumber;
+    // Decision §8.28 (follow-up) × §8.29: the equipment stands where its bearer
+    // stands, so a captain equipped while still recto (off-board, slot
+    // undefined) brings its objects into the slot it flips into.
+    moveAttachedObjectsInDraft(draft, cap.attachedObjects ?? [], slot);
   });
 
   next = addLog(
@@ -354,7 +399,9 @@ export function declareCaptainBaseAttack(
   // Captain summoning sickness
   if (captain.deployedTurn === state.turnNumber) {
     // Verso captain just flipped — has mal de terre unless Rush
-    const hasRush = def.verso.traits?.includes("rush") ?? false;
+    // Decision §8.28 (follow-up) × §8.40: every captain trait read goes through
+    // the union helper, `rush` included — an awakened Gomu Gomu no Mi grants it.
+    const hasRush = captainHasTraitNow(state, playerId, "rush");
     if (!hasRush) throw new Error("Captain has summoning sickness");
   }
 
