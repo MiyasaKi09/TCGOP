@@ -429,6 +429,10 @@ export interface CaptainInstance {
   /** Decision §8.40: the captain counterpart of `CardInstance.pvMaxLoss` — the
    *  permanent max-PV loss against the **active** face's printed PV. */
   pvMaxLoss?: number;
+  /** Decision §8.40 : le pendant capitaine de `CardInstance.logiaUsedThisTurn`.
+   *  L'intangibilite Logia est une fois par tour sur un personnage ; le
+   *  capitaine porte le meme mot-cle, donc la meme limite. */
+  logiaUsedThisTurn?: boolean;
 }
 
 export interface PlayerState {

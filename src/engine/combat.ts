@@ -1399,9 +1399,16 @@ function applyCaptainDamage(
     const capDef = getCaptainDef(cap.defId);
     const { captainHasTraitNow } = require("./captain");
     const isLogia = captainHasTraitNow(state, opponentId, "logia") as boolean;
-    if (isLogia && !pending.hasHaki && pending.rawDamage > 0) {
+    // Decision §8.40 — une fois par tour, exactement comme un personnage.
+    // Le TS laissait un capitaine Logia ignorer TOUTES les attaques sans Haki
+    // du tour : le Rust (reference) compte la premiere et laisse passer les
+    // suivantes, avec un test dedie.
+    if (isLogia && !pending.hasHaki && pending.rawDamage > 0 && !cap.logiaUsedThisTurn) {
+      const marked = produce(state, (draft) => {
+        draft.players[opponentId].captain.logiaUsedThisTurn = true;
+      });
       return addLog(
-        state,
+        marked,
         attackerOwner,
         `⚠ ${capDef.name} : INTANGIBILITE LOGIA ! L'attaque passe a travers. Utilisez le Haki (T7+) ou l'Eau pour le toucher.`
       );

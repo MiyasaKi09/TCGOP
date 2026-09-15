@@ -428,6 +428,9 @@ function resetTurnFlags(state: GameState): GameState {
     }
     player.captain.usedBaseAction = false;
     player.captain.usedSpecialAttack = false;
+    // Decision §8.40 — meme remise a zero que les personnages, au meme endroit
+    // que le Rust (`state::reset_turn_flags`).
+    player.captain.logiaUsedThisTurn = false;
 
     // Expire turn-duration modifiers on all player's cards
     for (const slot of Object.values(player.board)) {

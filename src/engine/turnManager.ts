@@ -1453,13 +1453,15 @@ export function getValidActions(
           if (!fruitSpec) continue;
           if (fruitSpec.oncePerGame && player.captain.usedOnceAbilities.includes(fruitSpec.name)) continue;
           if (!canAfford(state, playerId, fruitSpec.cost)) continue;
-          actions.push({
-            type: "fruitSpecialAttack",
-            attackerInstanceId: `captain_${playerId}`,
-            fruitInstanceId: objId,
-            targetInstanceId: `captain_${getOpponent(playerId)}`,
-            targetIsCaptain: true,
-          });
+          if (!captainIsUntargetable(state, oppId)) {
+            actions.push({
+              type: "fruitSpecialAttack",
+              attackerInstanceId: `captain_${playerId}`,
+              fruitInstanceId: objId,
+              targetInstanceId: `captain_${oppId}`,
+              targetIsCaptain: true,
+            });
+          }
           for (const opp of oppChars) {
             actions.push({
               type: "fruitSpecialAttack",
