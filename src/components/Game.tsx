@@ -60,6 +60,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
   const [logExpanded, setLogExpanded] = useState(false);
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
   const [hoveredHand, setHoveredHand] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const [hoveredUnit, setHoveredUnit] = useState<{ id: string; rect: DOMRect } | null>(null);
   const [webglActive, setWebglActive] = useState(false);
   const onVfxActiveChange = useCallback((a: boolean) => setWebglActive(a), []);
 
@@ -427,6 +428,10 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           isDimmed={isDimmed}
           onClick={act}
           onDrop={act}
+          onHoverChange={(rect) => {
+            if (rect && charId) setHoveredUnit({ id: charId, rect });
+            else setHoveredUnit((h) => (h && charId && h.id === charId ? null : h));
+          }}
         />
       );
     });
@@ -844,6 +849,45 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       {renderCounterWindow()}
 
       {showHelp && <HelpPanel state={state} humanPlayer={humanPlayer} onClose={() => setShowHelp(false)} />}
+
+      {/* Équipement porté, révélé EN IMAGE au survol, à côté de l'unité : le
+          jeton ne montre qu'un compteur, donc l'effet d'un Fruit ou d'une arme
+          était invisible sans ouvrir un menu. */}
+      {hoveredUnit && uiMode.type === "idle" && !inCounterWindow && (() => {
+        const unit = state.cards[hoveredUnit.id];
+        if (!unit || unit.attachedObjects.length === 0) return null;
+        const PW = 168;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1600;
+        const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+        const r = hoveredUnit.rect;
+        // À droite de la case, sinon à gauche quand le bord est trop proche.
+        const left = r.right + 10 + PW < vw ? r.right + 10 : Math.max(8, r.left - PW - 10);
+        const height = unit.attachedObjects.length * 236;
+        const top = Math.min(Math.max(8, r.top + r.height / 2 - height / 2), Math.max(8, vh - height - 8));
+        return (
+          <div className="fixed z-40 pointer-events-none flex flex-col gap-2 animate-fade-in" style={{ left, top }}>
+            {unit.attachedObjects.map((objId) => {
+              const obj = state.cards[objId];
+              if (!obj) return null;
+              let objDef;
+              try { objDef = getCardDef(obj.defId); } catch { return null; }
+              return (
+                <div key={objId} className="relative">
+                  <FullCard def={objDef} instance={obj} state={state} width={PW} />
+                  {obj.isAwakened && (
+                    <span
+                      className="absolute top-1 left-1 font-oswald font-bold text-[9px] px-1.5 rounded text-gold"
+                      style={{ background: "rgba(8,12,18,.85)", border: "1px solid var(--gold)" }}
+                    >
+                      ⭐ Éveillé
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* Refus du moteur : dire pourquoi, plutôt que de ne rien faire. */}
       {notice && (

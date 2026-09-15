@@ -16,6 +16,8 @@ interface BoardSlotProps {
   isDimmed?: boolean;
   onClick?: () => void;
   onDrop?: () => void;
+  /** Survol de la case occupée : sert à révéler l'équipement porté à côté. */
+  onHoverChange?: (rect: DOMRect | null) => void;
 }
 
 export default function BoardSlot({
@@ -28,6 +30,7 @@ export default function BoardSlot({
   isDimmed,
   onClick,
   onDrop,
+  onHoverChange,
 }: BoardSlotProps) {
   const isFront = slot.startsWith("V");
   const ring = isImpact ? "ring-impact" : isValidTarget ? "ring-target" : isValidDeploy ? "ring-deploy" : "";
@@ -37,6 +40,8 @@ export default function BoardSlot({
       onClick={onClick}
       onDragOver={(e) => { if (onDrop) e.preventDefault(); }}
       onDrop={(e) => { e.preventDefault(); onDrop?.(); }}
+      onMouseEnter={(e) => { if (instance) onHoverChange?.(e.currentTarget.getBoundingClientRect()); }}
+      onMouseLeave={() => onHoverChange?.(null)}
       data-inst={instance?.instanceId}
       className={`relative flex-1 min-w-0 max-w-[120px] h-[3.9rem] rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer ${ring} ${isDimmed ? "slot-dim" : ""} ${instance ? "" : "slot-empty"}`}
     >
