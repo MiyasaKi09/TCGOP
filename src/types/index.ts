@@ -395,6 +395,9 @@ export interface CardInstance {
   usedOnceAbilities: string[];
   /** Is this a Devil Fruit that has been awakened? */
   isAwakened?: boolean;
+  /** Decision §8.5/§8.38: permanent max-PV loss ("perd N PV permanent (Sable)").
+   *  The instance's maximum PV is `def.pv - pvMaxLoss`, never the printed PV alone. */
+  pvMaxLoss?: number;
 }
 
 export interface CaptainInstance {
@@ -415,6 +418,9 @@ export interface CaptainInstance {
    *  Akainu", names that exist in the game only as captains. Absent when the
    *  captain wears nothing. */
   attachedObjects?: string[];
+  /** Decision §8.40: the captain counterpart of `CardInstance.pvMaxLoss` — the
+   *  permanent max-PV loss against the **active** face's printed PV. */
+  pvMaxLoss?: number;
 }
 
 export interface PlayerState {
@@ -472,6 +478,10 @@ export interface PendingAttack {
   pushback?: boolean;
   pushbackSlots?: number;
   stripStealth?: boolean;
+  /** Decision §8.38: "La cible perd N PV permanent (Sable)" — lowers the max PV. */
+  permanentPvLoss?: number;
+  /** Decision §8.38: "... et ne peut plus etre soignee" — a 2-turn `noHeal` status. */
+  noHeal?: boolean;
 }
 
 export interface LogEntry {

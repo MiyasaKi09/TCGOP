@@ -116,6 +116,10 @@ function scoreAction(
       return scoreAttack(state, playerId, action);
     case "captainAttack":
       return scoreAttack(state, playerId, action);
+    // Decision §8.19: an awakened-fruit swing is one of the strongest attacks in
+    // the game; the switch omitted it, so it scored 0 — below `moveCharacter`.
+    case "fruitSpecialAttack":
+      return scoreAttack(state, playerId, action);
     case "playEvent":
       return scoreEvent(state, playerId, action);
     case "playCounter":
@@ -169,7 +173,17 @@ function scoreEquipObject(
   state: GameState,
   action: Extract<GameAction, { type: "equipObject" }>
 ): number {
-  const objDef = getCardDef(state.cards[action.objectInstanceId].defId);
+  // Decision §8.20: scoring is a heuristic, never a legality check, and
+  // `chooseExpert` calls `scoreAction` OUTSIDE its try/catch — a dangling
+  // instance behind one candidate must score badly, not abort the AI turn.
+  const objCard = state.cards[action.objectInstanceId];
+  if (!objCard) return 0;
+  let objDef;
+  try {
+    objDef = getCardDef(objCard.defId);
+  } catch {
+    return 0;
+  }
   let score = 8;
   score += (objDef.bonusAtk ?? 0) * 3;
   return score;
@@ -188,15 +202,24 @@ function scoreAttack(
     score += 15;
   }
 
-  // Check if we can KO the target
-  if ("attackerInstanceId" in action && "targetInstanceId" in action) {
+  // Check if we can KO the target.
+  // Decision §8.19: a `captainAttack` carries no `attackerInstanceId`, so the
+  // old `"attackerInstanceId" in action` guard skipped the whole KO block and a
+  // lethal captain swing scored a flat 5/20. The attacker's ATK for a captain
+  // attack comes from the **active** face plus the captain's ATK modifiers.
+  const isCaptainAttack = action.type === "captainAttack";
+  if (("attackerInstanceId" in action || isCaptainAttack) && "targetInstanceId" in action) {
     if (!("targetIsCaptain" in action && action.targetIsCaptain)) {
       const targetId = (action as { targetInstanceId: string }).targetInstanceId;
       const target = state.cards[targetId];
       if (target) {
-        const attackerAtk = "attackerInstanceId" in action
-          ? getEffectiveAtk(state, (action as { attackerInstanceId: string }).attackerInstanceId)
-          : 0;
+        const attackerId = "attackerInstanceId" in action
+          ? (action as { attackerInstanceId: string }).attackerInstanceId
+          : undefined;
+        const attackerAtk =
+          attackerId !== undefined && !attackerId.startsWith("captain_")
+            ? getEffectiveAtk(state, attackerId)
+            : captainEffectiveAtk(state, playerId);
         const targetDefVal = getEffectiveDef(state, targetId);
         const damage = Math.max(0, attackerAtk - targetDefVal);
         if (damage >= target.currentPv) {
@@ -209,11 +232,32 @@ function scoreAttack(
   }
 
   // Special attacks are big commitments — slightly lower base score
-  if (action.type === "specialAttack") {
+  // (§8.19: `fruitSpecialAttack` is a special attack too).
+  if (action.type === "specialAttack" || action.type === "fruitSpecialAttack") {
     score += 5; // But they do more damage
   }
 
   return score;
+}
+
+/**
+ * The attacker-side ATK `scoreAttack` uses for a `captainAttack` (decision
+ * §8.19): the **active** face's printed ATK plus the captain's ATK modifiers,
+ * mirroring what `declareCaptainBaseAttack` computes.
+ */
+function captainEffectiveAtk(state: GameState, playerId: PlayerId): number {
+  const captain = state.players[playerId].captain;
+  let def;
+  try {
+    def = getCaptainDef(captain.defId);
+  } catch {
+    return 0;
+  }
+  let atk = captain.flipped ? def.verso.atk : def.recto.atk;
+  for (const m of captain.modifiers) {
+    if (m.stat === "atk") atk += m.amount;
+  }
+  return atk;
 }
 
 function scoreEvent(

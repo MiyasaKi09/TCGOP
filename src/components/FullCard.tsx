@@ -8,6 +8,9 @@ import { ELEMENT_COLOR } from "@/lib/theme";
 import { Heart, Crest } from "./icons";
 
 export interface CardActions {
+  /** Effet de soutien d'un `baseAction.isSupport` (ligne distincte de l'attaque). */
+  support?: { onClick: () => void; disabled: boolean; reason?: string | null };
+  /** Attaque de base. Sur un personnage de soutien, elle a sa propre ligne. */
   base?: { onClick: () => void; disabled: boolean; reason?: string | null };
   special?: { onClick: () => void; disabled: boolean; reason?: string | null };
 }
@@ -170,7 +173,12 @@ export default function FullCard({ def, instance, state, width = 300, actions }:
             </div>
           )}
           {(base || spec) && <div style={{ height: 1, margin: "2px 0", background: "linear-gradient(90deg,rgba(255,255,255,.38),transparent)" }} />}
-          {base && renderAction(base, false, actions?.base)}
+          {/* Un personnage de soutien a DEUX actions de base distinctes : son effet
+              et son attaque. Les fusionner sur une seule ligne rendait l'attaque
+              injoignable et faisait changer le bouton de sens sans le dire. */}
+          {base && renderAction(base, false, base.isSupport ? actions?.support : actions?.base)}
+          {base?.isSupport && atk > 0 && actions?.base &&
+            renderAction({ name: "Attaquer", atk, description: "Attaque de base au corps à corps." }, false, actions.base)}
           {spec && renderAction(spec, true, actions?.special)}
           {!isChar && (
             <div style={{ fontFamily: "var(--font-spectral)", fontStyle: "italic", fontSize: 10, lineHeight: 1.2, color: "rgba(255,255,255,.82)" }}>

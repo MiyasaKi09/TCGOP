@@ -14,6 +14,8 @@ import CaptainMenu from "./CaptainMenu";
 import ShipMenu from "./ShipMenu";
 import FullCard from "./FullCard";
 import EventConfirm from "./EventConfirm";
+import HakiBar from "./HakiBar";
+import HelpPanel from "./HelpPanel";
 import CombatVfxLayer from "./CombatVfxLayer";
 import PlayRevealLayer from "./PlayRevealLayer";
 import VfxStage from "./vfx/VfxStage";
@@ -37,7 +39,7 @@ interface GameProps {
 type UIMode =
   | { type: "idle" }
   | { type: "selectingSlot"; cardId: string }
-  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean }
+  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string }
   | { type: "selectingSupportTarget"; instanceId: string }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
@@ -49,9 +51,11 @@ type UIMode =
   | { type: "selectingCaptainSlot" };
 
 export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }: GameProps) {
-  const { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement } =
+  const { state, validActions, dispatch, isAiTurn, humanPlayer, announcements, dismissAnnouncement, notice } =
     useGameEngine(playerDeck, aiDeck, "player1", difficulty);
   const [uiMode, setUiMode] = useState<UIMode>({ type: "idle" });
+  const [showHelp, setShowHelp] = useState(false);
+  const [logExpanded, setLogExpanded] = useState(false);
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
   const [hoveredHand, setHoveredHand] = useState<{ id: string; rect: DOMRect } | null>(null);
   const [webglActive, setWebglActive] = useState(false);
@@ -124,6 +128,18 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
   const attackTargets = useMemo(() => {
     if (uiMode.type !== "selectingTarget") return new Set<string>();
     const targets = new Set<string>();
+    // Decision §8.28 (follow-up): an awakened fruit worn by the captain fires a
+    // `fruitSpecialAttack` whose attacker is the synthetic `captain_{id}`.
+    if (uiMode.fruitInstanceId) {
+      const fruitId = uiMode.fruitInstanceId;
+      for (const a of validActions) {
+        if (a.type !== "fruitSpecialAttack") continue;
+        if (a.attackerInstanceId !== uiMode.attackerId || a.fruitInstanceId !== fruitId) continue;
+        if (a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
+        else targets.add(a.targetInstanceId);
+      }
+      return targets;
+    }
     const isCaptainAttack = uiMode.attackerId.startsWith("captain_");
     const actionType = isCaptainAttack ? "captainAttack" : (uiMode.isSpecial ? "specialAttack" : "baseAttack");
     for (const a of validActions) {
@@ -145,6 +161,12 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
   const attackIsZone = useMemo(() => {
     if (uiMode.type !== "selectingTarget") return false;
     const { attackerId, isSpecial } = uiMode;
+    if (uiMode.fruitInstanceId) {
+      const fruit = state.cards[uiMode.fruitInstanceId];
+      if (!fruit) return false;
+      const spec = getCardDef(fruit.defId).fruitEffects?.awakening?.specialAttack;
+      return !!spec?.attackTraits?.includes("zone");
+    }
     if (attackerId.startsWith("captain_")) {
       const pid = attackerId.replace("captain_", "") as PlayerId;
       const cd = getCaptainDef(state.players[pid].captain.defId);
@@ -215,13 +237,40 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     } else if (uiMode.type === "selectingTarget" && !isPlayerSide) {
       const targetId = opponent.board[slot];
       if (targetId && attackTargets.has(targetId)) {
-        dispatch({
-          type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
-          attackerInstanceId: uiMode.attackerId,
-          targetInstanceId: targetId,
-        } as GameAction);
+        fireAtTarget(uiMode, targetId, false);
         resetUI();
       }
+    }
+  };
+
+  // Fire whatever is being aimed (character attack, captain attack, or the
+  // captain's awakened-fruit special — decision §8.28 follow-up) at `targetId`.
+  const fireAtTarget = (
+    mode: Extract<UIMode, { type: "selectingTarget" }>,
+    targetId: string,
+    targetIsCaptain: boolean
+  ) => {
+    if (mode.fruitInstanceId) {
+      dispatch({
+        type: "fruitSpecialAttack",
+        attackerInstanceId: mode.attackerId,
+        fruitInstanceId: mode.fruitInstanceId,
+        targetInstanceId: targetId,
+        ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
+      } as GameAction);
+    } else if (mode.attackerId.startsWith("captain_")) {
+      dispatch({
+        type: "captainAttack",
+        targetInstanceId: targetId,
+        ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
+      } as GameAction);
+    } else {
+      dispatch({
+        type: mode.isSpecial ? "specialAttack" : "baseAttack",
+        attackerInstanceId: mode.attackerId,
+        targetInstanceId: targetId,
+        ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
+      } as GameAction);
     }
   };
 
@@ -237,15 +286,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       return;
     }
     if (uiMode.type === "selectingTarget" && !isPlayerSide && attackTargets.has(instanceId)) {
-      if (uiMode.attackerId.startsWith("captain_")) {
-        dispatch({ type: "captainAttack", targetInstanceId: instanceId } as GameAction);
-      } else {
-        dispatch({
-          type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
-          attackerInstanceId: uiMode.attackerId,
-          targetInstanceId: instanceId,
-        } as GameAction);
-      }
+      fireAtTarget(uiMode, instanceId, false);
       resetUI();
       return;
     }
@@ -259,16 +300,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
   const handleCaptainClick = (playerId: PlayerId) => {
     if (uiMode.type === "selectingTarget" && playerId === aiPlayer && attackTargets.has(`captain_${aiPlayer}`)) {
-      if (uiMode.attackerId.startsWith("captain_")) {
-        dispatch({ type: "captainAttack", targetInstanceId: `captain_${aiPlayer}`, targetIsCaptain: true } as GameAction);
-      } else {
-        dispatch({
-          type: uiMode.isSpecial ? "specialAttack" : "baseAttack",
-          attackerInstanceId: uiMode.attackerId,
-          targetInstanceId: `captain_${aiPlayer}`,
-          targetIsCaptain: true,
-        } as GameAction);
-      }
+      fireAtTarget(uiMode, `captain_${aiPlayer}`, true);
       resetUI();
     }
   };
@@ -276,6 +308,23 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
   // Click on either side's captain (prow or verso). Attack-targeting takes
   // priority; otherwise open its menu (powers + available actions).
   const onCaptainClick = (playerId: PlayerId) => {
+    // Decision §8.28 (follow-up): your own captain is an equip target — the
+    // three signature SR Devil Fruits are printed "Équipable sur Luffy /
+    // Crocodile / Akainu", names only a captain carries.
+    if (
+      uiMode.type === "selectingEquipTarget" &&
+      playerId === humanPlayer &&
+      equipTargets.has(`captain_${playerId}`)
+    ) {
+      dispatch({
+        type: "equipObject",
+        objectInstanceId: uiMode.objectId,
+        targetInstanceId: `captain_${playerId}`,
+        targetIsCaptain: true,
+      });
+      resetUI();
+      return;
+    }
     if (uiMode.type === "selectingTarget" && playerId === aiPlayer && attackTargets.has(`captain_${aiPlayer}`)) {
       handleCaptainClick(playerId);
       return;
@@ -296,6 +345,9 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       if (captainSlot === slot) {
         const capDef = getCaptainDef(ps.captain.defId);
         const isTarget = !isPlayerSide && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+        // Decision §8.28 (follow-up): the captain is an equip target too.
+        const isCapEquip = isPlayerSide && uiMode.type === "selectingEquipTarget" && equipTargets.has(`captain_${playerId}`);
+        const capGear = ps.captain.attachedObjects ?? [];
         const pvPercent = Math.max(0, (ps.captain.currentPv / capDef.verso.pv) * 100);
         const capArt = CARD_ART_VERSO[capDef.id] ?? CARD_ART[capDef.id];
         return (
@@ -303,12 +355,17 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             key={slot}
             data-inst={`captain_${playerId}`}
             onClick={() => onCaptainClick(playerId)}
-            className={`relative flex-1 min-w-0 max-w-[120px] h-[3.9rem] rounded-xl overflow-hidden cursor-pointer transition-all ${isTarget ? "ring-target" : "hover:brightness-110"} ${selecting && !isTarget ? "slot-dim" : ""}`}
+            onDragOver={(e) => { if (isCapEquip) e.preventDefault(); }}
+            onDrop={(e) => { e.preventDefault(); onCaptainClick(playerId); }}
+            className={`relative flex-1 min-w-0 max-w-[120px] h-[3.9rem] rounded-xl overflow-hidden cursor-pointer transition-all ${isTarget ? "ring-target" : isCapEquip ? "ring-deploy" : "hover:brightness-110"} ${selecting && !isTarget && !isCapEquip ? "slot-dim" : ""}`}
             style={{ background: "#1a0c0c", boxShadow: "inset 0 0 0 2px var(--color-target)" }}
           >
             {capArt && <div className="absolute inset-0" style={{ backgroundImage: `url('${capArt}')`, backgroundSize: "cover", backgroundPosition: "center 14%" }} />}
             <div className="absolute inset-0" style={{ background: "linear-gradient(180deg,rgba(6,10,20,.1),rgba(6,10,20,.9))" }} />
             <div className="absolute top-0.5 left-1 font-oswald text-[7px] uppercase tracking-widest text-red-200 font-bold">★ Verso</div>
+            {capGear.length > 0 && (
+              <span className="absolute top-0.5 right-1 font-oswald font-bold text-[9px] px-1 rounded text-gold" style={{ background: "rgba(232,184,75,.25)", border: "1px solid var(--ink-edge)" }}>⚔{capGear.length}</span>
+            )}
             <div className="absolute left-1 right-1 bottom-1">
               <div className="font-cinzel text-[10px] font-bold text-white truncate leading-none">{capDef.name}</div>
               <div className="hp-gauge w-full h-1.5 rounded-full mt-1">
@@ -361,13 +418,19 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     const hpc = hpColor(ratio);
     const capArt = ps.captain.flipped ? (CARD_ART_VERSO[capDef.id] ?? CARD_ART[capDef.id]) : CARD_ART[capDef.id];
     const capTarget = !isYou && uiMode.type === "selectingTarget" && attackTargets.has(`captain_${playerId}`);
+    // Decision §8.28 (follow-up): your own captain wears the fruit printed for
+    // it, so the command card is a drop/click target while equipping.
+    const capEquip = isYou && uiMode.type === "selectingEquipTarget" && equipTargets.has(`captain_${playerId}`);
+    const capGear = ps.captain.attachedObjects ?? [];
 
     // Captain command card
     const capCard = (
       <div
         data-inst={!ps.captain.flipped ? `captain_${playerId}` : undefined}
         onClick={() => onCaptainClick(playerId)}
-        className={`cap-cmd ${isYou ? "" : "foe"} ${capTarget ? "ring-target" : ""} ${selecting && !capTarget ? "slot-dim" : ""} ${ps.captain.tapped ? "saturate-50 opacity-80" : ""}`}
+        onDragOver={(e) => { if (capEquip) e.preventDefault(); }}
+        onDrop={(e) => { e.preventDefault(); onCaptainClick(playerId); }}
+        className={`cap-cmd ${isYou ? "" : "foe"} ${capTarget ? "ring-target" : ""} ${capEquip ? "ring-deploy" : ""} ${selecting && !capTarget && !capEquip ? "slot-dim" : ""} ${ps.captain.tapped ? "saturate-50 opacity-80" : ""}`}
       >
         {capArt && <div className="art" style={{ backgroundImage: `url('${capArt}')` }} />}
         <div className="sh" />
@@ -382,6 +445,20 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="hp-gauge flex-1 h-1.5 rounded-full"><div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, background: hpc }} /></div>
             <span className="font-oswald text-[10px] font-bold" style={{ color: hpc }}>{ps.captain.currentPv}</span>
           </div>
+          {capGear.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {capGear.map((objId) => {
+                const obj = state.cards[objId];
+                if (!obj) return null;
+                const objDef = getCardDef(obj.defId);
+                return (
+                  <span key={objId} className="font-oswald text-[8px] px-1 py-0.5 rounded text-gold truncate max-w-full" style={{ background: "rgba(232,184,75,.2)", border: "1px solid var(--ink-edge)" }}>
+                    {obj.isAwakened ? "⭐" : "⚔"} {objDef.name}
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -415,9 +492,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex gap-2 font-oswald text-[10px] text-white/55">
               <span>✋ {ps.hand.length}</span><span>🂠 {ps.deck.length}</span>
             </div>
+            <HakiBar state={state} playerId={playerId} onOpenHelp={() => setShowHelp(true)} />
           </>
         ) : (
           <>
+            <HakiBar state={state} playerId={playerId} align="right" onOpenHelp={() => setShowHelp(true)} />
             <div className="flex gap-2 font-oswald text-[10px] text-white/55 justify-end"><span>✋ {ps.hand.length}</span><span>🂠 {ps.deck.length}</span></div>
             <div className="flex items-center gap-1.5 justify-end">
               <span className="font-oswald text-[8px] uppercase tracking-widest text-white/55">Volonté</span>
@@ -566,7 +645,10 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     if (uiMode.type === "selectingSupportTarget") return { text: "Cible du pouvoir", color: "text-cyan-300", pulse: true };
     if (uiMode.type === "selectingSlot") return { text: "Choisissez un emplacement", color: "text-green-300", pulse: true };
     if (uiMode.type === "selectingCaptainSlot") return { text: "Placez le capitaine", color: "text-amber-300", pulse: true };
-    if (uiMode.type === "selectingEquipTarget") return { text: "Équipez un personnage", color: "text-amber-300", pulse: true };
+    if (uiMode.type === "selectingEquipTarget") {
+      const onCaptain = equipTargets.has(`captain_${humanPlayer}`);
+      return { text: onCaptain ? "Équipez votre Capitaine" : "Équipez un personnage", color: "text-amber-300", pulse: true };
+    }
     return { text: "Votre tour", color: "text-green-400", pulse: false };
   })();
 
@@ -591,6 +673,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
         <div className={`ml-auto status-tag ${statusText.color} ${statusText.pulse ? "animate-pulse" : ""}`}>
           <span className="dot" />{statusText.text}
         </div>
+        <button
+          onClick={() => setShowHelp(true)}
+          title="Règles : Haki, fenêtre de contre, Volonté"
+          className="btn btn-ghost action-btn px-2.5 py-1 text-[11px] ml-2"
+        >
+          ? Règles
+        </button>
         <div className="flex items-center gap-2 ml-3 pl-3" style={{ borderLeft: "1px solid rgba(255,255,255,.1)" }}>
           <Crest which={foeFac.crest} size={13} color={foeFac.accent} />
           <span className="font-oswald text-[11px] text-white/55">Main {opponent.hand.length} · Deck {opponent.deck.length}</span>
@@ -691,20 +780,59 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           </div>
         </div>
 
-        {/* Log */}
-        <div className="halftone rounded-lg px-2.5 py-1.5 max-h-[68px] overflow-y-auto" style={{ background: "rgba(8,12,18,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.05)" }}>
-          {state.log.slice(-12).reverse().map((entry, i) => (
-            <div key={i} className={`font-spectral py-0.5 text-xs ${i === 0 ? "text-white/80" : "text-white/45"}`}>
-              <span className="font-mono text-[10px] text-white/30">T{entry.turn}</span>{" "}
-              <span className={entry.player === humanPlayer ? "text-green-500/80" : "text-red-500/80"}>{entry.player === humanPlayer ? "►" : "◄"}</span>{" "}
-              {entry.message}
-            </div>
-          ))}
+        {/* Journal — repliable : lisible par défaut, déroulable pour reconstituer une manche */}
+        <div className="halftone rounded-lg" style={{ background: "rgba(8,12,18,.7)", border: "2px solid var(--ink-edge)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.05)" }}>
+          <button
+            onClick={() => setLogExpanded((v) => !v)}
+            className="w-full flex items-center gap-2 px-2.5 pt-1 pb-0.5 text-left"
+            style={{ background: "none", border: 0, cursor: "pointer" }}
+          >
+            <span className="font-oswald text-[8px] uppercase tracking-widest text-white/40">Journal</span>
+            <span className="font-oswald text-[9px] text-white/30 ml-auto">
+              {logExpanded ? "Replier ▲" : "Tout voir ▼"}
+            </span>
+          </button>
+          <div className="px-2.5 pb-1.5 overflow-y-auto" style={{ maxHeight: logExpanded ? "38vh" : "92px" }}>
+            {state.log.slice(logExpanded ? 0 : -14).reverse().map((entry, i) => {
+              const mine = entry.player === humanPlayer;
+              return (
+                <div
+                  key={`${entry.turn}-${i}-${entry.message}`}
+                  className={`font-spectral py-0.5 text-xs leading-snug ${i === 0 && !logExpanded ? "text-white/90" : "text-white/55"}`}
+                  style={i === 0 && !logExpanded ? { borderLeft: "2px solid var(--gold)", paddingLeft: 6, marginLeft: -6 } : undefined}
+                >
+                  <span className="font-mono text-[10px] text-white/30">M{entry.turn}</span>{" "}
+                  <span
+                    className="font-oswald text-[10px] font-bold"
+                    style={{ color: mine ? "var(--color-deploy, #5BC46A)" : "var(--color-target, #E0463F)" }}
+                    title={mine ? "Toi" : "Adversaire"}
+                  >
+                    {mine ? "► Toi" : "◄ Adv"}
+                  </span>{" "}
+                  {entry.message}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </footer>
 
       {/* Overlays */}
       {renderCounterWindow()}
+
+      {showHelp && <HelpPanel state={state} humanPlayer={humanPlayer} onClose={() => setShowHelp(false)} />}
+
+      {/* Refus du moteur : dire pourquoi, plutôt que de ne rien faire. */}
+      {notice && (
+        <div
+          className="fixed left-1/2 bottom-[22%] -translate-x-1/2 z-[60] panel halftone px-4 py-2 animate-fade-in pointer-events-none"
+          style={{ boxShadow: "inset 0 0 0 1.5px rgba(224,70,63,.55), var(--shadow-modal)" }}
+          role="status"
+        >
+          <span className="font-oswald text-[11px] uppercase tracking-wider text-red-300">Action refusée</span>
+          <div className="font-spectral text-sm text-white/85">{notice}</div>
+        </div>
+      )}
 
       {uiMode.type === "actionMenu" && (() => {
         const inst = state.cards[uiMode.instanceId];
@@ -741,6 +869,12 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             captain={ps.captain} def={capDef} state={state} validActions={validActions} isYou={isYou} originRect={zoomFromRef.current}
             onFlip={() => setUiMode({ type: "selectingCaptainSlot" })}
             onAttack={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: false })}
+            /* Decision §8.28 (follow-up): the fruit the captain wears awakens
+               and fires from the captain's own menu. */
+            onAwakenFruit={(fruitInstanceId) => { dispatch({ type: "awakenFruit", fruitInstanceId }); resetUI(); }}
+            onFruitSpecial={(fruitInstanceId) =>
+              setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, fruitInstanceId })
+            }
             onKingHaki={() => { dispatch({ type: "useHaki", hakiType: "king" }); resetUI(); }}
             onClose={resetUI}
           />

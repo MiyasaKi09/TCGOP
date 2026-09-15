@@ -58,9 +58,13 @@ function resolveStartOfTurnEffect(
           if (!adjId) continue;
           const adjCard = draft.cards[adjId];
           if (!adjCard) continue;
+          // Decision §8.5: the single heal path — `noHeal` / `desiccation` skip
+          // the unit, the cap follows the permanent max-PV loss, and a heal
+          // never lowers PV.
+          if (adjCard.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) continue;
           const adjDef = getCardDef(adjCard.defId);
-          const maxPv = adjDef.pv ?? adjCard.currentPv;
-          adjCard.currentPv = Math.min(adjCard.currentPv + effect.amount, maxPv);
+          const maxPv = adjDef.pv === undefined ? adjCard.currentPv : adjDef.pv - (adjCard.pvMaxLoss ?? 0);
+          adjCard.currentPv = Math.max(Math.min(adjCard.currentPv + effect.amount, maxPv), adjCard.currentPv);
         }
         draft.log.push({
           turn: draft.turnNumber,

@@ -6,6 +6,7 @@ import type {
   AttackTrait,
   Element,
   CardInstance,
+  SpecialAttack,
 } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
 import {
@@ -17,9 +18,14 @@ import {
   isFrontSlot,
   getAdjacentSlots,
   getBoardCharacters,
+  getValidTargets,
+  healUnit,
+  applyPermanentPvLoss,
+  applyCaptainPermanentPvLoss,
 } from "./board";
 import { spendVolonte, canAfford, grantKOBonus } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
+import { defHasNaturalHaki } from "./haki";
 
 // ============================================================
 // Step 1: Declare Attack
@@ -68,6 +74,198 @@ function conditionalAtkBonus(
 }
 
 /**
+ * Decision §8.38/§8.57 — the enemy-facing half of a support special
+ * (`taunt` / `immobilize` / `sleep` / `stripStealth`): effects printed against
+ * an opponent's unit. Shared by `getValidActions` and `resolveSupportSpecial`
+ * so both split the two audiences the same way.
+ * Rust: `combat::support_hits_enemy`.
+ */
+export function supportHitsEnemy(spec: SpecialAttack): boolean {
+  return !!(spec.taunt || spec.immobilize || spec.sleep || spec.stripStealth);
+}
+
+/**
+ * Decision §8.38/§8.57 — the ally-facing half of a support special
+ * (`healAmount` / `buffAllyAtk` / `cleanse`): "Un allié gagne +2 ATK et perd
+ * gelé/immobilisé" (RH-009 Stimulant). Rust: `combat::support_helps_ally`.
+ */
+export function supportHelpsAlly(spec: SpecialAttack): boolean {
+  return !!((spec.healAmount ?? 0) !== 0 || (spec.buffAllyAtk ?? 0) !== 0 || spec.cleanse);
+}
+
+/**
+ * Decision §8.38 — enforce the `taunt` status ("Un ennemi doit cibler X à son
+ * prochain tour": RH-004 Provocation, BW-005 Peinture de la Colère) at the
+ * **executor**, not only in the enumerator.
+ *
+ * While a `taunt` status lives on the attacker and the instance that taunted it
+ * is still a legal target, that unit is the only thing the attacker may declare
+ * against — a taunter that died, went Furtif or slipped out of range releases
+ * it, which is exactly the binding `getValidTargets` computes. A captain
+ * attacker cannot be taunted on the shipped catalogue (`resolveSupportSpecial`,
+ * the only writer, targets a card instance), so its binding is the plain "the
+ * taunter is still an enemy on the board" test.
+ *
+ * Rust: `combat::enforce_taunt`. Throws `{name} doit cibler {taunter} (Provocation)`.
+ */
+export function enforceTaunt(
+  state: GameState,
+  attackerInstanceId: string,
+  targetInstanceId: string,
+  targetIsCaptain: boolean,
+  forSpecial: boolean
+): void {
+  const attacker = state.cards[attackerInstanceId];
+  let bound: string | undefined;
+  if (attacker) {
+    if (!attacker.statusEffects.some((e) => e.type === "taunt")) return;
+    const legal = getValidTargets(state, attackerInstanceId, forSpecial);
+    bound = attacker.statusEffects
+      .filter((e) => e.type === "taunt")
+      .map((e) => e.source)
+      .find((src) => legal.characterTargets.includes(src));
+  } else {
+    // The synthetic `captain_<player>` attacker id.
+    const owner = getAttackerOwner(state, attackerInstanceId);
+    const captain = state.players[owner].captain;
+    bound = captain.statusEffects
+      .filter((e) => e.type === "taunt")
+      .map((e) => e.source)
+      .find((src) => {
+        const c = state.cards[src];
+        return !!c && c.zone === "board" && c.owner !== owner;
+      });
+  }
+  if (bound === undefined) return;
+  if (!targetIsCaptain && targetInstanceId === bound) return;
+
+  const attackerName = attacker ? getCardDef(attacker.defId).name : "Le Capitaine";
+  const taunterCard = state.cards[bound];
+  const taunterName = taunterCard ? getCardDef(taunterCard.defId).name : bound;
+  throw new Error(`${attackerName} doit cibler ${taunterName} (Provocation)`);
+}
+
+/**
+ * Decision §8.38 — a *support* special resolves its structured fields and never
+ * builds a pending attack: there is nothing for the defender to counter, block
+ * or dodge. Rust: `combat::resolve_support_special`.
+ */
+function resolveSupportSpecial(
+  state: GameState,
+  owner: PlayerId,
+  attackerInstanceId: string,
+  defName: string,
+  spec: SpecialAttack,
+  targetInstanceId: string
+): GameState {
+  const heal = spec.healAmount ?? 0;
+  const buff = spec.buffAllyAtk ?? 0;
+  const cleanse = !!spec.cleanse;
+  const taunt = !!spec.taunt;
+  const immobilize = !!spec.immobilize;
+  const sleep = !!spec.sleep;
+  const stripStealth = !!spec.stripStealth;
+
+  const needsTarget = heal !== 0 || buff !== 0 || cleanse || taunt || immobilize || sleep || stripStealth;
+  const targetCard = state.cards[targetInstanceId];
+  const targetOnBoard = !!targetCard && targetCard.zone === "board";
+  if (needsTarget && !targetOnBoard) throw new Error("Support special needs a target");
+
+  // Decision §8.38 — the audience split is part of the printed rule, so the
+  // executor enforces it and not just the enumerator.
+  if (needsTarget) {
+    const targetSide = targetCard ? targetCard.owner : owner;
+    // Same precedence as `getValidActions`: a special carrying both audiences
+    // (none shipped does) is enumerated against the enemy.
+    if (supportHitsEnemy(spec)) {
+      if (targetSide === owner) throw new Error("Support special: cet effet vise un ennemi");
+    } else if (supportHelpsAlly(spec) && targetSide !== owner) {
+      throw new Error("Support special: cet effet vise un allie");
+    }
+  }
+
+  let next = spendVolonte(state, owner, spec.cost);
+  next = produce(next, (draft) => {
+    const a = draft.cards[attackerInstanceId];
+    a.tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6).
+    a.usedBaseAction = true;
+    a.usedSpecialAttack = true;
+    if (spec.oncePerGame) a.usedOnceAbilities.push(spec.name);
+  });
+
+  if (!needsTarget) {
+    return addLog(next, owner, `${defName} utilise ${spec.name} !`);
+  }
+
+  const targetDef = getCardDef(next.cards[targetInstanceId].defId);
+  const targetName = targetDef.name;
+  const ctrlImmune = targetDef.passive?.effects.some((e) => e.type === "immuneControl") ?? false;
+
+  if (heal !== 0) {
+    // Decision §8.5: the single heal path.
+    const h = healUnit(next, targetInstanceId, heal);
+    next = h.state;
+    next = addLog(next, owner, `${defName} utilise ${spec.name} : +${h.healed} PV a ${targetName}`);
+  }
+  if (buff !== 0) {
+    next = produce(next, (draft) => {
+      draft.cards[targetInstanceId].modifiers.push({
+        id: `support_${spec.name}_${Date.now()}`,
+        stat: "atk",
+        amount: buff,
+        source: `support_${spec.name}`,
+        duration: "turn",
+      });
+    });
+    next = addLog(next, owner, `${defName} utilise ${spec.name} : ${targetName} +${buff} ATK ce tour.`);
+  }
+  if (cleanse) {
+    next = produce(next, (draft) => {
+      const t = draft.cards[targetInstanceId];
+      t.statusEffects = t.statusEffects.filter(
+        (e) => e.type !== "freeze" && e.type !== "immobilize" && e.type !== "sleep" && e.type !== "loseAction"
+      );
+    });
+    next = addLog(next, owner, `${defName} utilise ${spec.name} : ${targetName} perd gelé/immobilisé !`);
+  }
+  if (taunt) {
+    next = produce(next, (draft) => {
+      draft.cards[targetInstanceId].statusEffects.push({
+        type: "taunt",
+        // 2 so it survives the start-of-turn decrement and binds the target's *next* turn.
+        turnsRemaining: 2,
+        damagePerTurn: 0,
+        source: attackerInstanceId,
+      });
+    });
+    next = addLog(
+      next,
+      owner,
+      `${defName} utilise ${spec.name} : ${targetName} doit cibler ${defName} a son prochain tour !`
+    );
+  }
+  if (immobilize && !ctrlImmune) {
+    next = produce(next, (draft) => {
+      draft.cards[targetInstanceId].statusEffects.push({ type: "immobilize", turnsRemaining: 2, damagePerTurn: 0, source: attackerInstanceId });
+    });
+    next = addLog(next, owner, `${targetName} est immobilisé !`);
+  }
+  if (sleep && !ctrlImmune) {
+    next = produce(next, (draft) => {
+      draft.cards[targetInstanceId].statusEffects.push({ type: "sleep", turnsRemaining: 3, damagePerTurn: 0, source: attackerInstanceId });
+    });
+    next = addLog(next, owner, `${targetName} est endormi !`);
+  }
+  if (stripStealth) {
+    next = produce(next, (draft) => {
+      draft.cards[targetInstanceId].statusEffects.push({ type: "noStealth", turnsRemaining: 2, damagePerTurn: 0, source: attackerInstanceId });
+    });
+  }
+  return next;
+}
+
+/**
  * Declare a base attack (free, taps the attacker).
  */
 export function declareBaseAttack(
@@ -88,6 +286,10 @@ export function declareBaseAttack(
   if (getEffectiveAtk(state, attackerInstanceId) <= 0) {
     throw new Error("Character has 0 ATK — cannot attack");
   }
+
+  // Decision §8.38: a taunted unit may only declare against its taunter.
+  // Checked before the trap so a refused declaration cannot eat it (§8.12).
+  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, false);
 
   // Trigger trap on attacker if present
   const trapEffect = attacker.statusEffects.find((e) => e.type === "trap");
@@ -153,7 +355,7 @@ export function declareBaseAttack(
 
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) ||
+    defHasNaturalHaki(def) ||
     state.turnNumber >= 7 ||
     attackElement === "water" ||
     !!state.players[attacker.owner].hakiThisTurn;
@@ -211,6 +413,18 @@ export function declareSpecialAttack(
 
   const def = getCardDef(attacker.defId);
 
+  // Decision §8.38: a taunted unit may only declare against its taunter. A
+  // self-transformation targets itself and an ally-facing support special is
+  // not an attack at all, so neither is bound; an enemy-facing support special
+  // is. Checked before the trap so a refused declaration cannot eat it (§8.12).
+  if (
+    def.specialAttack &&
+    !def.specialAttack.transform &&
+    (!def.specialAttack.isSupport || supportHitsEnemy(def.specialAttack))
+  ) {
+    enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
+  }
+
   // Trigger trap on attacker if present
   const trapEffectSpec = attacker.statusEffects.find((e) => e.type === "trap");
   if (trapEffectSpec) {
@@ -265,6 +479,12 @@ export function declareSpecialAttack(
     return addLog(tnext, attacker.owner, `${def.name} : ${spec.name} ! ATK ${t.atk} pendant ${t.turns} tours, puis KO.`);
   }
 
+  // Decision §8.38: a *support* special resolves its structured fields and never
+  // builds a pending attack — there is nothing to counter, block or dodge.
+  if (spec.isSupport) {
+    return resolveSupportSpecial(state, attacker.owner, attackerInstanceId, def.name, spec, targetInstanceId);
+  }
+
   let next = spendVolonte(state, attacker.owner, spec.cost);
 
   const baseAtk = getEffectiveAtk(state, attackerInstanceId);
@@ -304,7 +524,7 @@ export function declareSpecialAttack(
 
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) ||
+    defHasNaturalHaki(def) ||
     state.turnNumber >= 7 ||
     spec.element === "water" ||
     !!state.players[attacker.owner].hakiThisTurn;
@@ -325,6 +545,10 @@ export function declareSpecialAttack(
     sleep: spec.sleep,
     pushback: spec.pushback || (spec.pushbackSlots ?? 0) > 0,
     stripStealth: spec.stripStealth || attackerStripsStealth(state, attackerInstanceId),
+    // Decision §8.38: "La cible perd N PV permanent (Sable)" / "… et ne peut
+    // plus etre soignee" ride on the pending attack and resolve after damage.
+    permanentPvLoss: spec.permanentPvLoss,
+    noHeal: spec.noHeal,
   };
 
   next = produce(next, (draft) => {
@@ -360,11 +584,27 @@ export function declareFruitSpecialAttack(
   targetInstanceId: string,
   targetIsCaptain: boolean
 ): GameState {
+  // Decision §8.28 (follow-up): the three signature SR fruits are worn by a
+  // captain, so the awakened special can be declared *by* a captain — addressed
+  // by the same synthetic `captain_{playerId}` id every other captain target
+  // and attacker uses. Rust: `combat::declare_fruit_special_attack`.
+  if (attackerInstanceId.startsWith("captain_")) {
+    return declareCaptainFruitSpecialAttack(
+      state,
+      attackerInstanceId.replace("captain_", "") as PlayerId,
+      fruitInstanceId,
+      targetInstanceId,
+      targetIsCaptain
+    );
+  }
   const attacker = state.cards[attackerInstanceId];
   if (!attacker) throw new Error("Attacker not found");
   if (hasSummoningSickness(state, attackerInstanceId)) {
     throw new Error("Character has summoning sickness");
   }
+
+  // Decision §8.38: a taunted unit may only declare against its taunter.
+  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
 
   const fruitCard = state.cards[fruitInstanceId];
   if (!fruitCard || !fruitCard.isAwakened) throw new Error("Fruit not awakened");
@@ -408,7 +648,7 @@ export function declareFruitSpecialAttack(
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
   const hasHaki =
-    (def.naturalHaki && def.naturalHaki.length > 0) || next.turnNumber >= 7 || spec.element === "water";
+    defHasNaturalHaki(def) || next.turnNumber >= 7 || spec.element === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -425,6 +665,9 @@ export function declareFruitSpecialAttack(
     sleep: spec.sleep,
     pushback: spec.pushback,
     stripStealth: spec.stripStealth,
+    // Decision §8.38 × §8.48: BW-011 "Ground Death" prints both clauses.
+    permanentPvLoss: spec.permanentPvLoss,
+    noHeal: spec.noHeal,
   };
 
   next = produce(next, (draft) => {
@@ -445,6 +688,148 @@ export function declareFruitSpecialAttack(
     next,
     attacker.owner,
     `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
+  );
+
+  return next;
+}
+
+/**
+ * Decision §8.28 (follow-up) — the awakened-fruit special declared by a
+ * **captain**, the printed bearer of `MG-014` / `BW-011` / `MR-011`.
+ *
+ * It is a captain attack that happens to be driven by a fruit's awakening
+ * `specialAttack`, so it follows `declareCaptainBaseAttack` wherever the two
+ * could differ — the verso stat plus the captain's ATK modifiers (the fruit's
+ * own `fruit_atk_*` / `fruit_awaken_atk_*` modifiers live there, so they are
+ * already in), the captain's flip / tap / one-action-per-turn / frozen /
+ * summoning-sickness gates, the captain's `usedOnceAbilities` for
+ * `oncePerGame`, the player-wide `hakiThisTurn` and the
+ * `"Capitaine {name} utilise …"` log line.
+ *
+ * Everything the *fruit* contributes is read exactly as
+ * `declareFruitSpecialAttack` reads it: `atkBonus`, `element`, `attackTraits`,
+ * `ignoreDef`, `ignoreShield`, `immobilize`, `sleep`, `pushback`,
+ * `stripStealth` and the §8.38 × §8.48 pair `permanentPvLoss` / `noHeal`
+ * (`BW-011`'s Ground Death).
+ * Rust: `combat::declare_captain_fruit_special_attack_inner`.
+ */
+export function declareCaptainFruitSpecialAttack(
+  state: GameState,
+  playerId: PlayerId,
+  fruitInstanceId: string,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): GameState {
+  const { captainCannotAct, captainHasTraitNow } = require("./captain");
+  const captain = state.players[playerId].captain;
+  if (!captain.flipped) throw new Error("Captain not flipped (verso required)");
+  if (captain.tapped) throw new Error("Captain is tapped");
+  if (captain.usedSpecialAttack) throw new Error("Captain special already used");
+  if (captainCannotAct(captain)) {
+    throw new Error("Captain cannot act (frozen, immobilized or asleep)");
+  }
+  if (!(captain.attachedObjects ?? []).includes(fruitInstanceId)) {
+    throw new Error("Captain is not wearing this fruit");
+  }
+
+  const capDef = getCaptainDef(captain.defId);
+  if (
+    captain.deployedTurn === state.turnNumber &&
+    !captainHasTraitNow(state, playerId, "rush")
+  ) {
+    throw new Error("Captain has summoning sickness");
+  }
+
+  const fruitCard = state.cards[fruitInstanceId];
+  if (!fruitCard || !fruitCard.isAwakened) throw new Error("Fruit not awakened");
+  const fruitDef = getCardDef(fruitCard.defId);
+  const spec = fruitDef.fruitEffects?.awakening?.specialAttack;
+  if (!spec) throw new Error("Fruit has no awakening special attack");
+
+  if (spec.oncePerGame && captain.usedOnceAbilities.includes(spec.name)) {
+    throw new Error("Already used this fruit ability (1x/game)");
+  }
+  if (!canAfford(state, playerId, spec.cost)) {
+    throw new Error(`Cannot afford fruit special (cost ${spec.cost})`);
+  }
+
+  // Decision §8.38: every declaration path is bound by a taunt (inert while
+  // nothing in the catalogue can taunt a captain).
+  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
+
+  let next: GameState = spendVolonte(state, playerId, spec.cost);
+
+  let baseAtk = capDef.verso.atk;
+  for (const mod of captain.modifiers) {
+    if (mod.stat === "atk") baseAtk += mod.amount;
+  }
+  const totalAtk = baseAtk + spec.atkBonus;
+
+  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+
+  let targetDefVal = 0;
+  if (targetIsCaptain) {
+    const opponent = getOpponent(playerId);
+    const cap = next.players[opponent].captain;
+    const oppCapDef = getCaptainDef(cap.defId);
+    targetDefVal = cap.flipped ? oppCapDef.verso.def : oppCapDef.recto.def;
+    for (const mod of cap.modifiers) {
+      if (mod.stat === "def") targetDefVal += mod.amount;
+    }
+  } else {
+    targetDefVal = getEffectiveDef(next, targetInstanceId);
+  }
+  // Decision §8.55: DEF is clamped at 0 before the halving.
+  if (attackTraits.includes("piercing") || captainHasTraitNow(next, playerId, "piercing")) {
+    targetDefVal = Math.floor(Math.max(0, targetDefVal) / 2);
+  }
+  if (spec.ignoreDef) targetDefVal = Math.max(0, targetDefVal - spec.ignoreDef);
+
+  const rawDamage = Math.max(0, totalAtk - targetDefVal);
+
+  const hasHaki =
+    ((capDef.verso.naturalHaki && capDef.verso.naturalHaki.length > 0) ?? false) ||
+    next.turnNumber >= 7 ||
+    spec.element === "water" ||
+    !!next.players[playerId].hakiThisTurn;
+
+  const pending: PendingAttack = {
+    attackerId: `captain_${playerId}`,
+    targetId: targetInstanceId,
+    targetIsCaptain,
+    isSpecial: true,
+    rawDamage,
+    attackPower: totalAtk,
+    element: spec.element,
+    attackTraits,
+    hasHaki,
+    ignoreShield: spec.ignoreShield,
+    immobilize: spec.immobilize,
+    sleep: spec.sleep,
+    pushback: spec.pushback,
+    stripStealth: spec.stripStealth,
+    // Decision §8.38 × §8.48: BW-011 "Ground Death" prints both clauses.
+    permanentPvLoss: spec.permanentPvLoss,
+    noHeal: spec.noHeal,
+  };
+
+  next = produce(next, (draft) => {
+    const cap = draft.players[playerId].captain;
+    cap.tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
+    cap.usedSpecialAttack = true;
+    cap.usedBaseAction = true;
+    if (spec.oncePerGame) cap.usedOnceAbilities.push(spec.name);
+    draft.pendingAttack = pending;
+  });
+
+  const targetName = targetIsCaptain
+    ? "Capitaine"
+    : getCardDef(next.cards[targetInstanceId].defId).name;
+  next = addLog(
+    next,
+    playerId,
+    `Capitaine ${capDef.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 
   return next;
@@ -682,6 +1067,19 @@ export function resolveAttack(state: GameState): GameState {
   // Apply element effects
   next = applyElementEffects(next, pending);
 
+  // Decision §8.38 — `permanentPvLoss`: "La cible perd N PV permanent (Sable)"
+  // (Crocodile's Desert Girasol, BW-011's Ground Death). The maximum drops for
+  // good and the current PV follows it down, so a later heal can never climb
+  // back over the loss.
+  if ((pending.permanentPvLoss ?? 0) > 0) {
+    if (pending.targetIsCaptain) {
+      const attackerOwner = getAttackerOwner(next, pending.attackerId);
+      next = applyCaptainPermanentPvLoss(next, getOpponent(attackerOwner), pending.permanentPvLoss!);
+    } else {
+      next = applyPermanentPvLoss(next, pending.targetId, pending.permanentPvLoss!);
+    }
+  }
+
   // Check KO from element effects (thunder propagation, sand, water x2)
   if (!pending.targetIsCaptain) {
     const targetAfter = next.cards[pending.targetId];
@@ -748,6 +1146,14 @@ export function resolveAttack(state: GameState): GameState {
         next = produce(next, (draft) => {
           draft.cards[pending.targetId].statusEffects.push({ type: "noStealth", turnsRemaining: 2, damagePerTurn: 0, source: pending.attackerId });
         });
+      }
+      // Decision §8.38 — `noHeal`: the target cannot be healed for 2 turns
+      // (`healUnit` skips a unit carrying the status).
+      if (pending.noHeal) {
+        next = produce(next, (draft) => {
+          draft.cards[pending.targetId].statusEffects.push({ type: "noHeal", turnsRemaining: 2, damagePerTurn: 0, source: pending.attackerId });
+        });
+        next = addLog(next, tgt.owner, `${tdef.name} ne peut plus être soigné !`);
       }
       if (pending.pushback && !(tdef.passive?.effects.some((e) => e.type === "immuneImpact"))) {
         const back: Record<string, string> = { V1: "A1", V2: "A2", V3: "A3" };
@@ -886,10 +1292,13 @@ function applyCaptainDamage(
   const opponentId = getOpponent(attackerOwner);
   const cap = state.players[opponentId].captain;
 
-  // Logia check on captain
+  // Logia check on captain — decision §8.28 (follow-up): the trait may come
+  // from the fruit the captain wears (`MR-011`, `BW-011`), not only from the
+  // printed verso list. Rust: `captain::captain_has_trait_now`.
   if (cap.flipped) {
     const capDef = getCaptainDef(cap.defId);
-    const isLogia = capDef.verso.traits?.includes("logia") ?? false;
+    const { captainHasTraitNow } = require("./captain");
+    const isLogia = captainHasTraitNow(state, opponentId, "logia") as boolean;
     if (isLogia && !pending.hasHaki && pending.rawDamage > 0) {
       return addLog(
         state,
@@ -1145,6 +1554,15 @@ export function getEligibleCounters(
     const ce = def.counterEffect;
     if (ce?.type === "cancel" && ce.maxAttackerAtk !== undefined) {
       return (state.pendingAttack?.attackPower ?? 0) <= ce.maxAttackerAtk;
+    }
+    // Decision §8.57: `getEligibleCounters` is the legality contract for the UI
+    // and the AI — an offered counter must not throw. `survive` protects an
+    // ALLY CHARACTER, once per character (§8.16), so it is screened out against
+    // a captain-targeted attack and against a body that already saved itself.
+    if (ce?.type === "survive") {
+      if (state.pendingAttack?.targetIsCaptain) return false;
+      const protectedCard = state.cards[state.pendingAttack!.targetId];
+      if (protectedCard?.usedOnceAbilities.includes("survived")) return false;
     }
     return true;
   });

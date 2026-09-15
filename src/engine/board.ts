@@ -6,7 +6,8 @@ import type {
   CardInstance,
   Trait,
 } from "@/types";
-import { getCardDef } from "./cardRegistry";
+import type { CardDef, CaptainDef, ObjectSubtype } from "@/types";
+import { getCardDef, getCaptainDef } from "./cardRegistry";
 import { spendVolonte, canAfford } from "./volonte";
 import { addLog, getOpponent } from "./gameState";
 import { ADJACENCY, FRONT_SLOTS, BACK_SLOTS, ALL_SLOTS } from "./utils";
@@ -144,6 +145,29 @@ export function getEffectiveDef(
   return Math.max(0, defVal);
 }
 
+/**
+ * Does any object of `attached` grant `trait` to whoever wears it?
+ *
+ * The object half of `hasTrait`, extracted so the captain reads its equipment
+ * with exactly the same rule (decision §8.28 follow-up): a fruit's
+ * `base.grantsTraits`, and its `awakening.grantsTraits` once awakened.
+ * Rust: `board::attachments_grant_trait`.
+ */
+export function attachmentsGrantTrait(
+  state: GameState,
+  attached: readonly string[],
+  trait: Trait
+): boolean {
+  for (const objId of attached) {
+    const objCard = state.cards[objId];
+    if (!objCard) continue;
+    const objDef = getCardDef(objCard.defId);
+    if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
+    if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
+  }
+  return false;
+}
+
 /** Check if a character has a specific trait (including from Devil Fruits) */
 export function hasTrait(
   state: GameState,
@@ -156,15 +180,208 @@ export function hasTrait(
   if (def.traits?.includes(trait)) return true;
 
   // Check traits from equipped Devil Fruits
-  for (const objId of card.attachedObjects) {
-    const objCard = state.cards[objId];
-    if (!objCard) continue;
-    const objDef = getCardDef(objCard.defId);
-    if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
-    if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
-  }
+  return attachmentsGrantTrait(state, card.attachedObjects, trait);
+}
 
-  return false;
+/**
+ * Decision §8.5 — the maximum PV of a board instance: the printed `def.pv`
+ * minus its permanent max-PV loss. `undefined` when the definition has no `pv`.
+ * Rust: `board::max_pv_of`.
+ */
+export function maxPvOf(state: GameState, instanceId: string): number | undefined {
+  const card = state.cards[instanceId];
+  if (!card) return undefined;
+  const printed = getCardDef(card.defId).pv;
+  if (printed === undefined) return undefined;
+  return printed - (card.pvMaxLoss ?? 0);
+}
+
+/**
+ * Decision §8.36/§8.38/§8.40 — the single "perd N PV permanent (Sable)" path for
+ * a **character**: the maximum drops for good and the current PV follows it
+ * down, so `healUnit` can never climb back over the loss. A non-positive loss,
+ * a missing instance or one that already left the board is a no-op.
+ * Rust: `board::apply_permanent_pv_loss`.
+ */
+export function applyPermanentPvLoss(
+  state: GameState,
+  instanceId: string,
+  loss: number
+): GameState {
+  if (loss <= 0) return state;
+  const card = state.cards[instanceId];
+  if (!card || card.zone !== "board") return state;
+  return produce(state, (draft) => {
+    const c = draft.cards[instanceId];
+    c.pvMaxLoss = (c.pvMaxLoss ?? 0) + loss;
+    const printed = getCardDef(c.defId).pv;
+    if (printed !== undefined) {
+      const maxPv = printed - (c.pvMaxLoss ?? 0);
+      if (c.currentPv > maxPv) c.currentPv = maxPv;
+    }
+  });
+}
+
+/**
+ * Decision §8.40 — the captain counterpart of `applyPermanentPvLoss`: the same
+ * rule against `CaptainInstance.pvMaxLoss`, with the maximum read from the
+ * **active** face's printed PV. Rust: `board::apply_captain_permanent_pv_loss`.
+ */
+export function applyCaptainPermanentPvLoss(
+  state: GameState,
+  playerId: PlayerId,
+  loss: number
+): GameState {
+  if (loss <= 0) return state;
+  return produce(state, (draft) => {
+    const cap = draft.players[playerId].captain;
+    const capDef = getCaptainDef(cap.defId);
+    cap.pvMaxLoss = (cap.pvMaxLoss ?? 0) + loss;
+    const printed = cap.flipped ? capDef.verso.pv : capDef.recto.pv;
+    const maxPv = printed - (cap.pvMaxLoss ?? 0);
+    if (cap.currentPv > maxPv) cap.currentPv = maxPv;
+  });
+}
+
+/**
+ * Decision §8.5 — the single heal path: `new = min(current + amount, maxPv)`
+ * then `new = max(new, current)`, so "Soigne N PV" can only ever add PV. A unit
+ * carrying `noHeal` or `desiccation` is skipped entirely. Returns the PV
+ * actually restored. Rust: `board::heal_unit`.
+ */
+export function healUnit(
+  state: GameState,
+  instanceId: string,
+  amount: number
+): { state: GameState; healed: number } {
+  const card = state.cards[instanceId];
+  if (!card) return { state, healed: 0 };
+  if (card.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) {
+    return { state, healed: 0 };
+  }
+  const current = card.currentPv;
+  // A definition without `pv` caps at the pre-heal PV (TS `d.pv ?? c.currentPv`).
+  const maxPv = maxPvOf(state, instanceId) ?? current;
+  const newPv = Math.max(Math.min(current + amount, maxPv), current);
+  if (newPv === current) return { state, healed: 0 };
+  return {
+    state: produce(state, (draft) => {
+      draft.cards[instanceId].currentPv = newPv;
+    }),
+    healed: newPv - current,
+  };
+}
+
+/**
+ * Decision §8.28 — how many objects of `subtype` a character may wear: 1, or
+ * 3 / 2 weapons (`threeWeaponSlots`, `twoWeaponSlots`) and 2 accessories
+ * (`twoAccessorySlots`). Rust: `board::max_object_slots`.
+ */
+export function maxObjectSlots(targetDef: CardDef, subtype: ObjectSubtype): number {
+  const effects = targetDef.passive?.effects ?? [];
+  if (subtype === "weapon") {
+    if (effects.some((e) => e.type === "threeWeaponSlots")) return 3;
+    if (effects.some((e) => e.type === "twoWeaponSlots")) return 2;
+    return 1;
+  }
+  if (subtype === "accessory") {
+    if (effects.some((e) => e.type === "twoAccessorySlots")) return 2;
+    return 1;
+  }
+  return 1;
+}
+
+/** Decision §8.28 — has `target` still room for `objDef`? Rust: `board::has_free_object_slot`. */
+export function hasFreeObjectSlot(
+  state: GameState,
+  target: CardInstance,
+  objDef: CardDef
+): boolean {
+  if (!objDef.subtype) return true;
+  const targetDef = getCardDef(target.defId);
+  let same = 0;
+  for (const id of target.attachedObjects) {
+    const inst = state.cards[id];
+    if (!inst) continue;
+    if (getCardDef(inst.defId).subtype === objDef.subtype) same += 1;
+  }
+  return same < maxObjectSlots(targetDef, objDef.subtype);
+}
+
+/**
+ * Decision §8.28 — may `targetDef` wear an object printed "Équipable sur
+ * {restriction}"? The restriction is either a character **name** (a substring
+ * of the printed name: "Zoro", "Mr. 4", "Nami") or a **tag** ("bretteur",
+ * "tireur"). An empty restriction is JS-falsy and never checked.
+ * Rust: `board::equip_restriction_ok` / `board::restriction_matches`.
+ */
+export function equipRestrictionOk(targetDef: CardDef, restriction: string): boolean {
+  return restrictionMatches(targetDef.name, targetDef.tags ?? [], restriction);
+}
+
+/**
+ * The name-or-tag half of `equipRestrictionOk`, shared with the captain bearer
+ * (decision §8.28 follow-up): the printed restriction is satisfied by a
+ * substring of the unit's **name** ("Zoro", "Mr. 4", "Luffy") or by one of its
+ * **tags** ("bretteur", "tireur"). An empty restriction is JS-falsy and never
+ * checked. Rust: `board::restriction_matches`.
+ */
+export function restrictionMatches(
+  name: string,
+  tags: readonly string[],
+  restriction: string
+): boolean {
+  if (!restriction) return true;
+  return name.includes(restriction) || tags.some((t) => t === restriction);
+}
+
+/**
+ * Decision §8.28 (follow-up) — may this player's captain wear `objDef`?
+ *
+ * The three signature SR Devil Fruits are printed "Équipable sur Luffy",
+ * "… sur Crocodile", "… sur Akainu", and those three names exist in the game
+ * **only** as captains: no character in any set is called Luffy, Crocodile or
+ * Akainu and no set carries a matching tag, so the character-only rule of
+ * §8.28 left all three unequippable — three dead SR cards, one in each of
+ * three shipped decklists, and with them the whole `BW-011` Ground Death
+ * awakening. The natural — and literal — reading of the printed line is taken:
+ * the fruit is worn by the captain it names.
+ *
+ * The rule is deliberately narrow so nothing else moves: an object reaches the
+ * captain **only** when its own printed `restriction` names that captain by
+ * name or tag, so an unrestricted object is refused and the rest of the
+ * catalogue is untouched. Rust: `board::captain_equip_restriction_ok`.
+ */
+export function captainEquipRestrictionOk(capDef: CaptainDef, objDef: CardDef): boolean {
+  if (!objDef.restriction) return false;
+  return restrictionMatches(capDef.name, capDef.tags ?? [], objDef.restriction);
+}
+
+/**
+ * Decision §8.28 (follow-up) — the captain's object-slot cap. A character's cap
+ * comes from its own passive (`threeWeaponSlots`, `twoAccessorySlots`); a
+ * captain has no such passive and no printed slot line, so it keeps the default
+ * of one object per subtype. Rust: `board::CAPTAIN_MAX_OBJECT_SLOTS`.
+ */
+export const CAPTAIN_MAX_OBJECT_SLOTS = 1;
+
+/**
+ * Has the captain a free slot for an object of `objDef`'s subtype?
+ * Rust: `board::captain_has_free_object_slot`.
+ */
+export function captainHasFreeObjectSlot(
+  state: GameState,
+  playerId: PlayerId,
+  objDef: CardDef
+): boolean {
+  if (!objDef.subtype) return true;
+  let same = 0;
+  for (const id of state.players[playerId].captain.attachedObjects ?? []) {
+    const inst = state.cards[id];
+    if (!inst) continue;
+    if (getCardDef(inst.defId).subtype === objDef.subtype) same += 1;
+  }
+  return same < CAPTAIN_MAX_OBJECT_SLOTS;
 }
 
 /** Check if character has summoning sickness (deployed this turn, no Rush) */
@@ -330,8 +547,15 @@ export function equipObject(
   state: GameState,
   playerId: PlayerId,
   objectInstanceId: string,
-  targetInstanceId: string
+  targetInstanceId: string,
+  targetIsCaptain = false
 ): GameState {
+  // Decision §8.28 (follow-up): "Équipable sur Luffy / Crocodile / Akainu"
+  // names a **captain**, so the captain is a legal bearer — see
+  // `equipObjectOnCaptain` for the rule and its bounds.
+  if (targetIsCaptain) {
+    return equipObjectOnCaptain(state, playerId, objectInstanceId);
+  }
   const objCard = state.cards[objectInstanceId];
   if (!objCard) throw new Error(`Object not found: ${objectInstanceId}`);
   if (objCard.owner !== playerId) throw new Error("Not your card");
@@ -344,6 +568,19 @@ export function equipObject(
   if (!targetCard) throw new Error(`Target not found: ${targetInstanceId}`);
   if (targetCard.owner !== playerId) throw new Error("Not your character");
   if (targetCard.zone !== "board") throw new Error("Target not on board");
+
+  // Decision §8.28: an object is worn by a *character* — never by the active
+  // ship, which also lives in zone "board".
+  const targetDefEarly = getCardDef(targetCard.defId);
+  if (targetDefEarly.type !== "character") throw new Error("Target is not a character");
+  // Decision §8.28: "Équipable sur …" is enforced — the bearer must match the
+  // printed restriction by name ("Zoro", "Nami", "Mr. 4") or by tag
+  // ("bretteur", "tireur").
+  if (objDef.restriction && !equipRestrictionOk(targetDefEarly, objDef.restriction)) {
+    throw new Error(
+      `${targetDefEarly.name} ne peut pas equiper ${objDef.name} (reserve a ${objDef.restriction})`
+    );
+  }
 
   // Clima-Tact combo: costs 0 if both Usopp (MG-004) and Nami (MG-003) are in play.
   let effectiveCost = objDef.cost;
@@ -365,21 +602,9 @@ export function equipObject(
     const sameSubtype = existingObjects.filter(
       (d) => d.subtype === objDef.subtype
     );
-    // Check for exceptions (Zoro 3 weapons, Franky 2 accessories)
-    let maxSlots = 1;
-    const passiveEffects = targetDef.passive?.effects ?? [];
-    if (objDef.subtype === "weapon") {
-      if (passiveEffects.some((e) => e.type === "threeWeaponSlots")) {
-        maxSlots = 3;
-      } else if (passiveEffects.some((e) => e.type === "twoWeaponSlots")) {
-        maxSlots = 2;
-      }
-    }
-    if (objDef.subtype === "accessory") {
-      if (passiveEffects.some((e) => e.type === "twoAccessorySlots")) {
-        maxSlots = 2;
-      }
-    }
+    // Decision §8.28: one cap helper shared with `getValidActions`
+    // (Zoro 3 weapons, Franky 2 accessories).
+    const maxSlots = maxObjectSlots(targetDef, objDef.subtype);
     if (sameSubtype.length >= maxSlots) {
       throw new Error(
         `${targetDef.name} already has max ${objDef.subtype} equipped`
@@ -435,6 +660,109 @@ export function equipObject(
 }
 
 /**
+ * Decision §8.28 (follow-up) — equip an object onto the player's own captain.
+ *
+ * The three signature SR Devil Fruits (`MG-014` Gomu Gomu no Mi, `BW-011` Suna
+ * Suna no Mi, `MR-011` Magu Magu no Mi) are printed "Équipable sur Luffy /
+ * Crocodile / Akainu"; those names exist in the game only as captains, so under
+ * the character-only rule of §8.28 each shipped decklist carried one
+ * permanently dead SR card. The captain is the printed bearer and is treated as
+ * one here.
+ *
+ * The rule is deliberately narrow, so nothing outside those printed lines
+ * changes: an object reaches the captain **only** through
+ * `captainEquipRestrictionOk`, i.e. only when its own printed `restriction`
+ * names that captain by name or tag. Everything else is the character path's
+ * rule read on the captain: the object must be an object card in the player's
+ * hand, the subtype cap is `CAPTAIN_MAX_OBJECT_SLOTS`, the cost is paid, the log
+ * line is the same `"Equipe {obj} sur {captain}"`, a fruit runs
+ * `applyFruitBaseEffectsOnCaptain` and the passive buffs are recalculated. No
+ * face requirement is invented: the captain is in play on both faces.
+ *
+ * The four signature-weapon wielder bonuses are character-keyed (Zoro /
+ * Tashigi / Ben Beckman / Yasopp) and no captain name matches one, so they are
+ * deliberately not repeated here.
+ *
+ * Rust: `board::equip_object_on_captain`.
+ */
+export function equipObjectOnCaptain(
+  state: GameState,
+  playerId: PlayerId,
+  objectInstanceId: string
+): GameState {
+  const objCard = state.cards[objectInstanceId];
+  if (!objCard) throw new Error(`Object not found: ${objectInstanceId}`);
+  if (objCard.owner !== playerId) throw new Error("Not your card");
+  if (objCard.zone !== "hand") throw new Error("Object not in hand");
+
+  const objDef = getCardDef(objCard.defId);
+  if (objDef.type !== "object") throw new Error("Not an object card");
+
+  const capDef = getCaptainDef(state.players[playerId].captain.defId);
+  if (!captainEquipRestrictionOk(capDef, objDef)) {
+    throw new Error(
+      `${capDef.name} ne peut pas equiper ${objDef.name} (reserve a ${objDef.restriction ?? ""})`
+    );
+  }
+
+  if (!canAfford(state, playerId, objDef.cost)) {
+    throw new Error(`Cannot afford ${objDef.name} (cost ${objDef.cost})`);
+  }
+
+  if (!captainHasFreeObjectSlot(state, playerId, objDef)) {
+    throw new Error(`${capDef.name} already has max ${objDef.subtype ?? "object"} equipped`);
+  }
+
+  let next = spendVolonte(state, playerId, objDef.cost);
+
+  next = produce(next, (draft) => {
+    const p = draft.players[playerId];
+    const obj = draft.cards[objectInstanceId];
+
+    // Remove from hand
+    p.hand = p.hand.filter((id) => id !== objectInstanceId);
+
+    // Attach to the captain. The object stands where its bearer stands —
+    // `undefined` while the captain is still recto (off-board), and
+    // `flipCaptain` writes the slot when the captain arrives (§8.29).
+    obj.zone = "board";
+    obj.slot = p.captain.slot;
+    p.captain.attachedObjects = [...(p.captain.attachedObjects ?? []), objectInstanceId];
+  });
+
+  next = addLog(next, playerId, `Equipe ${objDef.name} sur ${capDef.name}`);
+
+  // Apply Devil Fruit effects if it's a fruit
+  if (objDef.subtype === "fruit" && objDef.fruitEffects) {
+    const { applyFruitBaseEffectsOnCaptain } = require("./fruits");
+    next = applyFruitBaseEffectsOnCaptain(next, objectInstanceId, playerId);
+  }
+
+  // Recalculate passive buffs (never strips captain modifiers, so the fruit
+  // bonuses live).
+  const { recalculatePassiveBuffs } = require("./passives");
+  next = recalculatePassiveBuffs(next, playerId);
+
+  return next;
+}
+
+/**
+ * Decision §8.29 — the equipment stands where its bearer stands: write
+ * `targetSlot` onto every attached object. Rust: `board::move_attached_objects`.
+ * Called from inside an immer `produce` (the draft is passed in).
+ */
+export function moveAttachedObjectsInDraft(
+  draft: GameState,
+  attached: readonly string[],
+  targetSlot: Slot
+): void {
+  for (const objId of attached) {
+    const obj = draft.cards[objId];
+    if (obj) obj.slot = targetSlot;
+  }
+}
+
+/**
  * Deploy a ship (max 1 active, replaces previous).
  */
 export function deployShip(
@@ -470,7 +798,13 @@ export function deployShip(
             for (const s of Object.values(p.board)) {
               if (!s) continue;
               const c = draft.cards[s];
-              if (c) c.currentPv = Math.min(c.currentPv + de.healAll, getCardDef(c.defId).pv ?? c.currentPv);
+              // Decision §8.5: the single heal path — honours `noHeal` /
+              // `desiccation` and the permanent max-PV loss, never lowers PV.
+              if (c && !c.statusEffects.some((e) => e.type === "noHeal" || e.type === "desiccation")) {
+                const printed = getCardDef(c.defId).pv;
+                const maxPv = printed === undefined ? c.currentPv : printed - (c.pvMaxLoss ?? 0);
+                c.currentPv = Math.max(Math.min(c.currentPv + de.healAll, maxPv), c.currentPv);
+              }
             }
           }
           if (de.draw && p.deck.length > 0) {
@@ -690,8 +1024,24 @@ export function getValidTargets(
     canTargetCaptain = opponentChars.length === 0;
   }
 
+  let characterTargets = targetable.map((c) => c.instanceId);
+
+  // Decision §8.38 — Provocation (RH-004) / Peinture de la Colère (BW-005):
+  // "Un ennemi doit cibler X a son prochain tour". While the `taunt` status
+  // lives on this attacker and the unit that taunted it is still a legal
+  // target, that unit is the **only** legal target; a taunter that died, went
+  // Furtif or slipped out of range releases the attacker.
+  const tauntSource = attacker.statusEffects
+    .filter((e) => e.type === "taunt")
+    .map((e) => e.source)
+    .find((src) => characterTargets.includes(src));
+  if (tauntSource !== undefined) {
+    characterTargets = [tauntSource];
+    canTargetCaptain = false;
+  }
+
   return {
-    characterTargets: targetable.map((c) => c.instanceId),
+    characterTargets,
     canTargetCaptain,
   };
 }

@@ -1,9 +1,119 @@
 import { produce } from "immer";
-import type { GameState, PlayerId, Slot, EntryEffect } from "@/types";
+import type { GameState, PlayerId, Slot, EntryEffect, Trait, CaptainInstance } from "@/types";
 import { getCaptainDef, getCardDef } from "./cardRegistry";
 import { canAfford, spendVolonte } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
-import { getBoardCharacters, getEffectiveAtk, getEffectiveDef } from "./board";
+import {
+  getBoardCharacters,
+  getEffectiveAtk,
+  getEffectiveDef,
+  hasTrait,
+  attachmentsGrantTrait,
+  moveAttachedObjectsInDraft,
+} from "./board";
+
+export type FreeFlipReason =
+  | "allyKO"
+  | "autoIfAlliesLte"
+  | "enemyCursed"
+  | "alliesGte"
+  | "turnGte";
+
+/**
+ * A frozen / immobilized / sleeping captain cannot act — the single predicate
+ * shared by the enumerator and the executors (decision §8.1 item 35).
+ * Rust: `captain::captain_cannot_act`.
+ */
+export function captainCannotAct(captain: CaptainInstance): boolean {
+  return captain.statusEffects.some(
+    (e) => e.type === "freeze" || e.type === "immobilize" || e.type === "sleep"
+  );
+}
+
+/**
+ * Decision §8.28 (follow-up) × §8.40 — the captain's *live* traits: its printed
+ * traits (card level, plus the verso list once flipped) **plus** the traits its
+ * equipment grants.
+ *
+ * This is `hasTrait` for a captain, and it exists for the same reason: once the
+ * captain can wear the fruit printed for it ("Équipable sur Luffy / Crocodile /
+ * Akainu"), that fruit's `grantsTraits` — `logia` and `cursed` on `BW-011` /
+ * `MR-011`, `cursed` on `MG-014`, plus the awakening list once awakened —
+ * belong to the captain exactly as they belong to a character. With no
+ * attachment it is the printed read, unchanged.
+ * Rust: `captain::captain_has_trait_now`.
+ */
+export function captainHasTraitNow(
+  state: GameState,
+  playerId: PlayerId,
+  trait: Trait
+): boolean {
+  const captain = state.players[playerId].captain;
+  const def = getCaptainDef(captain.defId);
+  if (def.traits?.includes(trait)) return true;
+  if (captain.flipped && def.verso.traits?.includes(trait)) return true;
+  return attachmentsGrantTrait(state, captain.attachedObjects ?? [], trait);
+}
+
+/**
+ * Is an enemy Cursed unit in play? (`freeIfEnemyCursed`, decision §8.33.)
+ *
+ * Any enemy board character carrying the `cursed` trait (equipment included,
+ * via `hasTrait`) or an enemy captain whose **active** traits are Cursed —
+ * decision §8.40: `captainTraits(def, flipped) = def.traits ∪ (flipped ? verso.traits : [])`,
+ * so a card-level `cursed` stays visible once the captain flips.
+ * Rust: `captain::enemy_cursed_in_play`.
+ */
+function enemyCursedInPlay(state: GameState, playerId: PlayerId): boolean {
+  const opponentId = getOpponent(playerId);
+  for (const c of getBoardCharacters(state, opponentId)) {
+    if (hasTrait(state, c.instanceId, "cursed")) return true;
+  }
+  // Decision §8.28 (follow-up): a captain wearing a Cursed fruit is a Cursed
+  // unit in play, exactly like a character wearing one.
+  return captainHasTraitNow(state, opponentId, "cursed");
+}
+
+/**
+ * The single free-flip predicate shared by `canFlipCaptain` and `flipCaptain`
+ * (decision §8.33) — the five `flipCondition` clauses tested in declaration
+ * order. Rust: `captain::free_flip_reason`.
+ */
+export function freeFlipReason(
+  state: GameState,
+  playerId: PlayerId
+): FreeFlipReason | null {
+  const captain = state.players[playerId].captain;
+  const condition = getCaptainDef(captain.defId).flipCondition;
+  const allyCount = getBoardCharacters(state, playerId).length;
+
+  // Free flip if a Mugiwara ally was KO'd this turn (Luffy).
+  if (condition.freeIfAllyKO && state.players[playerId].allyKOedThisTurn) return "allyKO";
+
+  // Auto-flip condition (allies <= N) — only from turn 4+ to prevent early abuse.
+  if (
+    condition.autoIfAlliesLte !== undefined &&
+    state.turnNumber >= 4 &&
+    allyCount <= condition.autoIfAlliesLte
+  ) {
+    return "autoIfAlliesLte";
+  }
+
+  // Akainu: free while a Cursed enemy is in play.
+  if (condition.freeIfEnemyCursed && enemyCursedInPlay(state, playerId)) return "enemyCursed";
+
+  // Crocodile: free once the Baroque Works board is wide enough.
+  if (condition.freeIfAlliesGte !== undefined && allyCount >= condition.freeIfAlliesGte) {
+    return "alliesGte";
+  }
+
+  // Shanks: free from the printed turn onwards.
+  if (condition.freeIfTurnGte !== undefined && state.turnNumber >= condition.freeIfTurnGte) {
+    return "turnGte";
+  }
+
+  return null;
+}
 
 /**
  * Check if a player can flip their captain.
@@ -18,15 +128,8 @@ export function canFlipCaptain(
   const def = getCaptainDef(captain.defId);
   const condition = def.flipCondition;
 
-  // Free flip if a Mugiwara ally was KO'd this turn (Luffy).
-  if (condition.freeIfAllyKO && state.players[playerId].allyKOedThisTurn) return true;
-
-  // Check auto-flip condition (allies <= N)
-  // Only available from turn 4+ to prevent early abuse
-  if (condition.autoIfAlliesLte !== undefined && state.turnNumber >= 4) {
-    const allyCount = getBoardCharacters(state, playerId).length;
-    if (allyCount <= condition.autoIfAlliesLte) return true;
-  }
+  // Decision §8.33: one shared free-flip predicate with the executor.
+  if (freeFlipReason(state, playerId) !== null) return true;
 
   // Check Vol. cost
   if (condition.cost !== undefined) {
@@ -57,14 +160,11 @@ export function flipCaptain(
     throw new Error(`Slot ${slot} is occupied`);
   }
 
-  // Determine cost
+  // Determine cost — one shared predicate with `canFlipCaptain` (§8.33), which
+  // also honours `freeIfEnemyCursed` (Akainu), `freeIfAlliesGte` (Crocodile)
+  // and `freeIfTurnGte` (Shanks).
   let cost = 0;
-  const allyCount = getBoardCharacters(state, playerId).length;
-  const freeFlip =
-    (condition.freeIfAllyKO && state.players[playerId].allyKOedThisTurn) ||
-    (condition.autoIfAlliesLte !== undefined &&
-      state.turnNumber >= 4 &&
-      allyCount <= condition.autoIfAlliesLte);
+  const freeFlip = freeFlipReason(state, playerId) !== null;
 
   if (!freeFlip) {
     cost = condition.cost ?? 0;
@@ -84,6 +184,10 @@ export function flipCaptain(
     cap.currentPv = def.verso.pv - dmgMarked;
     cap.slot = slot;
     cap.deployedTurn = draft.turnNumber;
+    // Decision §8.28 (follow-up) × §8.29: the equipment stands where its bearer
+    // stands, so a captain equipped while still recto (off-board, slot
+    // undefined) brings its objects into the slot it flips into.
+    moveAttachedObjectsInDraft(draft, cap.attachedObjects ?? [], slot);
   });
 
   next = addLog(
@@ -288,10 +392,16 @@ export function declareCaptainBaseAttack(
   const def = getCaptainDef(captain.defId);
   const baseAction = def.verso.baseAction;
 
+  // Decision §8.38: a taunted attacker may only declare against its taunter.
+  const { enforceTaunt } = require("./combat");
+  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, false);
+
   // Captain summoning sickness
   if (captain.deployedTurn === state.turnNumber) {
     // Verso captain just flipped — has mal de terre unless Rush
-    const hasRush = def.verso.traits?.includes("rush") ?? false;
+    // Decision §8.28 (follow-up) × §8.40: every captain trait read goes through
+    // the union helper, `rush` included — an awakened Gomu Gomu no Mi grants it.
+    const hasRush = captainHasTraitNow(state, playerId, "rush");
     if (!hasRush) throw new Error("Captain has summoning sickness");
   }
 
