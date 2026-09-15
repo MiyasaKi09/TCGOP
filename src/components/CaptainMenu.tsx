@@ -7,6 +7,39 @@ import { faction, hpColor, TRAIT_LABEL } from "@/data/cardArt";
 import { useFlipZoom } from "@/lib/useFlipZoom";
 import StatusBadges from "./StatusBadges";
 
+const ELEMENT_FR: Record<string, string> = {
+  fire: "Feu", water: "Eau", thunder: "Foudre", ice: "Glace", sand: "Sable", poison: "Poison",
+};
+const ATK_TRAIT_FR: Record<string, string> = {
+  impact: "Impact", zone: "Zone", piercing: "Perçant", total: "Totale",
+};
+
+/**
+ * Effets notables d'une attaque, en clair. Sans ça le joueur lit « Kong Gun »
+ * ou « Ground Death » sans savoir ce que ça fait ni ce que ça coûte.
+ */
+function effectTags(a: {
+  element?: string; attackTraits?: string[]; oncePerGame?: boolean;
+  ignoreShield?: boolean; ignoreDef?: number | boolean; twoTargets?: boolean;
+  permanentPvLoss?: number; noHeal?: boolean; immobilize?: boolean;
+  sleep?: boolean; pushback?: boolean; cannotBeDodged?: boolean;
+}): string[] {
+  const t: string[] = [];
+  if (a.element) t.push(ELEMENT_FR[a.element] ?? a.element);
+  for (const tr of a.attackTraits ?? []) t.push(ATK_TRAIT_FR[tr] ?? tr);
+  if (a.twoTargets) t.push("2 cibles");
+  if (a.ignoreShield) t.push("ignore Bouclier");
+  if (a.ignoreDef) t.push("ignore DEF");
+  if (a.permanentPvLoss) t.push(`−${a.permanentPvLoss} PV max définitif`);
+  if (a.noHeal) t.push("bloque les soins");
+  if (a.immobilize) t.push("immobilise");
+  if (a.sleep) t.push("endort");
+  if (a.pushback) t.push("repousse");
+  if (a.cannotBeDodged) t.push("inesquivable");
+  if (a.oncePerGame) t.push("1×/partie");
+  return t;
+}
+
 interface CaptainMenuProps {
   captain: CaptainInstance;
   def: CaptainDef;
@@ -73,6 +106,12 @@ export default function CaptainMenu({
   // signature SR Devil Fruits are printed "Équipable sur Luffy / Crocodile /
   // Akainu", names only a captain carries), with its two captain-side actions:
   // the awakening and, once awakened, the fruit's special attack.
+  // ATK réellement en vigueur : la base imprimée PLUS les modificateurs
+  // (le bonus d'éveil d'un fruit en est un). Afficher la base seule donnait un
+  // chiffre faux dès qu'un fruit était éveillé.
+  const capAtkNow =
+    def.verso.atk + (captain.modifiers ?? []).reduce((n, m) => n + (m.stat === "atk" ? m.amount : 0), 0);
+
   const gear = (captain.attachedObjects ?? [])
     .map((id) => state.cards[id])
     .filter((c): c is NonNullable<typeof c> => !!c);
@@ -203,9 +242,14 @@ export default function CaptainMenu({
                       <button
                         onClick={() => onFruitSpecial(obj.instanceId)}
                         disabled={!ok}
-                        className="btn btn-danger action-btn px-3 py-1.5 text-[11px]"
+                        className="btn btn-danger action-btn px-3 py-1.5 text-[11px] text-left"
                       >
                         ★ {fruitSpec.name} ({fruitSpec.cost} Vol.){reason ? ` — ${reason}` : ""}
+                        <span className="block font-spectral italic normal-case text-[9.5px] leading-snug" style={{ color: "rgba(255,255,255,.85)" }}>
+                          +{fruitSpec.atkBonus} ATK → {capAtkNow + fruitSpec.atkBonus} ATK
+                          {effectTags(fruitSpec).length > 0 ? ` · ${effectTags(fruitSpec).join(" · ")}` : ""}
+                          {fruitSpec.description ? ` · ${fruitSpec.description}` : ""}
+                        </span>
                       </button>
                     );
                   })()}
@@ -244,7 +288,8 @@ export default function CaptainMenu({
                 <button onClick={onSpecialAttack} disabled={!canSpecial} className="btn btn-gold action-btn px-3 py-2 text-xs">
                   ★ {spec.name} ({spec.cost} Vol.){reason ? ` — ${reason}` : ""}
                   <span className="block font-spectral italic normal-case text-[9.5px] text-black/70 leading-snug">
-                    +{spec.atkBonus} ATK → {def.verso.atk + spec.atkBonus} ATK
+                    +{spec.atkBonus} ATK → {capAtkNow + spec.atkBonus} ATK
+                    {effectTags(spec).length > 0 ? ` · ${effectTags(spec).join(" · ")}` : ""}
                     {spec.description ? ` · ${spec.description}` : ""}
                   </span>
                 </button>
@@ -258,7 +303,8 @@ export default function CaptainMenu({
                 <button onClick={onSurcharge} disabled={!canSurcharge} className="btn btn-gold action-btn px-3 py-2 text-xs">
                   ⚡ {sur.name} ({sur.cost} Vol.){reason ? ` — ${reason}` : ""}
                   <span className="block font-spectral italic normal-case text-[9.5px] text-black/70 leading-snug">
-                    +{sur.atkBonus} ATK → {def.verso.atk + sur.atkBonus} ATK
+                    +{sur.atkBonus} ATK → {capAtkNow + sur.atkBonus} ATK
+                    {effectTags(sur).length > 0 ? ` · ${effectTags(sur).join(" · ")}` : ""}
                     {sur.description ? ` · ${sur.description}` : ""}
                   </span>
                 </button>
