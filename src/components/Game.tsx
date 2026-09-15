@@ -21,7 +21,7 @@ import PlayRevealLayer from "./PlayRevealLayer";
 import VfxStage from "./vfx/VfxStage";
 import CutInLayer from "./vfx/CutInLayer";
 import AmbientStage from "./vfx/AmbientStage";
-import { StatusLegend } from "./StatusBadges";
+import StatusBadges, { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
@@ -388,6 +388,14 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             {capGear.length > 0 && (
               <span className="absolute top-0.5 right-1 font-oswald font-bold text-[9px] px-1 rounded text-gold" style={{ background: "rgba(232,184,75,.25)", border: "1px solid var(--ink-edge)" }}>⚔{capGear.length}</span>
             )}
+            {/* Les statuts du Capitaine n'etaient affiches NULLE PART sur le
+                plateau : brule, gele, empoisonne ou Inciblable, rien ne le
+                disait. Meme pastilles que les personnages. */}
+            {ps.captain.statusEffects.length > 0 && (
+              <div className="absolute top-0.5 left-1 mt-3">
+                <StatusBadges effects={ps.captain.statusEffects} compact />
+              </div>
+            )}
             <div className="absolute left-1 right-1 bottom-1">
               <div className="font-cinzel text-[10px] font-bold text-white truncate leading-none">{capDef.name}</div>
               <div className="hp-gauge w-full h-1.5 rounded-full mt-1">
@@ -473,6 +481,12 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="hp-gauge flex-1 h-1.5 rounded-full"><div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, background: hpc }} /></div>
             <span className="font-oswald text-[10px] font-bold" style={{ color: hpc }}>{ps.captain.currentPv}</span>
           </div>
+          {/* Idem sur la proue, la ou le Capitaine passe le plus clair de la
+              partie : sans cela, « Inciblable jusqu'a la fin du tour » n'etait
+              visible que dans le journal. */}
+          {ps.captain.statusEffects.length > 0 && (
+            <div className="mt-1"><StatusBadges effects={ps.captain.statusEffects} compact /></div>
+          )}
           {capGear.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">
               {capGear.map((objId) => {
