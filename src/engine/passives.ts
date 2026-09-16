@@ -1,7 +1,7 @@
 import { produce } from "immer";
 import type { GameState, PlayerId, Slot, PassiveEffect, AllyFilter } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
-import { getBoardCharacters, getAdjacentSlots, getSlotOf } from "./board";
+import { getBoardCharacters, getAdjacentSlots, getSlotOf, shipPassiveScope, shipScopeMatches } from "./board";
 import { addLog, getOpponent } from "./gameState";
 import { ALL_SLOTS } from "./utils";
 
@@ -130,6 +130,22 @@ export function recalculatePassiveBuffs(
   return produce(state, (draft) => {
     const player = draft.players[playerId];
 
+    // Decision §8.63 — le bonus de PV d'un navire est un bonus de MAXIMUM, et
+    // les PV courants doivent suivre. Comme ce recalcul reconstruit les
+    // modificateurs a chaque appel, on releve le bonus DEJA applique avant de
+    // tout effacer, pour n'appliquer ensuite que le delta : sans cela les PV
+    // gonfleraient a chaque recalcul.
+    const shipPvBefore: Record<string, number> = {};
+    for (const slot of ALL_SLOTS) {
+      const charId = player.board[slot as Slot];
+      if (!charId) continue;
+      const card = draft.cards[charId];
+      if (!card) continue;
+      shipPvBefore[charId] = card.modifiers
+        .filter((m) => m.stat === "pv" && m.source.startsWith("passive_ship_"))
+        .reduce((acc, m) => acc + m.amount, 0);
+    }
+
     // Remove all passive-source modifiers from all board characters
     for (const slot of ALL_SLOTS) {
       const charId = player.board[slot as Slot];
@@ -207,14 +223,20 @@ export function recalculatePassiveBuffs(
           const pvMatch = desc.match(/\+(\d+)\s*pv/i);
           const shipAtkBonus = atkMatch ? parseInt(atkMatch[1]) : 0;
           const shipDefBonus = defMatch ? parseInt(defMatch[1]) : 0;
+          // Decision §8.63 — « Vos X gagnent +N PV » est un bonus CONTINU, qui
+          // vit tant que le navire est en jeu. Le libelle « +N PV **au
+          // deploiement** » (Going Merry) est une autre regle, ponctuelle,
+          // deja traitee dans `deployCharacter` ; on ne la double pas ici.
+          const atDeploy = desc.includes("deploiement") || desc.includes("déploiement");
+          const shipPvBonus = pvMatch && !atDeploy ? parseInt(pvMatch[1]) : 0;
+
+          // Decision §8.10 — le selecteur partage avec `deployCost` : sans lui,
+          // « Vos Baroque Works … » buffait TOUS les personnages.
+          const scope = shipPassiveScope(desc);
 
           for (const char of boardChars) {
-            // Check faction filter (e.g. "Mugiwara" or "Marines")
             const charDef = getCardDef(char.defId);
-            const factionMatch =
-              (desc.includes("mugiwara") && charDef.tags?.includes("mugiwara")) ||
-              (desc.includes("marine") && charDef.tags?.includes("marine")) ||
-              (!desc.includes("mugiwara") && !desc.includes("marine"));
+            const factionMatch = shipScopeMatches(scope, charDef);
 
             if (factionMatch) {
               if (shipAtkBonus > 0) {
@@ -231,6 +253,15 @@ export function recalculatePassiveBuffs(
                   id: `ship_passive_def_${char.id}`,
                   stat: "def",
                   amount: shipDefBonus,
+                  source: `passive_ship_${shipDef.id}`,
+                  duration: "permanent",
+                });
+              }
+              if (shipPvBonus > 0) {
+                draft.cards[char.id].modifiers.push({
+                  id: `ship_passive_pv_${char.id}`,
+                  stat: "pv",
+                  amount: shipPvBonus,
                   source: `passive_ship_${shipDef.id}`,
                   duration: "permanent",
                 });
@@ -265,6 +296,25 @@ export function recalculatePassiveBuffs(
           });
         }
       }
+    }
+
+    // Decision §8.63 — les PV courants suivent le delta du bonus de navire :
+    // le navire arrive, l'unite gagne reellement le point (sinon le « +1 PV »
+    // ne change rien tant qu'elle est intacte) ; le navire coule, elle le
+    // rend. Ramene au nouveau maximum, et **jamais mortel** : perdre un
+    // navire ne doit pas mettre KO un equipage a 1 PV.
+    for (const char of boardChars) {
+      const card = draft.cards[char.id];
+      if (!card) continue;
+      const after = card.modifiers
+        .filter((m) => m.stat === "pv" && m.source.startsWith("passive_ship_"))
+        .reduce((acc, m) => acc + m.amount, 0);
+      const delta = after - (shipPvBefore[char.id] ?? 0);
+      if (delta === 0) continue;
+      const printed = getCardDef(card.defId).pv;
+      const maxPv =
+        printed === undefined ? card.currentPv + delta : printed + after - (card.pvMaxLoss ?? 0);
+      card.currentPv = Math.max(1, Math.min(card.currentPv + delta, maxPv));
     }
   });
 }

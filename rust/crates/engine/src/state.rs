@@ -28,8 +28,8 @@ use crate::passives::{
 };
 use crate::registry::CardRegistry;
 use crate::types::{
-    AttackTrait, DeckDef, Element, Modifier, ModifierDuration, PassiveEffect, Phase, PlayerId,
-    Slot, StatusEffect, StatusEffectType, Zone,
+    AttackTrait, DeckDef, Element, Modifier, ModifierDuration, ModifierStat, PassiveEffect, Phase,
+    PlayerId, Slot, StatusEffect, StatusEffectType, Zone,
 };
 
 // ============================================================
@@ -175,7 +175,17 @@ impl CardInstance {
     /// The instance's maximum PV: the printed `def.pv` minus any permanent
     /// max-PV loss (decision §8.5). `None` for a definition without `pv`.
     pub fn max_pv(&self, printed_pv: Option<i32>) -> Option<i32> {
-        printed_pv.map(|pv| pv - self.pv_max_loss.unwrap_or(0))
+        // Decision §8.63 — a PV bonus is a bonus to the MAXIMUM. Without this
+        // sum a ship's "+1 PV" (at deploy or continuous) raised current PV
+        // without raising the ceiling, so a heal could never give it back
+        // after damage.
+        let pv_bonus: i32 = self
+            .modifiers
+            .iter()
+            .filter(|m| m.stat == ModifierStat::Pv)
+            .map(|m| m.amount)
+            .sum();
+        printed_pv.map(|pv| pv + pv_bonus - self.pv_max_loss.unwrap_or(0))
     }
 
     /// TS `card.statusEffects.some((e) => e.type === t)`.

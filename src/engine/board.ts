@@ -270,6 +270,32 @@ export function hasTrait(
 }
 
 /**
+ * Decision §8.10 — un seul selecteur de portee pour `deployCost` et
+ * `recalculatePassiveBuffs` : le premier mot de faction trouve dans le texte
+ * (minuscule) gagne, et un texte qui n'en nomme aucun vise tout le monde.
+ *
+ * Le TS testait « mugiwara » puis « marine » et retombait sur « tout le monde »
+ * sinon — donc « Vos Baroque Works gagnent … » buffait TOUS les personnages.
+ * Rust : `board::ship_passive_scope`.
+ */
+export type ShipScope = { kind: "all" } | { kind: "tag"; tag: string };
+
+export function shipPassiveScope(desc: string): ShipScope {
+  const lower = desc.toLowerCase();
+  let best: { at: number; tag: string } | null = null;
+  for (const tag of ["mugiwara", "marine", "baroque"]) {
+    const at = lower.indexOf(tag);
+    if (at >= 0 && (best === null || at < best.at)) best = { at, tag };
+  }
+  return best ? { kind: "tag", tag: best.tag } : { kind: "all" };
+}
+
+/** `def` appartient-il a cette portee ? Rust : `ShipScope::matches`. */
+export function shipScopeMatches(scope: ShipScope, def: CardDef): boolean {
+  return scope.kind === "all" || (def.tags?.includes(scope.tag) ?? false);
+}
+
+/**
  * Decision §8.5 — the maximum PV of a board instance: the printed `def.pv`
  * minus its permanent max-PV loss. `undefined` when the definition has no `pv`.
  * Rust: `board::max_pv_of`.
@@ -279,7 +305,14 @@ export function maxPvOf(state: GameState, instanceId: string): number | undefine
   if (!card) return undefined;
   const printed = getCardDef(card.defId).pv;
   if (printed === undefined) return undefined;
-  return printed - (card.pvMaxLoss ?? 0);
+  // Decision §8.63 — un bonus de PV est un bonus de MAXIMUM. Sans cette somme,
+  // le « +1 PV » d'un navire (pose au deploiement comme en continu) montait les
+  // PV courants sans monter le plafond, donc un soin ne pouvait jamais le
+  // rendre apres degats.
+  const pvBonus = card.modifiers
+    .filter((m) => m.stat === "pv")
+    .reduce((acc, m) => acc + m.amount, 0);
+  return printed + pvBonus - (card.pvMaxLoss ?? 0);
 }
 
 /**
@@ -510,11 +543,7 @@ export function deployCost(
     const sd = getCardDef(state.cards[player.activeShip].defId);
     const sp = (sd.shipPassive ?? "").toLowerCase();
     if ((sp.includes("cout") || sp.includes("coût")) && sp.includes("-1")) {
-      const factionOk =
-        (sp.includes("marine") && def.faction === "marine") ||
-        (sp.includes("mugiwara") && (def.tags?.includes("mugiwara") ?? false)) ||
-        (!sp.includes("marine") && !sp.includes("mugiwara"));
-      if (factionOk) cost -= 1;
+      if (shipScopeMatches(shipPassiveScope(sp), def)) cost -= 1;
     }
   }
   return Math.max(1, cost);
@@ -572,11 +601,7 @@ export function deployCharacter(
       const sd = getCardDef(draft.cards[p.activeShip].defId);
       const sp = (sd.shipPassive ?? "").toLowerCase();
       if (sp.includes("deploiement") || sp.includes("déploiement")) {
-        const factionOk =
-          (sp.includes("mugiwara") && (def.tags?.includes("mugiwara") ?? false)) ||
-          (sp.includes("marine") && def.faction === "marine") ||
-          (!sp.includes("mugiwara") && !sp.includes("marine"));
-        if (factionOk) {
+        if (shipScopeMatches(shipPassiveScope(sp), def)) {
           const pv = sp.match(/\+(\d+)\s*pv/);
           const dfb = sp.match(/\+(\d+)\s*def/);
           if (pv) { c.currentPv += parseInt(pv[1]); c.modifiers.push({ id: `shipdep_pv_${instanceId}`, stat: "pv", amount: parseInt(pv[1]), source: `ship_${sd.id}`, duration: "permanent" }); }
