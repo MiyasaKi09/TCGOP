@@ -115,13 +115,31 @@ export function defHasNaturalHaki(def: CardDef): boolean {
 }
 
 /** Check if a Haki type is available this turn */
+/**
+ * Decision §8.64 — « Vos personnages beneficient de l'esquive Observation
+ * (1x/tour), meme avant le tour 5 » (RH-001 Ben Beckman).
+ *
+ * Le passif `grantObservationAll` etait declare dans les types et sur la carte,
+ * mais AUCUN code ne le lisait : le seuil de manche etait inconditionnel. Le
+ * passif leve le seuil, rien d'autre — l'esquive reste une fois par manche et
+ * gratuite, et Beckman doit etre en jeu.
+ */
+export function hasObservationGrant(state: GameState, playerId: PlayerId): boolean {
+  const { getCardDef } = require("./cardRegistry");
+  return getBoardCharacters(state, playerId).some((c) => {
+    const d = getCardDef(c.defId) as CardDef;
+    return d.passive?.effects.some((e) => e.type === "grantObservationAll") ?? false;
+  });
+}
+
 export function isHakiAvailable(
   state: GameState,
   playerId: PlayerId,
   hakiType: HakiType
 ): boolean {
   const player = state.players[playerId];
-  if (state.turnNumber < HAKI_THRESHOLDS[hakiType]) return false;
+  const thresholdLifted = hakiType === "observation" && hasObservationGrant(state, playerId);
+  if (!thresholdLifted && state.turnNumber < HAKI_THRESHOLDS[hakiType]) return false;
 
   switch (hakiType) {
     case "observation":

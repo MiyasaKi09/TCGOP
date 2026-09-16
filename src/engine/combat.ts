@@ -20,6 +20,7 @@ import {
   getBoardCharacters,
   getValidTargets,
   assertTargetable,
+  wornObjectFlag,
   isSlotFree,
   healUnit,
   applyPermanentPvLoss,
@@ -46,7 +47,33 @@ function attackerNoDodge(state: GameState, attackerInstanceId: string): boolean 
     const obj = state.cards[objId];
     if (obj && getCardDef(obj.defId).id === "MG-013") return true; // Kabuto
   }
-  return false;
+  // Decision §8.65 — « Si equipee par Lucky Roux : attaques inesquivables ».
+  return wornObjectFlag(state, card.attachedObjects, def.name, "noDodge");
+}
+
+/**
+ * Decision §8.64 — « Les attaques de X ne peuvent etre ni esquivees ni
+ * bloquees » (RH-003 Yasopp). Le passif `attacksIgnoreShield` etait declare
+ * dans les types et sur la carte, mais AUCUN code ne le lisait : seul
+ * `spec.ignoreShield`, porte par une attaque speciale, atteignait
+ * `pendingAttack.ignoreShield`. Le pendant `noDodge`, lui, etait bien lu —
+ * donc la moitie du texte de Yasopp marchait et l'autre pas.
+ *
+ * Lu aussi sur les objets portes (RH-010 Gryphon, §8.65).
+ */
+function attackerIgnoresShield(state: GameState, attackerInstanceId: string): boolean {
+  const card = state.cards[attackerInstanceId];
+  if (card) {
+    const d = getCardDef(card.defId);
+    if (d.passive?.effects.some((e) => e.type === "attacksIgnoreShield")) return true;
+    return wornObjectFlag(state, card.attachedObjects, d.name, "ignoreShield");
+  }
+  // L'id synthetique `captain_<joueur>` : le capitaine porte des objets
+  // depuis §8.28, et Gryphon (RH-010) nomme Shanks, qui n'existe QUE comme
+  // capitaine — sans ce bras la clause serait injouable sur son porteur.
+  const pid = getAttackerOwner(state, attackerInstanceId);
+  const cap = state.players[pid].captain;
+  return wornObjectFlag(state, cap.attachedObjects ?? [], getCaptainDef(cap.defId).name, "ignoreShield");
 }
 
 /** Whether the attacker strips Furtif from targets it hits (Smoker). */
@@ -400,6 +427,9 @@ export function declareBaseAttack(
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
     defHasNaturalHaki(def) ||
+    // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) : l'objet
+    // porte donne le Haki a son porteur, quel que soit le tour.
+    wornObjectFlag(state, attacker.attachedObjects, def.name, "grantsHaki") ||
     state.turnNumber >= 7 ||
     attackElement === "water" ||
     !!state.players[actingOwner].hakiThisTurn;
@@ -415,6 +445,7 @@ export function declareBaseAttack(
     attackTraits,
     hasHaki: hasHaki ?? false,
     cannotBeDodged: attackerNoDodge(state, attackerInstanceId),
+    ignoreShield: attackerIgnoresShield(state, attackerInstanceId),
     immobilize: baseAction?.immobilize,
     stripStealth: baseAction?.stripStealth || attackerStripsStealth(state, attackerInstanceId),
   };
@@ -577,6 +608,9 @@ export function declareSpecialAttack(
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
     defHasNaturalHaki(def) ||
+    // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) : l'objet
+    // porte donne le Haki a son porteur, quel que soit le tour.
+    wornObjectFlag(state, attacker.attachedObjects, def.name, "grantsHaki") ||
     state.turnNumber >= 7 ||
     spec.element === "water" ||
     !!state.players[actingOwner].hakiThisTurn;
@@ -592,7 +626,7 @@ export function declareSpecialAttack(
     attackTraits,
     hasHaki: hasHaki ?? false,
     cannotBeDodged: spec.cannotBeDodged || attackerNoDodge(state, attackerInstanceId),
-    ignoreShield: spec.ignoreShield,
+    ignoreShield: spec.ignoreShield || attackerIgnoresShield(state, attackerInstanceId),
     immobilize: spec.immobilize,
     sleep: spec.sleep,
     pushback: spec.pushback || (spec.pushbackSlots ?? 0) > 0,
@@ -709,7 +743,10 @@ export function declareFruitSpecialAttack(
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
   const hasHaki =
-    defHasNaturalHaki(def) || next.turnNumber >= 7 || spec.element === "water";
+    defHasNaturalHaki(def) ||
+    // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) : l'objet
+    // porte donne le Haki a son porteur, quel que soit le tour.
+    wornObjectFlag(state, attacker.attachedObjects, def.name, "grantsHaki") || next.turnNumber >= 7 || spec.element === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -721,7 +758,7 @@ export function declareFruitSpecialAttack(
     element: spec.element,
     attackTraits,
     hasHaki: hasHaki ?? false,
-    ignoreShield: spec.ignoreShield,
+    ignoreShield: spec.ignoreShield || attackerIgnoresShield(state, attackerInstanceId),
     immobilize: spec.immobilize,
     sleep: spec.sleep,
     pushback: spec.pushback,
@@ -869,7 +906,7 @@ export function declareCaptainFruitSpecialAttack(
     element: spec.element,
     attackTraits,
     hasHaki,
-    ignoreShield: spec.ignoreShield,
+    ignoreShield: spec.ignoreShield || attackerIgnoresShield(state, `captain_${playerId}`),
     immobilize: spec.immobilize,
     sleep: spec.sleep,
     pushback: spec.pushback,
@@ -1443,6 +1480,30 @@ function applyCharacterDamage(
   if (!target) return state;
 
   const targetDef = getCardDef(target.defId);
+
+  // Decision §8.67 — MG-018 Dial d'Impact : arme, il absorbe entierement la
+  // prochaine attaque subie et la renvoie a l'attaquant. Le texte imprime
+  // renvoie « a votre prochain tour » ; la detente est ramenee a l'instant de
+  // l'absorption, faute de quoi le montant devrait survivre a un changement de
+  // tour ET a une seconde selection de cible — compression assumee et
+  // consignee, le montant et la cible restant ceux du texte.
+  const reflect = target.statusEffects.find((e) => e.type === "reflect");
+  if (reflect && pending.rawDamage > 0) {
+    const amount = pending.rawDamage;
+    const attackerOwner = getAttackerOwner(state, pending.attackerId);
+    let next = produce(state, (draft) => {
+      const t = draft.cards[pending.targetId];
+      t.statusEffects = t.statusEffects.filter((e) => e.type !== "reflect");
+      const a = draft.cards[pending.attackerId];
+      if (a) a.currentPv -= amount;
+    });
+    next = addLog(next, target.owner, `Dial d'Impact : ${amount} degats absorbes puis renvoyes !`);
+    if (state.cards[pending.attackerId]) {
+      const an = getCardDef(state.cards[pending.attackerId].defId).name;
+      next = addLog(next, attackerOwner, `${an} encaisse ${amount} degats (Impact).`);
+    }
+    return next;
+  }
 
   // Logia check (includes traits from equipped Devil Fruits)
   const isLogia = hasTrait(state, pending.targetId, "logia");

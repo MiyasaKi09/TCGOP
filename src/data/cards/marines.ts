@@ -119,6 +119,7 @@ export const marinesCards: CardDef[] = [
     id: "MR-013", name: "Shigure", type: "object", subtype: "weapon", cost: 1,
     faction: "marine", rarity: "C", set: "ST02", bonusAtk: 1, restriction: "bretteur",
     equipEffect: "+1 ATK. Si équipée par Tashigi : +1 ATK de plus.",
+    objectEffects: { wielder: { name: "Tashigi", atkBonus: 1 } },
   },
   {
     id: "MR-014", name: "Jitte Granit Marin", type: "object", subtype: "weapon", cost: 1,
@@ -131,16 +132,19 @@ export const marinesCards: CardDef[] = [
     id: "MR-015", name: "Menottes Granit Marin", type: "object", subtype: "accessory", cost: 2,
     faction: "marine", rarity: "R", set: "ST02", bonusAtk: 0,
     equipEffect: "Actif (1x/partie) : un ennemi Maudit perd ses traits et son action à son prochain tour.",
+    objectEffects: { activated: { name: "Menottes Granit Marin", cost: 0, oncePerGame: true, target: "enemy", stripTraitsIfCursed: true, loseAction: true } },
   },
   {
     id: "MR-016", name: "Canon Marine", type: "object", subtype: "accessory", cost: 1,
     faction: "marine", rarity: "C", set: "ST02", bonusAtk: 0,
     equipEffect: "Le porteur gagne une attaque : Tir de Canon — 1 Vol · 3 dégâts (Portée).",
+    objectEffects: { grantsAttack: { name: "Tir de Canon", cost: 1, damage: 3 } },
   },
   {
     id: "MR-017", name: "Boulet Granit Marin", type: "object", subtype: "accessory", cost: 1,
     faction: "marine", rarity: "C", set: "ST02", bonusAtk: 0,
     equipEffect: "1x/partie : 2 dégâts à un ennemi ; s'il est Maudit, 4 dégâts et il perd ses traits ce tour.",
+    objectEffects: { activated: { name: "Boulet Granit Marin", cost: 0, oncePerGame: true, target: "enemy", damage: 2, cursedDamage: 4, stripTraitsIfCursed: true } },
   },
 
   // === NAVIRES ===

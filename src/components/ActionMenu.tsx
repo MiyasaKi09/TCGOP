@@ -19,6 +19,8 @@ interface ActionMenuProps {
   onAwakenFruit: (fruitInstanceId: string) => void;
   /** Vise avec l'attaque spéciale d'un fruit éveillé porté par cette unité. */
   onFruitSpecial: (fruitInstanceId: string) => void;
+  /** Decision §8.67 — active la capacité d'un objet porté. */
+  onActivateObject: (objectInstanceId: string, needsTarget: boolean) => void;
   onViewDetail: () => void;
   onClose: () => void;
   originRect?: DOMRect | null;
@@ -26,7 +28,7 @@ interface ActionMenuProps {
 
 export default function ActionMenu({
   instance, def, state, validActions,
-  onBaseAttack, onSpecialAttack, onSupportAction, onAwakenFruit, onFruitSpecial,
+  onBaseAttack, onSpecialAttack, onSupportAction, onAwakenFruit, onFruitSpecial, onActivateObject,
   onViewDetail, onClose, originRect,
 }: ActionMenuProps) {
   const zoomRef = useFlipZoom<HTMLDivElement>(originRect);
@@ -180,6 +182,44 @@ export default function ActionMenu({
                           )}
                         </div>
                       )}
+                      {/* Decision §8.67 — la ligne activable de l'objet.
+                          Cinq objets impriment « 1x/partie : … » et un sixieme
+                          « le porteur gagne une attaque … » : aucun bouton ne
+                          les exposait, donc aucune n'etait jouable. */}
+                      {(() => {
+                        const fx = objDef.objectEffects;
+                        const act = fx?.activated ?? (fx?.grantsAttack
+                          ? { name: fx.grantsAttack.name, cost: fx.grantsAttack.cost, target: "enemy" as const, oncePerGame: false }
+                          : null);
+                        if (!act) return null;
+                        const offered = validActions.filter(
+                          (a) => a.type === "activateObject" && a.objectInstanceId === objId
+                        );
+                        const used = !!act.oncePerGame && instance.usedOnceAbilities.includes(`obj_${objDef.id}`);
+                        const reason = used
+                          ? "Déjà utilisé (1x/partie)"
+                          : playerVol < act.cost
+                            ? `Volonté insuffisante (${playerVol}/${act.cost})`
+                            : offered.length === 0
+                              ? "Aucune cible"
+                              : null;
+                        return (
+                          <div className="flex flex-col gap-0.5">
+                            <button
+                              onClick={() => onActivateObject(objId, act.target === "enemy")}
+                              disabled={reason !== null}
+                              className="btn action-btn px-2 py-1 text-[10px]"
+                              style={{ background: "linear-gradient(180deg,#38bdf8,#0284c7)", color: "#fff" }}
+                            >
+                              ⚡ {act.name}{act.cost ? ` — ${act.cost} Vol.` : " — gratuit"}
+                              {act.oncePerGame ? " · 1x/partie" : ""}
+                            </button>
+                            {reason && (
+                              <span className="font-oswald text-[9px]" style={{ color: "#FF8A80" }}>• {reason}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {awakened && spec && (
                         <button
                           onClick={() => onFruitSpecial(objId)}

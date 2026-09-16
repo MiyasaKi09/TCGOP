@@ -41,7 +41,9 @@ type UIMode =
   | { type: "selectingSlot"; cardId: string }
   /** `surcharge` (decision §8.34(b)) aims the captain's `useSurcharge` instead
    *  of a `captainAttack`; `isSpecial` picks the captain's ★ special attack. */
-  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string; surcharge?: boolean }
+  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string; surcharge?: boolean;
+      /** Decision §8.67 — vise la capacite activee d'un objet equipe. */
+      activateObjectId?: string }
   | { type: "selectingSupportTarget"; instanceId: string }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
@@ -133,6 +135,15 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     const targets = new Set<string>();
     // Decision §8.28 (follow-up): an awakened fruit worn by the captain fires a
     // `fruitSpecialAttack` whose attacker is the synthetic `captain_{id}`.
+    // Decision §8.67 — la capacite activee d'un objet vise ses propres cibles.
+    if (uiMode.activateObjectId) {
+      const objId = uiMode.activateObjectId;
+      for (const a of validActions) {
+        if (a.type !== "activateObject" || a.objectInstanceId !== objId) continue;
+        if (a.targetInstanceId) targets.add(a.targetInstanceId);
+      }
+      return targets;
+    }
     if (uiMode.fruitInstanceId) {
       const fruitId = uiMode.fruitInstanceId;
       for (const a of validActions) {
@@ -265,7 +276,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     targetId: string,
     targetIsCaptain: boolean
   ) => {
-    if (mode.fruitInstanceId) {
+    if (mode.activateObjectId) {
+      dispatch({
+        type: "activateObject",
+        objectInstanceId: mode.activateObjectId,
+        targetInstanceId: targetId,
+      } as GameAction);
+    } else if (mode.fruitInstanceId) {
       dispatch({
         type: "fruitSpecialAttack",
         attackerInstanceId: mode.attackerId,
@@ -939,6 +956,16 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             onFruitSpecial={(fruitInstanceId) =>
               setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true, fruitInstanceId })
             }
+            /* Decision §8.67 — une capacite qui vise passe par la visee
+               normale ; une capacite sans cible part tout de suite. */
+            onActivateObject={(objectInstanceId, needsTarget) => {
+              if (needsTarget) {
+                setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true, activateObjectId: objectInstanceId });
+              } else {
+                dispatch({ type: "activateObject", objectInstanceId });
+                resetUI();
+              }
+            }}
             onViewDetail={() => setUiMode({ type: "cardDetail", defId: inst.defId, instanceId: uiMode.instanceId })}
             onClose={resetUI}
           />
@@ -962,6 +989,14 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             onFruitSpecial={(fruitInstanceId) =>
               setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, fruitInstanceId })
             }
+            onActivateObject={(objectInstanceId, needsTarget) => {
+              if (needsTarget) {
+                setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, activateObjectId: objectInstanceId });
+              } else {
+                dispatch({ type: "activateObject", objectInstanceId });
+                resetUI();
+              }
+            }}
             onKingHaki={() => { dispatch({ type: "useHaki", hakiType: "king" }); resetUI(); }}
             onClose={resetUI}
           />

@@ -19,6 +19,8 @@ import {
   isUntargetableNow,
   captainIsUntargetable,
   isSlotFree,
+  assertTargetable,
+  getAdjacentSlots,
   getValidTargets,
   hasSummoningSickness,
   hasTrait,
@@ -58,6 +60,7 @@ import {
   captainHasTraitNow,
 } from "./captain";
 import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
+import { ALL_SLOTS } from "./utils";
 import { produce } from "immer";
 
 /** Decision §8.37 — the refusal an embargoed player gets on `equipObject`.
@@ -201,6 +204,9 @@ export function executeAction(
         action.targetInstanceId,
         action.targetIsCaptain ?? false
       );
+
+    case "activateObject":
+      return activateObject(state, state.currentPlayer, action.objectInstanceId, action.targetInstanceId);
 
     case "endTurn": {
       const next = endTurn(state);
@@ -688,6 +694,144 @@ function playCounter(state: GameState, instanceId: string): GameState {
     default:
       return state;
   }
+}
+
+/**
+ * Decision §8.67 — activer la capacite d'un objet equipe.
+ *
+ * Six objets impriment une ligne activable (« 1x/partie : … », « le porteur
+ * gagne une attaque … ») et **aucune** action du moteur ne permettait de la
+ * declencher : les six etaient injouables quel que soit le porteur. Le cout
+ * est en Volonte, le marqueur 1x/partie vit sur le PORTEUR (`usedOnceAbilities`,
+ * comme les spéciales), et l'objet doit etre equipe sur une unite du joueur.
+ */
+function activateObject(
+  state: GameState,
+  playerId: PlayerId,
+  objectInstanceId: string,
+  targetInstanceId?: string
+): GameState {
+  const obj = state.cards[objectInstanceId];
+  if (!obj) throw new Error("Object not found");
+  const objDef = getCardDef(obj.defId);
+  const act = objDef.objectEffects?.activated;
+  const granted = objDef.objectEffects?.grantsAttack;
+  const spec = act ?? (granted
+    ? { name: granted.name, cost: granted.cost, target: "enemy" as const, damage: granted.damage, oncePerGame: false }
+    : undefined);
+  if (!spec) throw new Error("This object has no activated ability");
+
+  // Trouver le porteur (personnage ou capitaine).
+  let bearerId: string | null = null;
+  let bearerName = "";
+  let bearerOnce: string[] = [];
+  for (const slot of ALL_SLOTS) {
+    const id = state.players[playerId].board[slot as Slot];
+    if (id && state.cards[id]?.attachedObjects.includes(objectInstanceId)) {
+      bearerId = id; bearerName = getCardDef(state.cards[id].defId).name;
+      bearerOnce = state.cards[id].usedOnceAbilities; break;
+    }
+  }
+  const cap = state.players[playerId].captain;
+  const onCaptain = (cap.attachedObjects ?? []).includes(objectInstanceId);
+  if (onCaptain) {
+    bearerId = `captain_${playerId}`;
+    bearerName = getCaptainDef(cap.defId).name;
+    bearerOnce = cap.usedOnceAbilities;
+  }
+  if (!bearerId) throw new Error("Object is not equipped on one of your units");
+
+  const onceKey = `obj_${objDef.id}`;
+  if (spec.oncePerGame && bearerOnce.includes(onceKey)) throw new Error("Already used (1x/game)");
+  if (!canAfford(state, playerId, spec.cost)) throw new Error("Cannot afford this ability");
+
+  const target = spec.target === "enemy" ? targetInstanceId : undefined;
+  if (spec.target === "enemy") {
+    if (!target) throw new Error("This ability needs a target");
+    const t = state.cards[target];
+    if (!t || t.zone !== "board" || controllerOf(t) === playerId) throw new Error("Target must be an enemy on the board");
+    assertTargetable(state, getOpponent(playerId), target, false);
+  }
+
+  let next = spendVolonte(state, playerId, spec.cost);
+  next = produce(next, (draft) => {
+    if (spec.oncePerGame) {
+      if (onCaptain) draft.players[playerId].captain.usedOnceAbilities.push(onceKey);
+      else draft.cards[bearerId!].usedOnceAbilities.push(onceKey);
+    }
+  });
+  next = addLog(next, playerId, `${bearerName} active ${objDef.name} : ${spec.name}`);
+
+  const a = act;
+  if (a?.healAllAllies || a?.buffAllAlliesAtk) {
+    // RH-015 « tous vos allies sont soignes de 2 PV et gagnent +1 ATK ».
+    next = produce(next, (draft) => {
+      for (const slot of ALL_SLOTS) {
+        const id = draft.players[playerId].board[slot as Slot];
+        if (!id) continue;
+        if (a.buffAllAlliesAtk) {
+          draft.cards[id].modifiers.push({
+            id: `obj_${objectInstanceId}_atk_${id}`, stat: "atk", amount: a.buffAllAlliesAtk,
+            source: `object_${objDef.id}`, duration: "turn",
+          });
+        }
+      }
+    });
+    if (a.healAllAllies) {
+      for (const slot of ALL_SLOTS) {
+        const id = next.players[playerId].board[slot as Slot];
+        if (id) next = healUnit(next, id, a.healAllAllies).state;
+      }
+    }
+    return next;
+  }
+
+  if (a?.reflectNextAttack) {
+    // MG-018 Dial d'Impact : arme l'absorption sur le porteur.
+    next = produce(next, (draft) => {
+      if (onCaptain) {
+        draft.players[playerId].captain.statusEffects.push({ type: "reflect", turnsRemaining: -1, damagePerTurn: 0, source: objectInstanceId });
+      } else {
+        draft.cards[bearerId!].statusEffects.push({ type: "reflect", turnsRemaining: -1, damagePerTurn: 0, source: objectInstanceId });
+      }
+    });
+    return addLog(next, playerId, `${objDef.name} : la prochaine attaque subie sera absorbee puis renvoyee.`);
+  }
+
+  if (target) {
+    const t = next.cards[target];
+    const tDef = getCardDef(t.defId);
+    const isCursed = hasTrait(next, target, "cursed");
+    const dmg = (isCursed && a?.cursedDamage !== undefined) ? a.cursedDamage : (spec.damage ?? 0);
+    if (dmg > 0) {
+      next = produce(next, (draft) => { draft.cards[target].currentPv -= dmg; });
+      next = addLog(next, playerId, `${objDef.name} : ${tDef.name} subit ${dmg} degats.`);
+      // Zone : les voisins de la cible prennent la meme chose (BW-017).
+      if (a?.zone && t.slot) {
+        for (const adj of getAdjacentSlots(t.slot)) {
+          const id = next.players[controllerOf(t)].board[adj as Slot];
+          if (!id) continue;
+          next = produce(next, (draft) => { draft.cards[id].currentPv -= dmg; });
+          next = addLog(next, playerId, `${objDef.name} (Zone) : ${getCardDef(next.cards[id].defId).name} subit ${dmg} degats.`);
+        }
+      }
+    }
+    if (a?.stripTraitsIfCursed && isCursed) {
+      next = produce(next, (draft) => {
+        draft.cards[target].statusEffects.push({ type: "noStealth", turnsRemaining: -1, damagePerTurn: 0, source: objectInstanceId });
+        draft.cards[target].modifiers.push({ id: `granit_${objectInstanceId}`, stat: "atk", amount: 0, source: `granit_${objDef.id}`, duration: "permanent" });
+      });
+      next = addLog(next, playerId, `${tDef.name} est neutralise par le Granit Marin : il perd ses traits.`);
+    }
+    if (a?.loseAction) {
+      next = produce(next, (draft) => {
+        draft.cards[target].statusEffects.push({ type: "loseAction", turnsRemaining: 1, damagePerTurn: 0, source: objectInstanceId });
+      });
+      next = addLog(next, playerId, `${tDef.name} perd sa prochaine action.`);
+    }
+    next = sweepKOs(next, getOpponent(playerId), playerId);
+  }
+  return next;
 }
 
 // ============================================================
@@ -1344,6 +1488,39 @@ export function getValidActions(
           targetInstanceId: `captain_${getOpponent(playerId)}`,
           targetIsCaptain: true,
         });
+      }
+    }
+  }
+
+  // Decision §8.67 — les capacites activees d'objets. Sans cette enumeration
+  // l'action existerait mais ne serait jamais proposee, donc resterait
+  // injouable — exactement le defaut qu'elle corrige.
+  {
+    const bearers: { id: string; once: string[]; objs: string[] }[] = [];
+    for (const c of boardChars) bearers.push({ id: c.instanceId, once: c.usedOnceAbilities, objs: c.attachedObjects });
+    bearers.push({ id: `captain_${playerId}`, once: player.captain.usedOnceAbilities, objs: player.captain.attachedObjects ?? [] });
+    const oppChars0 = getBoardCharacters(state, getOpponent(playerId)).filter(
+      (c) => !isUntargetableNow(state, c.instanceId)
+    );
+    for (const b of bearers) {
+      for (const objId of b.objs) {
+        const o = state.cards[objId];
+        if (!o) continue;
+        const od = getCardDef(o.defId);
+        const fx = od.objectEffects;
+        const spec = fx?.activated ?? (fx?.grantsAttack
+          ? { name: fx.grantsAttack.name, cost: fx.grantsAttack.cost, target: "enemy" as const, oncePerGame: false }
+          : undefined);
+        if (!spec) continue;
+        if (spec.oncePerGame && b.once.includes(`obj_${od.id}`)) continue;
+        if (!canAfford(state, playerId, spec.cost)) continue;
+        if (spec.target === "enemy") {
+          for (const opp of oppChars0) {
+            actions.push({ type: "activateObject", objectInstanceId: objId, targetInstanceId: opp.instanceId });
+          }
+        } else {
+          actions.push({ type: "activateObject", objectInstanceId: objId });
+        }
       }
     }
   }

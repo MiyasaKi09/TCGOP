@@ -56,6 +56,8 @@ interface CaptainMenuProps {
   onAwakenFruit: (fruitInstanceId: string) => void;
   /** Decision §8.28 (follow-up): aim the awakened fruit's special attack. */
   onFruitSpecial: (fruitInstanceId: string) => void;
+  /** Decision §8.67 — active la capacité d'un objet porté par le Capitaine. */
+  onActivateObject: (objectInstanceId: string, needsTarget: boolean) => void;
   onKingHaki: () => void;
   onClose: () => void;
   originRect?: DOMRect | null;
@@ -82,7 +84,7 @@ function AbilityRow({ a, accent, kind }: { a: SpecialAttack | BaseAction; accent
 
 export default function CaptainMenu({
   captain, def, state, validActions, isYou, onFlip, onAttack, onSpecialAttack, onSurcharge,
-  onAwakenFruit, onFruitSpecial, onKingHaki, onClose, originRect,
+  onAwakenFruit, onFruitSpecial, onActivateObject, onKingHaki, onClose, originRect,
 }: CaptainMenuProps) {
   const zoomRef = useFlipZoom<HTMLDivElement>(originRect);
   const fac = faction(def.faction);
@@ -250,6 +252,37 @@ export default function CaptainMenu({
                           {effectTags(fruitSpec).length > 0 ? ` · ${effectTags(fruitSpec).join(" · ")}` : ""}
                           {fruitSpec.description ? ` · ${fruitSpec.description}` : ""}
                         </span>
+                      </button>
+                    );
+                  })()}
+                  {/* Decision §8.67 — la ligne activable d'un objet porte par
+                      le Capitaine (Gryphon nomme Shanks, §8.62 suite). */}
+                  {(() => {
+                    const fx = objDef.objectEffects;
+                    const act = fx?.activated ?? (fx?.grantsAttack
+                      ? { name: fx.grantsAttack.name, cost: fx.grantsAttack.cost, target: "enemy" as const, oncePerGame: false }
+                      : null);
+                    if (!act) return null;
+                    const vol = state.players[captain.owner].volonte;
+                    const offered = validActions.filter(
+                      (a) => a.type === "activateObject" && a.objectInstanceId === obj.instanceId
+                    );
+                    const used = !!act.oncePerGame && captain.usedOnceAbilities.includes(`obj_${objDef.id}`);
+                    const reason = used
+                      ? "Déjà utilisé (1x/partie)"
+                      : vol < act.cost
+                        ? `Volonté insuffisante (${vol}/${act.cost})`
+                        : offered.length === 0
+                          ? "Aucune cible"
+                          : null;
+                    return (
+                      <button
+                        onClick={() => onActivateObject(obj.instanceId, act.target === "enemy")}
+                        disabled={reason !== null}
+                        className="btn action-btn px-3 py-1.5 text-[11px] text-left"
+                        style={{ background: "linear-gradient(180deg,#38bdf8,#0284c7)", color: "#fff" }}
+                      >
+                        ⚡ {act.name} ({act.cost} Vol.){act.oncePerGame ? " · 1x/partie" : ""}{reason ? ` — ${reason}` : ""}
                       </button>
                     );
                   })()}

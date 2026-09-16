@@ -348,6 +348,24 @@ export function applyEnemyDebuffAuras(state: GameState): GameState {
         if (e.type === "debuffAdjacentEnemies") adj += e.amount;
         if (e.type === "debuffOneEnemy") one = Math.max(one, e.amount);
       }
+      // Decision §8.65 — « Les ennemis adjacents au porteur ont -1 ATK »
+      // (RH-016 Cape de l'Empereur). Meme accumulateur que le passif de
+      // personnage equivalent, donc meme approximation d'« adjacent » que le
+      // moteur applique deja partout : la ligne avant adverse.
+      for (const slot of ALL_SLOTS) {
+        const id = draft.players[pid].board[slot as Slot];
+        if (!id) continue;
+        for (const objId of draft.cards[id].attachedObjects) {
+          const o = draft.cards[objId];
+          if (!o) continue;
+          adj += getCardDef(o.defId).objectEffects?.adjacentEnemyAtk ?? 0;
+        }
+      }
+      for (const objId of draft.players[pid].captain.attachedObjects ?? []) {
+        const o = draft.cards[objId];
+        if (!o) continue;
+        adj += getCardDef(o.defId).objectEffects?.adjacentEnemyAtk ?? 0;
+      }
       if (adj > 0) {
         for (const s of ["V1", "V2", "V3"] as Slot[]) {
           const id = draft.players[opp].board[s];

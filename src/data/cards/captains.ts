@@ -130,7 +130,11 @@ export const captainShanks: CaptainDef = {
   id: "CAP-SHANKS",
   name: "Shanks (Akagami)",
   faction: "pirate",
-  tags: ["redhair"],
+  // Decision §8.62 (suite) : Shanks porte le tag `bretteur`. Gryphon (RH-010)
+  // exige `bretteur` et imprime « Si equipee par Shanks : +1 ATK » — un nom qui
+  // n'existe dans le jeu QUE comme capitaine. Sans ce tag, la clause imprimee
+  // etait inatteignable, exactement comme les fusils de §8.62.
+  tags: ["redhair", "bretteur"],
   traits: [],
 
   recto: {

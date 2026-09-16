@@ -233,15 +233,24 @@ const ALL_TRAITS = ["shield", "range", "stealth", "rush", "cursed", "logia", "pi
  */
 export function attachmentsGrantedAttackTraits(
   state: GameState,
-  attached: readonly string[]
+  attached: readonly string[],
+  bearerName?: string
 ): AttackTrait[] {
   const out: AttackTrait[] = [];
   for (const objId of attached) {
     const objCard = state.cards[objId];
     if (!objCard) continue;
-    for (const g of getCardDef(objCard.defId).grantsTraits ?? []) {
+    const od = getCardDef(objCard.defId);
+    for (const g of od.grantsTraits ?? []) {
       if ((ALL_TRAITS as readonly string[]).includes(g)) continue; // bras « trait du porteur »
       if (!out.includes(g as AttackTrait)) out.push(g as AttackTrait);
+    }
+    // Decision §8.65 — « Si equipee par Yasopp : … et Percant ». Le trait n'est
+    // accorde qu'au porteur nomme, donc il ne peut pas vivre dans
+    // `grantsTraits`, qui vaut pour tout le monde.
+    const wb = od.objectEffects?.wielder;
+    if (wb && bearerName && bearerName.includes(wb.name)) {
+      for (const t of wb.attackTraits ?? []) if (!out.includes(t)) out.push(t);
     }
   }
   return out;
@@ -251,7 +260,32 @@ export function attachmentsGrantedAttackTraits(
 export function grantedAttackTraits(state: GameState, instanceId: string): AttackTrait[] {
   const card = state.cards[instanceId];
   if (!card) return [];
-  return attachmentsGrantedAttackTraits(state, card.attachedObjects);
+  return attachmentsGrantedAttackTraits(state, card.attachedObjects, getCardDef(card.defId).name);
+}
+
+/**
+ * Decision §8.65 — les drapeaux d'objet qui valent pour TOUT porteur
+ * (`ignoreShield`, `grantsHaki`, `ignoreStealth`) ou pour le porteur nomme
+ * (`noDodge`). Un seul lecteur, pour les personnages comme pour le capitaine.
+ */
+export function wornObjectFlag(
+  state: GameState,
+  attached: readonly string[],
+  bearerName: string,
+  flag: "ignoreShield" | "grantsHaki" | "ignoreStealth" | "noDodge"
+): boolean {
+  for (const objId of attached) {
+    const obj = state.cards[objId];
+    if (!obj) continue;
+    const fx = getCardDef(obj.defId).objectEffects;
+    if (!fx) continue;
+    if (flag === "noDodge") {
+      if (fx.wielder?.noDodge && bearerName.includes(fx.wielder.name)) return true;
+    } else if (fx[flag]) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Check if a character has a specific trait (including from Devil Fruits) */
@@ -745,16 +779,18 @@ export function equipObject(
     obj.slot = target.slot;
     target.attachedObjects.push(objectInstanceId);
 
-    // Signature-weapon bonuses when wielded by the matching character.
-    const wielderBonus: Record<string, { name: string; stat: "atk" | "def"; amount: number }> = {
-      "MG-009": { name: "Zoro", stat: "def", amount: 1 },        // Wado Ichimonji
-      "MR-013": { name: "Tashigi", stat: "atk", amount: 1 },     // Shigure
-      "RH-011": { name: "Ben Beckman", stat: "atk", amount: 1 }, // Fusil de Beckman
-      "RH-013": { name: "Yasopp", stat: "atk", amount: 1 },      // Fusil de Yasopp
-    };
-    const wb = wielderBonus[objDef.id];
+    // Decision §8.65 — le bonus « Si equipee par X » vient maintenant de la
+    // donnee (`objectEffects.wielder`) et non d'une table en dur : les clauses
+    // non chiffrees (inesquivable, Percant) vivaient au meme endroit imprime
+    // mais nulle part dans le code.
+    const wb = objDef.objectEffects?.wielder;
     if (wb && targetDef.name.includes(wb.name)) {
-      target.modifiers.push({ id: `wield_${objectInstanceId}`, stat: wb.stat, amount: wb.amount, source: `equip_${objDef.id}`, duration: "permanent" });
+      if (wb.atkBonus) {
+        target.modifiers.push({ id: `wield_${objectInstanceId}`, stat: "atk", amount: wb.atkBonus, source: `equip_${objDef.id}`, duration: "permanent" });
+      }
+      if (wb.defBonus) {
+        target.modifiers.push({ id: `wield_def_${objectInstanceId}`, stat: "def", amount: wb.defBonus, source: `equip_${objDef.id}`, duration: "permanent" });
+      }
     }
   });
 
@@ -763,6 +799,33 @@ export function equipObject(
     playerId,
     `Equipe ${objDef.name} sur ${getCardDef(targetCard.defId).name}`
   );
+
+  // Decision §8.66 — « A l'entree du porteur, deployez un jeton … » (BW-016
+  // Bananawani). Un objet se pose sur une unite DEJA deployee, donc « l'entree
+  // du porteur » ne peut se lire qu'au moment ou l'objet le rejoint : c'est
+  // l'evenement d'entree de la paire. Le jeton arrive dans la case libre la
+  // plus proche du porteur, sinon la premiere libre.
+  const tokenId = objDef.objectEffects?.onBearerEntryToken;
+  if (tokenId) {
+    next = produce(next, (draft) => {
+      const p = draft.players[playerId];
+      const bearerSlot = draft.cards[targetInstanceId]?.slot;
+      const free = (bearerSlot ? getAdjacentSlots(bearerSlot) : []).concat(ALL_SLOTS as unknown as Slot[])
+        .find((sl) => p.board[sl] === null && !(p.captain.flipped && p.captain.slot === sl));
+      if (!free) return;
+      const { generateInstanceId } = require("./utils");
+      const tdef = getCardDef(tokenId);
+      const tid = generateInstanceId(tokenId);
+      draft.cards[tid] = {
+        instanceId: tid, defId: tokenId, owner: playerId, zone: "board", slot: free,
+        tapped: false, currentPv: tdef.pv ?? 1, attachedObjects: [], modifiers: [],
+        statusEffects: [], deployedTurn: draft.turnNumber, usedBaseAction: false,
+        usedSpecialAttack: false, usedOnceAbilities: [],
+      };
+      p.board[free] = tid;
+      draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${objDef.name} : ${tdef.name} arrive en ${free}.` });
+    });
+  }
 
   // Apply Devil Fruit effects if it's a fruit
   if (objDef.subtype === "fruit" && objDef.fruitEffects) {
@@ -1054,6 +1117,38 @@ export function removeFromBoard(
       if (obj) {
         obj.zone = "graveyard";
         player.graveyard.push(objId);
+
+        // Decision §8.66 — « Si detruite : … ». Un objet ne quitte le plateau
+        // qu'avec son porteur (rien dans le jeu ne detruit un equipement
+        // separement), donc c'est ici, et seulement ici, que la clause part.
+        const od = getCardDef(obj.defId).objectEffects?.onDestroy;
+        if (od?.deployToken) {
+          const free = ALL_SLOTS.find(
+            (sl) => player.board[sl] === null && !(player.captain.flipped && player.captain.slot === sl)
+          );
+          if (free) {
+            const { generateInstanceId } = require("./utils");
+            const tdef = getCardDef(od.deployToken);
+            const tid = generateInstanceId(od.deployToken);
+            draft.cards[tid] = {
+              instanceId: tid, defId: od.deployToken, owner: c.owner, zone: "board", slot: free,
+              tapped: false, currentPv: tdef.pv ?? 1, attachedObjects: [], modifiers: [],
+              statusEffects: [], deployedTurn: draft.turnNumber, usedBaseAction: false,
+              usedSpecialAttack: false, usedOnceAbilities: [],
+            };
+            player.board[free] = tid;
+            draft.log.push({ turn: draft.turnNumber, player: c.owner, message: `${getCardDef(obj.defId).name} detruite : ${tdef.name} arrive en ${free}.` });
+          }
+        }
+        // `bearerAtkBonus` ne peut atterrir que sur un porteur encore en jeu ;
+        // sur le catalogue livre, la destruction et le KO du porteur sont le
+        // meme evenement, donc la clause de MG-011 reste latente (signalee).
+        if (od?.bearerAtkBonus && draft.cards[instanceId]?.zone === "board") {
+          draft.cards[instanceId].modifiers.push({
+            id: `destroyed_${objId}`, stat: "atk", amount: od.bearerAtkBonus,
+            source: `destroy_${obj.defId}`, duration: "permanent",
+          });
+        }
       }
     }
     c.attachedObjects = [];
@@ -1176,7 +1271,16 @@ export function getValidTargets(
   }
 
   // Apply Stealth filter (a unit stripped of Furtif this turn counts as non-stealth)
+  // Decision §8.65 — « Les attaques du porteur ignorent le Furtif » (BW-015
+  // Den Den Mushi Secret) : le filtre entier saute pour cet attaquant.
+  const seesThroughStealth = wornObjectFlag(
+    state,
+    attacker.attachedObjects,
+    attackerDef.name,
+    "ignoreStealth"
+  );
   const isStealthed = (c: CardInstance) =>
+    !seesThroughStealth &&
     hasTrait(state, c.instanceId, "stealth") &&
     !c.statusEffects.some((e) => e.type === "noStealth");
   const hasNonStealth = targetable.some((c) => !isStealthed(c));

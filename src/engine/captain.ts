@@ -22,6 +22,7 @@ import {
   attachmentsGrantedAttackTraits,
   moveAttachedObjectsInDraft,
   isSlotFree,
+  wornObjectFlag,
 } from "./board";
 
 export type FreeFlipReason =
@@ -445,14 +446,21 @@ export function declareCaptainBaseAttack(
 
   const rawDamage = Math.max(0, atk - targetDefVal);
 
+  // Decision §8.65 — les drapeaux des objets que porte le capitaine valent pour
+  // son attaque de base aussi : Gryphon (RH-010) nomme Shanks, qui n'existe que
+  // comme capitaine, donc sans ces deux lectures sa clause etait injouable sur
+  // son porteur imprime.
+  const capObjs = captain.attachedObjects ?? [];
   const hasHaki =
     ((def.verso.naturalHaki && def.verso.naturalHaki.length > 0) ?? false) ||
+    wornObjectFlag(state, capObjs, def.name, "grantsHaki") ||
     state.turnNumber >= 7;
+  const capIgnoresShield = wornObjectFlag(state, capObjs, def.name, "ignoreShield");
 
   // Decision §8.47 × §8.28 : le bras `AttackTrait` de `grantsTraits` des objets
   // que porte le capitaine rejoint son attaque de base, comme pour un personnage.
   const baseAttackTraits: AttackTrait[] = [...(baseAction.attackTraits ?? [])];
-  for (const at of attachmentsGrantedAttackTraits(state, captain.attachedObjects ?? [])) {
+  for (const at of attachmentsGrantedAttackTraits(state, capObjs, def.name)) {
     if (!baseAttackTraits.includes(at)) baseAttackTraits.push(at);
   }
 
@@ -472,6 +480,7 @@ export function declareCaptainBaseAttack(
       element: baseAction.element,
       attackTraits: baseAttackTraits,
       hasHaki,
+      ignoreShield: capIgnoresShield,
     };
   });
 

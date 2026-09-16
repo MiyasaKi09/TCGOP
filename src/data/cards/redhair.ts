@@ -86,21 +86,25 @@ export const redhairCards: CardDef[] = [
     id: "RH-010", name: "Gryphon", type: "object", subtype: "weapon", cost: 2,
     faction: "pirate", rarity: "R", set: "ST04", bonusAtk: 2, restriction: "bretteur",
     equipEffect: "+2 ATK. Attaques : Haki Armement (touchent les Logia) et ignorent le Bouclier. Si équipée par Shanks : +1 ATK.",
+    objectEffects: { grantsHaki: true, ignoreShield: true, wielder: { name: "Shanks", atkBonus: 1 } },
   },
   {
     id: "RH-011", name: "Fusil de Beckman", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST04", bonusAtk: 1, restriction: "tireur", grantsTraits: ["range"],
     equipEffect: "+1 ATK. Attaques : Portée. Si équipée par Beckman : +1 ATK.",
+    objectEffects: { wielder: { name: "Ben Beckman", atkBonus: 1 } },
   },
   {
     id: "RH-012", name: "Pistolet de Lucky Roux", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST04", bonusAtk: 1, restriction: "tireur", grantsTraits: ["range"],
     equipEffect: "+1 ATK. Attaques : Portée. Si équipée par Lucky Roux : attaques inesquivables.",
+    objectEffects: { wielder: { name: "Lucky Roux", noDodge: true } },
   },
   {
     id: "RH-013", name: "Fusil de Yasopp", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST04", bonusAtk: 1, restriction: "tireur", grantsTraits: ["range"],
     equipEffect: "+1 ATK. Attaques : Portée. Si équipée par Yasopp : +1 ATK et Perçant.",
+    objectEffects: { wielder: { name: "Yasopp", atkBonus: 1, attackTraits: ["piercing"] } },
   },
 
   // === OBJETS - ACCESSOIRES ===
@@ -113,11 +117,13 @@ export const redhairCards: CardDef[] = [
     id: "RH-015", name: "Sake de la Fête", type: "object", subtype: "accessory", cost: 1,
     faction: "pirate", rarity: "U", set: "ST04", bonusAtk: 0,
     equipEffect: "1x/partie : tous vos alliés sont soignés de 2 PV et gagnent +1 ATK ce tour.",
+    objectEffects: { activated: { name: "Sake de la Fete", cost: 0, oncePerGame: true, target: "none", healAllAllies: 2, buffAllAlliesAtk: 1 } },
   },
   {
     id: "RH-016", name: "Cape de l'Empereur", type: "object", subtype: "accessory", cost: 2,
     faction: "pirate", rarity: "R", set: "ST04", bonusAtk: 0, bonusDef: 2,
     equipEffect: "+2 DEF. Les ennemis adjacents au porteur ont -1 ATK.",
+    objectEffects: { adjacentEnemyAtk: 1 },
   },
 
   // === NAVIRES ===
