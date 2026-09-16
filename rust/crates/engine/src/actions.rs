@@ -151,7 +151,7 @@ fn build_valid_actions(
             actions.push(GameAction::PassCounter);
 
             // Observation Haki to dodge (unless the attack cannot be dodged)
-            if is_haki_available(state, player_id, HakiType::Observation)
+            if is_haki_available(state, registry, player_id, HakiType::Observation)
                 && !pending.cannot_be_dodged.unwrap_or(false)
             {
                 actions.push(GameAction::UseHaki {
@@ -657,6 +657,66 @@ fn build_valid_actions(
     }
 
     // ------------------------------------------------------------
+    // Decision §8.67 — activated object abilities. Without this enumeration the
+    // action would exist but never be offered, so it would stay unplayable —
+    // exactly the defect it fixes.
+    {
+        let mut bearers: Vec<(Option<String>, Vec<String>, Vec<String>)> = Vec::new();
+        for ch in &board_chars {
+            bearers.push((
+                Some(ch.instance_id.clone()),
+                ch.used_once_abilities.clone(),
+                ch.attached_objects.clone(),
+            ));
+        }
+        let cap = &state.players.get(player_id).captain;
+        bearers.push((
+            None,
+            cap.used_once_abilities.clone(),
+            cap.attached_objects.clone(),
+        ));
+        let live_foes: Vec<String> = opp_chars
+            .iter()
+            .filter(|c| !crate::board::is_untargetable_now(state, &c.instance_id))
+            .map(|c| c.instance_id.clone())
+            .collect();
+        for (_, once, objs) in &bearers {
+            for obj_id in objs {
+                let Some(o) = state.cards.get(obj_id) else {
+                    continue;
+                };
+                let od = registry.get_card_def(&o.def_id)?;
+                let Some(fx) = od.object_effects.as_ref() else {
+                    continue;
+                };
+                let (cost, kind, per_game) = match (&fx.activated, &fx.grants_attack) {
+                    (Some(a), _) => (a.cost, a.target.clone(), a.once_per_game.unwrap_or(false)),
+                    (None, Some(g)) => (g.cost, "enemy".to_string(), false),
+                    _ => continue,
+                };
+                if per_game && once.iter().any(|k| k == &format!("obj_{}", od.id)) {
+                    continue;
+                }
+                if !state.can_afford(player_id, cost) {
+                    continue;
+                }
+                if kind == "enemy" {
+                    for foe in &live_foes {
+                        actions.push(GameAction::ActivateObject {
+                            object_instance_id: obj_id.clone(),
+                            target_instance_id: Some(foe.clone()),
+                        });
+                    }
+                } else {
+                    actions.push(GameAction::ActivateObject {
+                        object_instance_id: obj_id.clone(),
+                        target_instance_id: None,
+                    });
+                }
+            }
+        }
+    }
+
     // Captain flip
     // ------------------------------------------------------------
     if can_flip_captain(state, registry, player_id)? {
@@ -685,12 +745,26 @@ fn build_valid_actions(
         let has_rush =
             crate::captain::captain_has_trait_now(state, registry, player_id, Trait::Rush)?;
         if player.captain.deployed_turn != Some(i64::from(state.turn_number)) || has_rush {
+            // Decision §8.61 — the captain's attack groups build their target
+            // list by hand instead of going through `get_valid_targets`, so the
+            // Untargetable filter has to be repeated here; without it the
+            // enumerator offered an attack the declaration then refused, which
+            // breaks the "everything offered must be executable" invariant.
+            let cap_targetable = !crate::board::captain_is_untargetable(state, opponent_id);
+            let opp_chars: Vec<_> = opp_chars
+                .iter()
+                .filter(|c| !crate::board::is_untargetable_now(state, &c.instance_id))
+                .cloned()
+                .collect();
+
             // Can attack — simplified: target any enemy front or captain
-            actions.push(GameAction::CaptainAttack {
-                target_instance_id: captain_attacker_id(opponent_id),
-                target_is_captain: Some(true),
-                is_special: None,
-            });
+            if cap_targetable {
+                actions.push(GameAction::CaptainAttack {
+                    target_instance_id: captain_attacker_id(opponent_id),
+                    target_is_captain: Some(true),
+                    is_special: None,
+                });
+            }
             for opp in &opp_chars {
                 actions.push(GameAction::CaptainAttack {
                     target_instance_id: opp.instance_id.clone(),
@@ -708,11 +782,13 @@ fn build_valid_actions(
                 && !spec_once_used
                 && state.can_afford(player_id, spec.cost)
             {
-                actions.push(GameAction::CaptainAttack {
-                    target_instance_id: captain_attacker_id(opponent_id),
-                    target_is_captain: Some(true),
-                    is_special: Some(true),
-                });
+                if cap_targetable {
+                    actions.push(GameAction::CaptainAttack {
+                        target_instance_id: captain_attacker_id(opponent_id),
+                        target_is_captain: Some(true),
+                        is_special: Some(true),
+                    });
+                }
                 for opp in &opp_chars {
                     actions.push(GameAction::CaptainAttack {
                         target_instance_id: opp.instance_id.clone(),
@@ -754,12 +830,14 @@ fn build_valid_actions(
                 if !state.can_afford(player_id, fruit_spec.cost) {
                     continue;
                 }
-                actions.push(GameAction::FruitSpecialAttack {
-                    attacker_instance_id: captain_attacker_id(player_id),
-                    fruit_instance_id: obj_id.clone(),
-                    target_instance_id: captain_attacker_id(opponent_id),
-                    target_is_captain: Some(true),
-                });
+                if cap_targetable {
+                    actions.push(GameAction::FruitSpecialAttack {
+                        attacker_instance_id: captain_attacker_id(player_id),
+                        fruit_instance_id: obj_id.clone(),
+                        target_instance_id: captain_attacker_id(opponent_id),
+                        target_is_captain: Some(true),
+                    });
+                }
                 for opp in &opp_chars {
                     actions.push(GameAction::FruitSpecialAttack {
                         attacker_instance_id: captain_attacker_id(player_id),
@@ -779,10 +857,12 @@ fn build_valid_actions(
                     && !once_used
                     && state.can_afford(player_id, surcharge.cost)
                 {
-                    actions.push(GameAction::UseSurcharge {
-                        target_instance_id: captain_attacker_id(opponent_id),
-                        target_is_captain: Some(true),
-                    });
+                    if cap_targetable {
+                        actions.push(GameAction::UseSurcharge {
+                            target_instance_id: captain_attacker_id(opponent_id),
+                            target_is_captain: Some(true),
+                        });
+                    }
                     for opp in &opp_chars {
                         actions.push(GameAction::UseSurcharge {
                             target_instance_id: opp.instance_id.clone(),
@@ -878,7 +958,7 @@ fn build_valid_actions(
     // Roi Haki (T10+): requires a Conquerant unit in play, KOs all enemies
     // DEF <= 3, 1x/game.
     // ------------------------------------------------------------
-    if is_haki_available(state, player_id, HakiType::King)
+    if is_haki_available(state, registry, player_id, HakiType::King)
         && has_conqueror_in_play(state, registry, player_id)?
     {
         let mut has_target = false;

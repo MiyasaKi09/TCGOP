@@ -128,6 +128,24 @@ export function createInitialState(
 export function startTurn(state: GameState): GameState {
   let next = state;
 
+  // 0. Decision §8.61 — « Inciblable jusqu'a la fin du tour » (BW-026).
+  // Le statut est pose pendant le tour de l'attaquant ; il doit donc tomber
+  // au changement de tour, des DEUX cotes (le defenseur qui l'a recu n'est
+  // pas force d'etre le joueur qui commence). `processStartOfTurnEffects` ne
+  // balaie que le joueur actif, d'ou cette passe dediee.
+  next = produce(next, (draft) => {
+    const strip = (list: { type: string }[]) => list.filter((e) => e.type !== "untargetable");
+    for (const pid of ["player1", "player2"] as const) {
+      const p = draft.players[pid];
+      p.captain.statusEffects = strip(p.captain.statusEffects) as typeof p.captain.statusEffects;
+      for (const slot of Object.values(p.board)) {
+        if (!slot) continue;
+        const card = draft.cards[slot];
+        if (card) card.statusEffects = strip(card.statusEffects) as typeof card.statusEffects;
+      }
+    }
+  });
+
   // 1. Untap all characters
   next = untapAll(next);
 
@@ -251,8 +269,20 @@ export function endTurn(state: GameState): GameState {
     }
   }
 
+  // Decision §8.37 (`betrayal`, BW-024) : tout corps prêté au joueur dont le
+  // tour s'achève rentre chez lui, puis (`embargo`, MR-027) le bannissement
+  // d'équipement/navire perd son unique tour.
+  pre = returnLoans(pre);
+
   return produce(pre, (draft) => {
     draft.phase = "end";
+
+    // Decision §8.37 (`embargo`, MR-027) : la sanction dure exactement un tour
+    // du joueur visé — le sien.
+    const embargoed = draft.players[draft.currentPlayer];
+    if (embargoed.embargoTurns !== undefined) {
+      embargoed.embargoTurns = embargoed.embargoTurns > 1 ? embargoed.embargoTurns - 1 : undefined;
+    }
 
     // Hand limit: discard the excess at end of turn (Rulebook v3.1 §10).
     // Auto-discards the oldest cards (front of the hand) for now.
@@ -280,6 +310,78 @@ export function endTurn(state: GameState): GameState {
     }
     draft.currentPlayer = nextPlayer;
   });
+}
+
+/**
+ * Decision §8.37 (`betrayal`) — rend chaque corps emprunté à son propriétaire
+ * à la fin du tour de l'emprunteur.
+ *
+ * Le slot d'origine (`loanReturnSlot`) n'est pas garanti libre : l'Impact de
+ * §8.38 peut avoir poussé un corps du propriétaire depuis V* vers la case A*
+ * que le prêt avait quittée. On rend donc au slot d'origine **s'il est libre**,
+ * sinon au premier slot libre du plateau du propriétaire ; sans aucune case
+ * libre, le corps quitte le plateau par `removeFromBoard` plutôt que de
+ * squatter le camp de l'emprunteur — ce n'est **pas** un KO (ni +2 Volonté, ni
+ * déclencheur on-KO, ni ligne de journal). Un corps KO pendant le prêt est déjà
+ * au cimetière : seuls ses deux champs de prêt sont nettoyés.
+ * Rust: `GameState::return_loans`.
+ */
+function returnLoans(state: GameState): GameState {
+  const me = state.currentPlayer;
+  const borrowed = Object.values(state.cards)
+    .filter((c) => c.controlledBy === me)
+    .map((c) => c.instanceId);
+  if (borrowed.length === 0) return state;
+
+  const { removeFromBoard, getEmptySlots, moveAttachedObjectsInDraft, isSlotFree } = require("./board");
+  let next = state;
+  for (const id of borrowed) {
+    const card = next.cards[id];
+    if (!card) continue;
+    const owner = card.owner;
+    const here = card.slot;
+    const onBoard = card.zone === "board";
+    const home = card.loanReturnSlot;
+
+    const landing: Slot | undefined = onBoard
+      ? (home && isSlotFree(next, owner, home)
+          ? home
+          : (getEmptySlots(next, owner) as Slot[])[0])
+      : undefined;
+
+    if (onBoard && !landing) {
+      next = removeFromBoard(next, id);
+      next = produce(next, (draft) => {
+        const c = draft.cards[id];
+        if (c) { c.controlledBy = undefined; c.loanReturnSlot = undefined; }
+      });
+      continue;
+    }
+
+    next = produce(next, (draft) => {
+      const c = draft.cards[id];
+      if (here && draft.players[me].board[here] === id) draft.players[me].board[here] = null;
+      if (landing) draft.players[owner].board[landing] = id;
+      c.controlledBy = undefined;
+      c.loanReturnSlot = undefined;
+      if (onBoard) {
+        // Le corps a passé le tour loin de chez lui : il revient dégagé
+        // exactement comme il est parti, mais son slot est de nouveau le sien.
+        c.slot = landing;
+        // Decision §8.29 : l'équipement suit son porteur.
+        if (landing) moveAttachedObjectsInDraft(draft, c.attachedObjects, landing);
+      }
+    });
+    if (onBoard) {
+      next = addLog(next, me, `${getCardDef(next.cards[id].defId).name} retourne dans son camp.`);
+    }
+  }
+
+  const { recalculatePassiveBuffs, applyEnemyDebuffAuras } = require("./passives");
+  next = recalculatePassiveBuffs(next, me);
+  next = recalculatePassiveBuffs(next, getOpponent(me));
+  next = applyEnemyDebuffAuras(next);
+  return next;
 }
 
 /**
@@ -326,6 +428,9 @@ function resetTurnFlags(state: GameState): GameState {
     }
     player.captain.usedBaseAction = false;
     player.captain.usedSpecialAttack = false;
+    // Decision §8.40 — meme remise a zero que les personnages, au meme endroit
+    // que le Rust (`state::reset_turn_flags`).
+    player.captain.logiaUsedThisTurn = false;
 
     // Expire turn-duration modifiers on all player's cards
     for (const slot of Object.values(player.board)) {

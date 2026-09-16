@@ -1,8 +1,9 @@
 "use client";
 
 import type { CardDef, CardInstance, GameState, GameAction } from "@/types";
-import { getEffectiveAtk } from "@/engine/board";
+import { getEffectiveAtk, controllerOf } from "@/engine/board";
 import { getCardDef } from "@/engine/cardRegistry";
+import { CARD_ART, CARD_ART_VERSO } from "@/data/cardArt";
 import FullCard, { type CardActions } from "./FullCard";
 import { useFlipZoom } from "@/lib/useFlipZoom";
 
@@ -14,6 +15,12 @@ interface ActionMenuProps {
   onBaseAttack: () => void;
   onSpecialAttack: () => void;
   onSupportAction: () => void;
+  /** Éveille un Fruit du Démon porté par cette unité. */
+  onAwakenFruit: (fruitInstanceId: string) => void;
+  /** Vise avec l'attaque spéciale d'un fruit éveillé porté par cette unité. */
+  onFruitSpecial: (fruitInstanceId: string) => void;
+  /** Decision §8.67 — active la capacité d'un objet porté. */
+  onActivateObject: (objectInstanceId: string, needsTarget: boolean) => void;
   onViewDetail: () => void;
   onClose: () => void;
   originRect?: DOMRect | null;
@@ -21,7 +28,8 @@ interface ActionMenuProps {
 
 export default function ActionMenu({
   instance, def, state, validActions,
-  onBaseAttack, onSpecialAttack, onSupportAction, onViewDetail, onClose, originRect,
+  onBaseAttack, onSpecialAttack, onSupportAction, onAwakenFruit, onFruitSpecial, onActivateObject,
+  onViewDetail, onClose, originRect,
 }: ActionMenuProps) {
   const zoomRef = useFlipZoom<HTMLDivElement>(originRect);
   const effectiveAtk = getEffectiveAtk(state, instance.instanceId);
@@ -36,7 +44,10 @@ export default function ActionMenu({
   const hasSickness = instance.deployedTurn === state.turnNumber && !(def.traits?.includes("rush"));
   const isFrozen = instance.statusEffects.some((e) => e.type === "freeze");
   const isImmobilized = instance.statusEffects.some((e) => e.type === "immobilize");
-  const playerVol = state.players[instance.owner].volonte;
+  // Decision §8.37 (`betrayal`) : un corps emprunte agit — et paie — pour son
+  // emprunteur, donc la Volonte affichee (et les seuils des boutons) est celle
+  // du controleur. `controllerOf` vaut `owner` hors pret.
+  const playerVol = state.players[controllerOf(instance)].volonte;
   const base = def.baseAction;
   const isSupport = base?.isSupport;
 
@@ -103,13 +114,127 @@ export default function ActionMenu({
         )}
 
         {instance.attachedObjects.length > 0 && (
-          <div className="rounded-xl p-2" style={{ background: "rgba(232,184,75,.08)" }}>
-            <div className="font-oswald text-[9px] uppercase tracking-wider text-amber-400/70 font-bold mb-1">Équipement</div>
+          <div className="rounded-xl p-2 flex flex-col gap-2" style={{ background: "rgba(232,184,75,.08)" }}>
+            <div className="font-oswald text-[9px] uppercase tracking-wider text-amber-400/70 font-bold">Équipement</div>
             {instance.attachedObjects.map((objId) => {
               const obj = state.cards[objId];
               if (!obj) return null;
               const objDef = getCardDef(obj.defId);
-              return <div key={objId} className="font-spectral text-[11px] text-amber-200/85">⚔ {objDef.name}{objDef.bonusAtk ? ` +${objDef.bonusAtk} ATK` : ""}{objDef.bonusDef ? ` +${objDef.bonusDef} DEF` : ""}</div>;
+              const awakened = !!obj.isAwakened;
+              const art = awakened ? (CARD_ART_VERSO[objDef.id] ?? CARD_ART[objDef.id]) : CARD_ART[objDef.id];
+
+              // Le moteur propose l'éveil et la spéciale du fruit : jusqu'ici
+              // l'interface ne les exposait que pour le capitaine, donc un fruit
+              // posé sur son porteur légitime restait bloqué.
+              const canAwaken = validActions.some((a) => a.type === "awakenFruit" && a.fruitInstanceId === objId);
+              const fruitSpecial = validActions.find(
+                (a) => a.type === "fruitSpecialAttack" && "fruitInstanceId" in a && a.fruitInstanceId === objId
+              );
+              const awakening = objDef.fruitEffects?.awakening;
+              const spec = awakening?.specialAttack;
+
+              return (
+                <div key={objId} className="flex gap-2">
+                  {art && (
+                    <div
+                      className="flex-none rounded-lg overflow-hidden"
+                      style={{ width: 44, height: 60, backgroundImage: `url('${art}')`, backgroundSize: "cover", backgroundPosition: "center 18%", border: "1.5px solid var(--ink-edge)" }}
+                    />
+                  )}
+                  <div className="min-w-0 flex-1 flex flex-col gap-1">
+                    <div className="font-spectral text-[11px] font-bold text-amber-200/95">
+                      {awakened ? "⭐ " : "⚔ "}{objDef.name}
+                      {objDef.bonusAtk ? <span className="text-atk"> +{objDef.bonusAtk} ATK</span> : null}
+                      {objDef.bonusDef ? <span className="text-def"> +{objDef.bonusDef} DEF</span> : null}
+                    </div>
+                    {objDef.equipEffect && (
+                      <div className="font-spectral italic text-[10px] leading-snug text-white/70">{objDef.equipEffect}</div>
+                    )}
+                    {awakening?.passiveDescription && (
+                      <div className="font-spectral italic text-[10px] leading-snug" style={{ color: awakened ? "rgba(255,224,138,.9)" : "rgba(255,255,255,.45)" }}>
+                        ⭐ Éveil : {awakening.passiveDescription}
+                      </div>
+                    )}
+                    <div className="flex gap-1.5 flex-wrap">
+                      {!awakened && awakening && (
+                        <div className="flex flex-col gap-0.5">
+                          <button
+                            onClick={() => onAwakenFruit(objId)}
+                            disabled={!canAwaken}
+                            className="btn btn-gold action-btn px-2 py-1 text-[10px] self-start"
+                          >
+                            ⭐ Éveiller{awakening.volCost != null ? ` — ${awakening.volCost} Vol.` : ""}
+                          </button>
+                          {/* Nommer le blocage RÉEL, pas réciter les conditions :
+                              une liste générique laisse croire à une panne. */}
+                          {!canAwaken && (
+                            <span className="font-oswald text-[9px]" style={{ color: "#FF8A80" }}>
+                              • {(() => {
+                                if (awakening.porteurLegitime && !def.name.includes(awakening.porteurLegitime))
+                                  return `Réservé à ${awakening.porteurLegitime}`;
+                                if (state.turnNumber < awakening.minTurns)
+                                  return `Dès la manche ${awakening.minTurns} (nous sommes en ${state.turnNumber})`;
+                                if (playerVol < awakening.volCost)
+                                  return `Volonté insuffisante (${playerVol}/${awakening.volCost})`;
+                                return "Indisponible pour l'instant";
+                              })()}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {/* Decision §8.67 — la ligne activable de l'objet.
+                          Cinq objets impriment « 1x/partie : … » et un sixieme
+                          « le porteur gagne une attaque … » : aucun bouton ne
+                          les exposait, donc aucune n'etait jouable. */}
+                      {(() => {
+                        const fx = objDef.objectEffects;
+                        const act = fx?.activated ?? (fx?.grantsAttack
+                          ? { name: fx.grantsAttack.name, cost: fx.grantsAttack.cost, target: "enemy" as const, oncePerGame: false }
+                          : null);
+                        if (!act) return null;
+                        const offered = validActions.filter(
+                          (a) => a.type === "activateObject" && a.objectInstanceId === objId
+                        );
+                        const used = !!act.oncePerGame && instance.usedOnceAbilities.includes(`obj_${objDef.id}`);
+                        const reason = used
+                          ? "Déjà utilisé (1x/partie)"
+                          : playerVol < act.cost
+                            ? `Volonté insuffisante (${playerVol}/${act.cost})`
+                            : offered.length === 0
+                              ? "Aucune cible"
+                              : null;
+                        return (
+                          <div className="flex flex-col gap-0.5">
+                            <button
+                              onClick={() => onActivateObject(objId, act.target === "enemy")}
+                              disabled={reason !== null}
+                              className="btn action-btn px-2 py-1 text-[10px]"
+                              style={{ background: "linear-gradient(180deg,#38bdf8,#0284c7)", color: "#fff" }}
+                            >
+                              ⚡ {act.name}{act.cost ? ` — ${act.cost} Vol.` : " — gratuit"}
+                              {act.oncePerGame ? " · 1x/partie" : ""}
+                            </button>
+                            {reason && (
+                              <span className="font-oswald text-[9px]" style={{ color: "#FF8A80" }}>• {reason}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      {awakened && spec && (
+                        <button
+                          onClick={() => onFruitSpecial(objId)}
+                          disabled={!fruitSpecial}
+                          title={fruitSpecial ? "Déclencher l'attaque du fruit éveillé" : "Aucune cible, ou action déjà dépensée"}
+                          className="btn action-btn px-2 py-1 text-[10px]"
+                          style={{ background: "linear-gradient(180deg,#a855f7,#7c3aed)", color: "#fff" }}
+                        >
+                          ★ {spec.name}{spec.cost ? ` — ${spec.cost} Vol.` : ""}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
             })}
           </div>
         )}

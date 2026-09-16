@@ -2802,6 +2802,13 @@ mod tests {
                             .any(|row| row.command == UiCommand::Dispatch(action.clone()))
                     })
                 }
+                // Decision §8.67 — the object's activatable line, offered from
+                // its bearer's menu (a character's or the captain's).
+                GameAction::ActivateObject {
+                    object_instance_id, ..
+                } => bearer_menu_offers(session, object_instance_id, |view| {
+                    view.activations.iter().any(|row| !row.disabled)
+                }),
                 GameAction::FruitSpecialAttack {
                     attacker_instance_id,
                     fruit_instance_id,

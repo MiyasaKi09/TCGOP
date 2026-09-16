@@ -452,6 +452,19 @@ pub enum StatusEffectType {
     /// [`crate::board::get_valid_targets`] offers *only* that source.
     #[serde(rename = "taunt")]
     Taunt,
+    /// Decision §8.61 — "La cible devient Inciblable jusqu'a la fin du tour"
+    /// (`BW-026` Mirage du Desert). The counter used to be routed word for word
+    /// into [`crate::combat::apply_counter_cancel`], so the pending attack fell
+    /// and **nothing** was written on the target: a second attack in the same
+    /// turn landed at full price. Unlike Stealth this status has no "if
+    /// everyone is hidden, everyone is visible again" escape hatch — the
+    /// printed text is absolute — and it is purged when the turn changes.
+    #[serde(rename = "untargetable")]
+    Untargetable,
+    /// Decision §8.67 — `MG-018` Dial d'Impact: the next attack the bearer
+    /// takes is absorbed (damage to 0) and sent back at the attacker.
+    #[serde(rename = "reflect")]
+    Reflect,
 }
 
 /// TS `CardInstance.zone: "deck" | "hand" | "board" | "graveyard" | "banished"`.
@@ -848,6 +861,100 @@ pub struct ShipDestroyEffect {
     pub deploy_token: Option<String>,
 }
 
+/// Decisions §8.65-§8.67 — TS `CardDef.objectEffects`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectEffects {
+    /// "Si equipee par X : …" — a bonus reserved for the named bearer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wielder: Option<WielderClause>,
+    /// "ignore le Bouclier" — for every bearer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_shield: Option<bool>,
+    /// "Haki de l'Armement" — the bearer's attacks reach Logia.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants_haki: Option<bool>,
+    /// "regardez la main adverse"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal_enemy_hand: Option<bool>,
+    /// "les attaques du porteur ignorent le Furtif"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_stealth: Option<bool>,
+    /// "les ennemis adjacents au porteur ont -N ATK"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjacent_enemy_atk: Option<i32>,
+    /// "a l'entree du porteur, deployez un jeton …"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_bearer_entry_token: Option<String>,
+    /// "si detruite : …"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_destroy: Option<OnDestroyClause>,
+    /// "le porteur gagne une attaque : …"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants_attack: Option<GrantedAttack>,
+    /// An ability activated from the bearer's menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activated: Option<ActivatedObjectAbility>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WielderClause {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atk_bonus: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub def_bonus: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_dodge: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack_traits: Option<Vec<AttackTrait>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnDestroyClause {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deploy_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_atk_bonus: Option<i32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantedAttack {
+    pub name: String,
+    pub cost: i32,
+    pub damage: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivatedObjectAbility {
+    pub name: String,
+    pub cost: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once_per_game: Option<bool>,
+    /// `"enemy"` aims at an enemy character; `"none"` aims at nothing.
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursed_damage: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip_traits_if_cursed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lose_action: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heal_all_allies: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buff_all_allies_atk: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflect_next_attack: Option<bool>,
+}
+
 /// TS `CardDef`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -912,6 +1019,13 @@ pub struct CardDef {
     /// Special equipment effect description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equip_effect: Option<String>,
+    /// Decisions §8.65-§8.67 — the equipment clauses, structured.
+    ///
+    /// `equip_effect` used to be the ONLY trace of these rules: display text no
+    /// engine read, so fourteen objects carried a printed line that did
+    /// nothing. Same move as §8.38/§8.54 for special attacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_effects: Option<ObjectEffects>,
     /// Devil Fruit structured effects
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fruit_effects: Option<FruitEffects>,
@@ -973,6 +1087,7 @@ impl CardDef {
             grants_traits: None,
             grants_element: None,
             equip_effect: None,
+            object_effects: None,
             fruit_effects: None,
             ship_passive: None,
             ship_active: None,
@@ -1409,6 +1524,17 @@ pub enum GameAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_is_captain: Option<bool>,
     },
+    /// Decision §8.67 — activate an equipped object's ability.
+    ///
+    /// Five objects print "1x/partie : …" and a sixth "le porteur gagne une
+    /// attaque …": no engine action could fire them, so all six printed lines
+    /// were unplayable whoever wore them.
+    #[serde(rename = "activateObject")]
+    ActivateObject {
+        object_instance_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_instance_id: Option<String>,
+    },
     #[serde(rename = "endTurn")]
     EndTurn,
 }
@@ -1435,6 +1561,7 @@ impl GameAction {
             GameAction::ActivateShip { .. } => "activateShip",
             GameAction::AwakenFruit { .. } => "awakenFruit",
             GameAction::FruitSpecialAttack { .. } => "fruitSpecialAttack",
+            GameAction::ActivateObject { .. } => "activateObject",
             GameAction::EndTurn => "endTurn",
         }
     }

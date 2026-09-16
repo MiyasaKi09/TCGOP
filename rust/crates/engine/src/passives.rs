@@ -23,6 +23,7 @@ use crate::types::{
     AllyFilter, AtkDefStat, AtkStat, BuffStat, Modifier, ModifierDuration, ModifierStat,
     OnAllyKoEffectKind, PassiveEffect, PlayerId, Slot, Zone,
 };
+use std::collections::BTreeMap;
 
 /// TS `"atk" | "def" | "pv"` → `Modifier.stat`.
 fn buff_stat(stat: BuffStat) -> ModifierStat {
@@ -253,6 +254,25 @@ pub fn recalculate_passive_buffs(
         .cloned()
         .collect();
 
+    // Decision §8.63 — a ship's PV bonus is a bonus to the MAXIMUM, and the
+    // current PV has to follow it. Since this pass rebuilds the modifiers on
+    // every call, the already-applied bonus is read BEFORE everything is wiped
+    // so that only the delta is applied afterwards; otherwise PV would inflate
+    // on every recalculation.
+    let mut ship_pv_before: BTreeMap<String, i32> = BTreeMap::new();
+    for id in &board_ids {
+        if let Some(card) = state.cards.get(id) {
+            ship_pv_before.insert(
+                id.clone(),
+                card.modifiers
+                    .iter()
+                    .filter(|m| m.stat == ModifierStat::Pv && m.source.starts_with("passive_ship_"))
+                    .map(|m| m.amount)
+                    .sum(),
+            );
+        }
+    }
+
     // Remove all passive-source modifiers from all board characters
     for id in &board_ids {
         if let Some(card) = state.cards.get_mut(id) {
@@ -356,6 +376,17 @@ pub fn recalculate_passive_buffs(
                 // Parse common ship passive patterns
                 let ship_atk_bonus = ship_bonus(&desc, "atk");
                 let ship_def_bonus = ship_bonus(&desc, "def");
+                // Decision §8.63 — "Vos X gagnent +N PV" is a CONTINUOUS bonus
+                // that lives as long as the ship does. The "+N PV **au
+                // déploiement**" wording (Going Merry) is a different, one-shot
+                // rule already handled in `deploy_character`; it is not doubled
+                // here.
+                let at_deploy = desc.contains("deploiement") || desc.contains("déploiement");
+                let ship_pv_bonus = if at_deploy {
+                    0
+                } else {
+                    ship_bonus(&desc, "pv")
+                };
                 let ship_def_id = ship_def.id.clone();
 
                 // Decision §8.10: one scope helper, shared with `deploy_cost` —
@@ -380,6 +411,16 @@ pub fn recalculate_passive_buffs(
                                 id: format!("ship_passive_def_{}", ch.id),
                                 stat: ModifierStat::Def,
                                 amount: ship_def_bonus,
+                                source: format!("passive_ship_{ship_def_id}"),
+                                duration: ModifierDuration::Permanent,
+                                turns_remaining: None,
+                            });
+                        }
+                        if ship_pv_bonus > 0 {
+                            state.get_card_mut(&ch.id)?.modifiers.push(Modifier {
+                                id: format!("ship_passive_pv_{}", ch.id),
+                                stat: ModifierStat::Pv,
+                                amount: ship_pv_bonus,
                                 source: format!("passive_ship_{ship_def_id}"),
                                 duration: ModifierDuration::Permanent,
                                 turns_remaining: None,
@@ -419,6 +460,32 @@ pub fn recalculate_passive_buffs(
                 });
             }
         }
+    }
+
+    // Decision §8.63 — the current PV follows the ship bonus delta: when the
+    // ship arrives the unit really gains the point (otherwise "+1 PV" changes
+    // nothing while it is undamaged); when the ship sinks it gives it back.
+    // Clamped to the new maximum, and **never lethal**: losing a ship must not
+    // KO a crew sitting at 1 PV.
+    for ch in &board_chars {
+        let after: i32 = {
+            let Some(card) = state.cards.get(&ch.id) else {
+                continue;
+            };
+            card.modifiers
+                .iter()
+                .filter(|m| m.stat == ModifierStat::Pv && m.source.starts_with("passive_ship_"))
+                .map(|m| m.amount)
+                .sum()
+        };
+        let delta = after - ship_pv_before.get(&ch.id).copied().unwrap_or(0);
+        if delta == 0 {
+            continue;
+        }
+        let printed = registry.get_card_def(&ch.def_id)?.pv;
+        let card = state.get_card_mut(&ch.id)?;
+        let max_pv = card.max_pv(printed).unwrap_or(card.current_pv + delta);
+        card.current_pv = (card.current_pv + delta).min(max_pv).max(1);
     }
 
     Ok(())
@@ -475,6 +542,39 @@ pub fn apply_enemy_debuff_auras(
                     PassiveEffect::DebuffAdjacentEnemies { amount } => adj += amount,
                     PassiveEffect::DebuffOneEnemy { amount } => one = one.max(*amount),
                     _ => {}
+                }
+            }
+        }
+        // Decision §8.65 — "Les ennemis adjacents au porteur ont -1 ATK"
+        // (`RH-016` Cape de l'Empereur). Same accumulator as the equivalent
+        // character passive, so the same "adjacent" approximation the engine
+        // already applies everywhere: the enemy front row.
+        {
+            let mut worn: Vec<String> = Vec::new();
+            for sl in Slot::ALL {
+                if let Some(id) = state.players.get(pid).board.get(sl) {
+                    if let Some(c) = state.cards.get(id) {
+                        worn.extend(c.attached_objects.iter().cloned());
+                    }
+                }
+            }
+            worn.extend(
+                state
+                    .players
+                    .get(pid)
+                    .captain
+                    .attached_objects
+                    .iter()
+                    .cloned(),
+            );
+            for obj_id in &worn {
+                if let Some(o) = state.cards.get(obj_id) {
+                    adj += registry
+                        .get_card_def(&o.def_id)?
+                        .object_effects
+                        .as_ref()
+                        .and_then(|f| f.adjacent_enemy_atk)
+                        .unwrap_or(0);
                 }
             }
         }
@@ -1178,6 +1278,10 @@ mod tests {
                 outsider,
                 ship("SH", "Ship", "Vos Mugiwara ont +1 ATK."),
                 ship("SH2", "Ship2", "Vos personnages gagnent +1 ATK."),
+                // Decision §8.63 — the continuous PV wording and the one-shot
+                // at-deploy wording, side by side.
+                ship("SHPV", "ShipPv", "Vos personnages gagnent +1 PV."),
+                ship("SHDEP", "ShipDep", "Vos Mugiwara ont +1 PV au déploiement."),
             ]],
             [cap(
                 "CAP",
@@ -1238,6 +1342,77 @@ mod tests {
             .map(|m| m.source.as_str())
             .collect();
         assert_eq!(sources, vec!["debuffAura", "captainSelfKO", "captain_CAP"]);
+    }
+
+    /// Decision §8.63 — "Vos X gagnent +1 PV" must actually give a point of
+    /// life: the maximum rises, the current PV follows, a heal can reach the
+    /// new ceiling, sinking the ship gives the point back, and none of it is
+    /// lethal. Before, `ship_bonus(.., "pv")` was never even asked for.
+    #[test]
+    fn a_ship_pv_passive_raises_the_maximum_and_the_current_pv() {
+        let reg = recalc_registry();
+        let mut st = blank_state("CAP", "CAP");
+        let l = place(&mut st, &reg, PlayerId::Player1, Slot::V1, "L", 4);
+
+        let max = |st: &GameState| {
+            st.cards[&l]
+                .max_pv(reg.get_card_def("L").unwrap().pv)
+                .unwrap()
+        };
+        let cur = |st: &GameState| st.cards[&l].current_pv;
+
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!((cur(&st), max(&st)), (4, 4), "no ship");
+
+        // The ship arrives.
+        let mut sh = CardInstance::new(
+            "pvship".to_string(),
+            "SHPV".to_string(),
+            PlayerId::Player1,
+            0,
+        );
+        sh.zone = Zone::Board;
+        st.cards.insert("pvship".to_string(), sh);
+        st.players.get_mut(PlayerId::Player1).active_ship = Some("pvship".to_string());
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!((cur(&st), max(&st)), (5, 5), "ship in play");
+
+        // Idempotent: recalculating must not inflate PV.
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!((cur(&st), max(&st)), (5, 5), "three recalculations");
+
+        // A heal can climb to the NEW ceiling.
+        st.get_card_mut(&l).unwrap().current_pv = 2;
+        crate::board::heal_unit(&mut st, &reg, &l, 99).unwrap();
+        assert_eq!((cur(&st), max(&st)), (5, 5), "healed to the new maximum");
+
+        // The ship sinks: the point goes back.
+        st.players.get_mut(PlayerId::Player1).active_ship = None;
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!((cur(&st), max(&st)), (4, 4), "ship sunk");
+
+        // Never lethal: a unit at 1 PV survives losing the ship.
+        st.players.get_mut(PlayerId::Player1).active_ship = Some("pvship".to_string());
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        st.get_card_mut(&l).unwrap().current_pv = 1;
+        st.players.get_mut(PlayerId::Player1).active_ship = None;
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!(cur(&st), 1, "losing a ship never KOes");
+
+        // The "au déploiement" wording is NOT a continuous bonus — that rule
+        // lives in `deploy_character` and must not be doubled here.
+        let mut dep = CardInstance::new(
+            "depship".to_string(),
+            "SHDEP".to_string(),
+            PlayerId::Player1,
+            0,
+        );
+        dep.zone = Zone::Board;
+        st.cards.insert("depship".to_string(), dep);
+        st.players.get_mut(PlayerId::Player1).active_ship = Some("depship".to_string());
+        recalculate_passive_buffs(&mut st, &reg, PlayerId::Player1).unwrap();
+        assert_eq!(max(&st), 4, "at-deploy wording grants no continuous bonus");
     }
 
     #[test]

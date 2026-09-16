@@ -110,6 +110,7 @@ export const mugiwaraCards: CardDef[] = [
     faction: "pirate", rarity: "C", set: "ST01",
     bonusAtk: 1, restriction: "bretteur",
     equipEffect: "+1 ATK. Si équipée par Zoro : +1 DEF de plus.",
+    objectEffects: { wielder: { name: "Zoro", defBonus: 1 } },
   },
   {
     id: "MG-010", name: "Sandai Kitetsu", type: "object", subtype: "weapon", cost: 1,
@@ -122,6 +123,7 @@ export const mugiwaraCards: CardDef[] = [
     faction: "pirate", rarity: "C", set: "ST01",
     bonusAtk: 1, restriction: "bretteur",
     equipEffect: "+1 ATK. Si détruite : le porteur gagne +1 ATK permanent.",
+    objectEffects: { onDestroy: { bearerAtkBonus: 1 } },
   },
   {
     id: "MG-012", name: "Clima-Tact", type: "object", subtype: "weapon", cost: 1,
@@ -211,6 +213,7 @@ export const mugiwaraCards: CardDef[] = [
     faction: "pirate", rarity: "U", set: "ST01",
     bonusAtk: 0,
     equipEffect: "1x/partie : quand le porteur subit une attaque, absorbe les dégâts (→ 0). À votre prochain tour, infligez ce montant à un ennemi (Impact).",
+    objectEffects: { activated: { name: "Dial d'Impact", cost: 0, oncePerGame: true, target: "none", reflectNextAttack: true } },
   },
   {
     id: "MG-019", name: "Vivre Card", type: "object", subtype: "accessory", cost: 1,

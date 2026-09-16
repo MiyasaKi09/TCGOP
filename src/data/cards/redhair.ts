@@ -6,7 +6,12 @@ export const redhairCards: CardDef[] = [
   {
     id: "RH-001", name: "Ben Beckman", type: "character", cost: 5,
     faction: "pirate", rarity: "SR", set: "ST04",
-    atk: 6, def: 4, pv: 8, tags: ["redhair"], preferredRow: "front",
+    // Decision §8.62 : Beckman et Lucky Roux portent le tag `tireur`. Leurs
+    // armes signature (RH-011, RH-012) exigent `tireur` et impriment « Si
+    // equipee par Beckman / Lucky Roux : … » — sans le tag, seul Yasopp
+    // pouvait porter les TROIS fusils du deck et ces deux clauses etaient
+    // inatteignables, dont un bonus que le moteur implemente deja.
+    atk: 6, def: 4, pv: 8, tags: ["redhair", "tireur"], preferredRow: "front",
     passive: { name: "Observation de Maître", description: "Vos personnages bénéficient de l'esquive Observation (1x/tour), même avant le tour 5.", effects: [{ type: "grantObservationAll" }] },
     baseAction: { name: "Tir de Précision", atk: 6, description: "Le bras droit de l'Empereur." },
     specialAttack: { name: "Tir de Maître", cost: 3, atkBonus: 3, attackTraits: ["range"], immobilize: true, description: "Portée · la cible perd sa prochaine action." },
@@ -14,7 +19,8 @@ export const redhairCards: CardDef[] = [
   {
     id: "RH-002", name: "Lucky Roux", type: "character", cost: 4,
     faction: "pirate", rarity: "R", set: "ST04",
-    atk: 6, def: 3, pv: 8, tags: ["redhair"], preferredRow: "front",
+    // Decision §8.62 — voir RH-001.
+    atk: 6, def: 3, pv: 8, tags: ["redhair", "tireur"], preferredRow: "front",
     passive: { name: "Quick Draw", description: "Les attaques de Lucky Roux ne peuvent pas être esquivées.", effects: [{ type: "noDodge" }] },
     baseAction: { name: "Tir", atk: 6, description: "Tir rapide." },
     specialAttack: { name: "Tir à Bout Portant", cost: 2, atkBonus: 3, attackTraits: ["range"], description: "Portée." },
@@ -80,21 +86,25 @@ export const redhairCards: CardDef[] = [
     id: "RH-010", name: "Gryphon", type: "object", subtype: "weapon", cost: 2,
     faction: "pirate", rarity: "R", set: "ST04", bonusAtk: 2, restriction: "bretteur",
     equipEffect: "+2 ATK. Attaques : Haki Armement (touchent les Logia) et ignorent le Bouclier. Si équipée par Shanks : +1 ATK.",
+    objectEffects: { grantsHaki: true, ignoreShield: true, wielder: { name: "Shanks", atkBonus: 1 } },
   },
   {
     id: "RH-011", name: "Fusil de Beckman", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST04", bonusAtk: 1, restriction: "tireur", grantsTraits: ["range"],
     equipEffect: "+1 ATK. Attaques : Portée. Si équipée par Beckman : +1 ATK.",
+    objectEffects: { wielder: { name: "Ben Beckman", atkBonus: 1 } },
   },
   {
     id: "RH-012", name: "Pistolet de Lucky Roux", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST04", bonusAtk: 1, restriction: "tireur", grantsTraits: ["range"],
     equipEffect: "+1 ATK. Attaques : Portée. Si équipée par Lucky Roux : attaques inesquivables.",
+    objectEffects: { wielder: { name: "Lucky Roux", noDodge: true } },
   },
   {
     id: "RH-013", name: "Fusil de Yasopp", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST04", bonusAtk: 1, restriction: "tireur", grantsTraits: ["range"],
     equipEffect: "+1 ATK. Attaques : Portée. Si équipée par Yasopp : +1 ATK et Perçant.",
+    objectEffects: { wielder: { name: "Yasopp", atkBonus: 1, attackTraits: ["piercing"] } },
   },
 
   // === OBJETS - ACCESSOIRES ===
@@ -107,11 +117,13 @@ export const redhairCards: CardDef[] = [
     id: "RH-015", name: "Sake de la Fête", type: "object", subtype: "accessory", cost: 1,
     faction: "pirate", rarity: "U", set: "ST04", bonusAtk: 0,
     equipEffect: "1x/partie : tous vos alliés sont soignés de 2 PV et gagnent +1 ATK ce tour.",
+    objectEffects: { activated: { name: "Sake de la Fete", cost: 0, oncePerGame: true, target: "none", healAllAllies: 2, buffAllAlliesAtk: 1 } },
   },
   {
     id: "RH-016", name: "Cape de l'Empereur", type: "object", subtype: "accessory", cost: 2,
     faction: "pirate", rarity: "R", set: "ST04", bonusAtk: 0, bonusDef: 2,
     equipEffect: "+2 DEF. Les ennemis adjacents au porteur ont -1 ATK.",
+    objectEffects: { adjacentEnemyAtk: 1 },
   },
 
   // === NAVIRES ===

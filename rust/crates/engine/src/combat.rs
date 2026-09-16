@@ -194,6 +194,12 @@ pub fn attacker_no_dodge(
     }) {
         return Ok(true);
     }
+    // Decision §8.65 — « Si equipee par Lucky Roux : attaques inesquivables ».
+    let name = def.name.clone();
+    let attached = card.attached_objects.clone();
+    if crate::board::worn_object_flag(state, registry, &attached, &name, "noDodge")? {
+        return Ok(true);
+    }
     for obj_id in &card.attached_objects {
         if let Some(obj) = state.cards.get(obj_id) {
             if registry.get_card_def(&obj.def_id)?.id == "MG-013" {
@@ -202,6 +208,56 @@ pub fn attacker_no_dodge(
         }
     }
     Ok(false)
+}
+
+/// Decision §8.64 — "Les attaques de X ne peuvent etre ni esquivees ni
+/// bloquees" (`RH-003` Yasopp). The `AttacksIgnoreShield` passive was declared
+/// in the types and printed on the card, but NO code read it: only
+/// `spec.ignore_shield`, carried by a special attack, ever reached
+/// `PendingAttack::ignore_shield`. Its `NoDodge` twin *was* read — so half of
+/// Yasopp's printed text worked and half did not.
+///
+/// Also read on worn objects (`RH-010` Gryphon, §8.65), for a character or a
+/// captain alike. TS: `combat::attackerIgnoresShield`.
+pub fn attacker_ignores_shield(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+) -> Result<bool, EngineError> {
+    if let Some(card) = state.cards.get(attacker_instance_id) {
+        let def = registry.get_card_def(&card.def_id)?;
+        if def.passive.as_ref().is_some_and(|p| {
+            p.effects
+                .iter()
+                .any(|e| matches!(e, PassiveEffect::AttacksIgnoreShield))
+        }) {
+            return Ok(true);
+        }
+        let name = def.name.clone();
+        let attached = card.attached_objects.clone();
+        return crate::board::worn_object_flag(state, registry, &attached, &name, "ignoreShield");
+    }
+    // The synthetic `captain_<player>` id: the captain wears objects since
+    // §8.28, and Gryphon names Shanks, who exists ONLY as a captain.
+    let pid = get_attacker_owner(state, attacker_instance_id)?;
+    let cap = &state.players.get(pid).captain;
+    let cap_name = registry.get_captain_def(&cap.def_id)?.name.clone();
+    let attached = cap.attached_objects.clone();
+    crate::board::worn_object_flag(state, registry, &attached, &cap_name, "ignoreShield")
+}
+
+/// Decision §8.65 — a worn object that grants Haki de l'Armement (`RH-010`).
+pub fn attacker_grants_haki(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+) -> Result<bool, EngineError> {
+    let Some(card) = state.cards.get(attacker_instance_id) else {
+        return Ok(false);
+    };
+    let name = registry.get_card_def(&card.def_id)?.name.clone();
+    let attached = card.attached_objects.clone();
+    crate::board::worn_object_flag(state, registry, &attached, &name, "grantsHaki")
 }
 
 /// TS `attackerStripsStealth(state, attackerInstanceId)`
@@ -474,6 +530,42 @@ pub(crate) fn enforce_taunt(
     )))
 }
 
+/// Decision §8.61 — single target-legality guard at declaration time.
+///
+/// [`crate::board::get_valid_targets`] decides what the client and the AI *may*
+/// offer, but none of the `declare_*` functions cross-checked the target they
+/// were handed: a direct engine call went around it. The two bindings that take
+/// a target away are chained here — Untargetable (`BW-026`) then Taunt (§8.38).
+///
+/// TS: `combat::enforceTargetLegality`.
+pub(crate) fn enforce_target_legality(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+    target_instance_id: &str,
+    target_is_captain: bool,
+    for_special: bool,
+) -> Result<(), EngineError> {
+    let attacker_side = match state.cards.get(attacker_instance_id) {
+        Some(a) => a.controller(),
+        None => get_attacker_owner(state, attacker_instance_id)?,
+    };
+    crate::board::assert_targetable(
+        state,
+        attacker_side.opponent(),
+        target_instance_id,
+        target_is_captain,
+    )?;
+    enforce_taunt(
+        state,
+        registry,
+        attacker_instance_id,
+        target_instance_id,
+        target_is_captain,
+        for_special,
+    )
+}
+
 /// TS `declareBaseAttack(state, attackerInstanceId, targetInstanceId, targetIsCaptain)`
 /// — `src/engine/combat.ts:73`.
 ///
@@ -552,7 +644,7 @@ fn declare_base_attack_inner(
 
     // Decision §8.38: the printed taunt binds the executor too, and it is
     // checked before the trap so a refused declaration cannot eat it (§8.12).
-    enforce_taunt(
+    enforce_target_legality(
         state,
         registry,
         attacker_instance_id,
@@ -614,7 +706,10 @@ fn declare_base_attack_inner(
         || state.turn_number >= 7
         || attack_element == Some(Element::Water)
         || state.players.get(owner).has_haki_this_turn()
-        || attacker_haki_modifier(state, attacker_instance_id);
+        || attacker_haki_modifier(state, attacker_instance_id)
+        // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) :
+        // l'objet porte donne le Haki a son porteur, quel que soit le tour.
+        || attacker_grants_haki(state, registry, attacker_instance_id)?;
 
     let strips_stealth = attacker_strips_stealth(state, registry, attacker_instance_id)?;
     let pending = PendingAttack {
@@ -627,7 +722,12 @@ fn declare_base_attack_inner(
         element: attack_element,
         attack_traits,
         has_haki,
-        ignore_shield: None,
+        // Decision §8.64/§8.65 — le passif du personnage et les objets portes.
+        ignore_shield: Some(attacker_ignores_shield(
+            state,
+            registry,
+            attacker_instance_id,
+        )?),
         // Decision §8.38: `BaseAction.cannotBeDodged` is finally *read* (no
         // shipped base action sets it, so this is inert on the catalogue).
         cannot_be_dodged: Some(
@@ -779,7 +879,7 @@ fn declare_special_attack_inner(
     // (§8.12).
     if spec.transform.is_none() && (!spec.is_support.unwrap_or(false) || support_hits_enemy(&spec))
     {
-        enforce_taunt(
+        enforce_target_legality(
             state,
             registry,
             attacker_instance_id,
@@ -951,7 +1051,10 @@ fn declare_special_attack_inner(
         || state.turn_number >= 7
         || spec.element == Some(Element::Water)
         || state.players.get(owner).has_haki_this_turn()
-        || attacker_haki_modifier(state, attacker_instance_id);
+        || attacker_haki_modifier(state, attacker_instance_id)
+        // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) :
+        // l'objet porte donne le Haki a son porteur, quel que soit le tour.
+        || attacker_grants_haki(state, registry, attacker_instance_id)?;
 
     let strips_stealth = attacker_strips_stealth(state, registry, attacker_instance_id)?;
     let pending = PendingAttack {
@@ -964,7 +1067,10 @@ fn declare_special_attack_inner(
         element: spec.element,
         attack_traits,
         has_haki,
-        ignore_shield: spec.ignore_shield,
+        ignore_shield: Some(
+            spec.ignore_shield.unwrap_or(false)
+                || attacker_ignores_shield(state, registry, attacker_instance_id)?,
+        ),
         cannot_be_dodged: Some(
             spec.cannot_be_dodged.unwrap_or(false)
                 || attacker_no_dodge(state, registry, attacker_instance_id)?,
@@ -1389,7 +1495,7 @@ fn declare_captain_fruit_special_attack_inner(
 
     // Decision §8.38: every declaration path is bound by a taunt (inert while
     // nothing in the catalogue can taunt a captain).
-    enforce_taunt(
+    enforce_target_legality(
         state,
         registry,
         &captain_attacker_id(owner),
@@ -1412,7 +1518,12 @@ fn declare_captain_fruit_special_attack_inner(
     let mut attack_traits: Vec<AttackTrait> = spec.attack_traits.clone().unwrap_or_default();
     // Decision §8.47 — the `AttackTrait` arm of the bearer's equipment.
     let attached = state.players.get(owner).captain.attached_objects.clone();
-    for at in crate::board::attachments_granted_attack_traits(state, registry, &attached)? {
+    for at in crate::board::attachments_granted_attack_traits(
+        state,
+        registry,
+        &attached,
+        Some(&cap_def.name),
+    )? {
         if !attack_traits.contains(&at) {
             attack_traits.push(at);
         }
@@ -1467,7 +1578,10 @@ fn declare_captain_fruit_special_attack_inner(
         element: spec.element,
         attack_traits,
         has_haki,
-        ignore_shield: spec.ignore_shield,
+        ignore_shield: Some(
+            spec.ignore_shield.unwrap_or(false)
+                || attacker_ignores_shield(state, registry, &captain_attacker_id(owner))?,
+        ),
         cannot_be_dodged: None,
         immobilize: spec.immobilize,
         sleep: spec.sleep,
@@ -1556,7 +1670,7 @@ fn declare_fruit_special_attack_inner(
 
     // Decision §8.38: the awakened special is an attack like any other, so the
     // taunt binds it too.
-    enforce_taunt(
+    enforce_target_legality(
         state,
         registry,
         attacker_instance_id,
@@ -1610,7 +1724,10 @@ fn declare_fruit_special_attack_inner(
     let has_haki = def_has_natural_haki
         || state.turn_number >= 7
         || spec.element == Some(Element::Water)
-        || attacker_haki_modifier(state, attacker_instance_id);
+        || attacker_haki_modifier(state, attacker_instance_id)
+        // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) :
+        // l'objet porte donne le Haki a son porteur, quel que soit le tour.
+        || attacker_grants_haki(state, registry, attacker_instance_id)?;
 
     let pending = PendingAttack {
         attacker_id: attacker_instance_id.to_string(),
@@ -1622,7 +1739,10 @@ fn declare_fruit_special_attack_inner(
         element: spec.element,
         attack_traits,
         has_haki,
-        ignore_shield: spec.ignore_shield,
+        ignore_shield: Some(
+            spec.ignore_shield.unwrap_or(false)
+                || attacker_ignores_shield(state, registry, attacker_instance_id)?,
+        ),
         cannot_be_dodged: None,
         immobilize: spec.immobilize,
         sleep: spec.sleep,
@@ -1811,10 +1931,55 @@ pub fn apply_counter_cancel(
         }
     }
 
+    // Decision §8.61 — read BEFORE `pending_attack` is cleared: the target of
+    // the attack being countered is the one that becomes Untargetable.
+    let protected = match &ce {
+        CounterEffect::Untargetable { .. } => state
+            .pending_attack
+            .as_ref()
+            .map(|p| (p.target_id.clone(), p.target_is_captain)),
+        _ => None,
+    };
+
     state.spend_volonte(owner, cdef_cost)?;
     discard_counter(state, owner, counter_instance_id);
     state.pending_attack = None;
-    state.add_log(owner, format!("{cdef_name} : attaque annulée !"));
+
+    // Decision §8.61 — until now this arm was indistinguishable from `Cancel`:
+    // the attack fell and the target kept no trace, so the next attack of the
+    // same turn hit it. A real status is written, purged when the turn changes.
+    if let Some((target_id, target_is_captain)) = protected {
+        let effect = StatusEffect {
+            effect_type: StatusEffectType::Untargetable,
+            turns_remaining: 1,
+            damage_per_turn: 0,
+            source: counter_instance_id.to_string(),
+        };
+        let statuses = if target_is_captain {
+            Some(&mut state.players.get_mut(owner).captain.status_effects)
+        } else {
+            state
+                .cards
+                .get_mut(&target_id)
+                .map(|c| &mut c.status_effects)
+        };
+        if let Some(statuses) = statuses {
+            if !statuses
+                .iter()
+                .any(|e| e.effect_type == StatusEffectType::Untargetable)
+            {
+                statuses.push(effect);
+            }
+        }
+        state.add_log(
+            owner,
+            format!(
+                "{cdef_name} : attaque annulée — la cible est Inciblable jusqu'à la fin du tour."
+            ),
+        );
+    } else {
+        state.add_log(owner, format!("{cdef_name} : attaque annulée !"));
+    }
 
     // TS truthiness: a `selfCaptainDamage` of 0 is falsy and is skipped entirely.
     if let Some(damage) = self_captain_damage.filter(|d| *d != 0) {
@@ -2607,7 +2772,43 @@ pub fn apply_character_damage(
     let target_owner = target.owner;
     let target_def_id = target.def_id.clone();
     let logia_used_this_turn = target.logia_used_this_turn.unwrap_or(false);
+    let has_reflect = target.has_status(StatusEffectType::Reflect);
     let target_name = registry.get_card_def(&target_def_id)?.name.clone();
+
+    // Decision §8.67 — `MG-018` Dial d'Impact: armed, it absorbs the next
+    // attack in full and sends it back at the attacker. The printed text sends
+    // it back "a votre prochain tour"; the trigger is pulled back to the moment
+    // of absorption, since otherwise the amount would have to survive a turn
+    // change AND a second target selection — a deliberate, recorded
+    // compression, the amount and the target staying those of the text.
+    if has_reflect && pending.raw_damage > 0 {
+        let amount = pending.raw_damage;
+        let attacker_owner = get_attacker_owner(state, &pending.attacker_id)?;
+        let t = state.get_card_mut(&pending.target_id)?;
+        t.status_effects
+            .retain(|e| e.effect_type != StatusEffectType::Reflect);
+        if state.cards.contains_key(&pending.attacker_id) {
+            state.get_card_mut(&pending.attacker_id)?.current_pv -= amount;
+            let an = registry
+                .get_card_def(&state.cards[&pending.attacker_id].def_id)?
+                .name
+                .clone();
+            state.add_log(
+                target_owner,
+                format!("Dial d'Impact : {amount} degats absorbes puis renvoyes !"),
+            );
+            state.add_log(
+                attacker_owner,
+                format!("{an} encaisse {amount} degats (Impact)."),
+            );
+        } else {
+            state.add_log(
+                target_owner,
+                format!("Dial d'Impact : {amount} degats absorbes puis renvoyes !"),
+            );
+        }
+        return Ok(());
+    }
 
     // Logia check (includes traits from equipped Devil Fruits)
     let is_logia = has_trait(state, registry, &pending.target_id, Trait::Logia)?;
@@ -3084,6 +3285,15 @@ mod tests {
                     max_attacker_atk: Some(4),
                     self_captain_damage: None,
                     once: None,
+                },
+            ),
+            // Decision §8.61 — the `BW-026` Mirage du Desert shape.
+            counter(
+                "X-UNTARGET",
+                "Mirage",
+                1,
+                CounterEffect::Untargetable {
+                    description: "La cible devient Inciblable jusqu'à la fin du tour.".to_string(),
                 },
             ),
         ]);
@@ -3666,6 +3876,76 @@ mod tests {
                 .iter()
                 .any(|l| l.message == "Attaquant subit 2 dégâts (Épines) !")
         );
+    }
+
+    /// Decision §8.61 — the scenario the player reported: the counter held for
+    /// the first attack and the next one of the SAME turn landed. Before the
+    /// fix `Untargetable` was routed word for word into `apply_counter_cancel`,
+    /// so nothing was written on the target.
+    #[test]
+    fn mirage_keeps_the_target_untargetable_for_the_whole_turn() {
+        let (mut state, reg) = setup();
+        let a1 = place(&mut state, &reg, "C-ATK", PlayerId::Player1, Slot::V1);
+        let a2 = place(&mut state, &reg, "C-ADJ", PlayerId::Player1, Slot::V2);
+        let tgt = place(&mut state, &reg, "C-DEF", PlayerId::Player2, Slot::V1);
+        let mirage = give(&mut state, "X-UNTARGET", PlayerId::Player2);
+        state.players.get_mut(PlayerId::Player2).volonte = 10;
+        let pv_before = state.card(&tgt).unwrap().current_pv;
+
+        // 1) First attack, countered by Mirage.
+        declare_base_attack(
+            &mut state,
+            &reg,
+            &EngineContext::seeded(1),
+            &a1,
+            &tgt,
+            false,
+        )
+        .unwrap();
+        apply_counter_cancel(&mut state, &reg, &mirage).unwrap();
+        assert!(state.pending_attack.is_none());
+        assert!(
+            state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::Untargetable),
+            "the counter must write a durable status, not just clear the attack"
+        );
+        assert_eq!(state.card(&tgt).unwrap().current_pv, pv_before);
+
+        // 2) Second attack, SAME turn — no longer a legal target anywhere.
+        let legal = crate::board::get_valid_targets(&state, &reg, &a2, false).unwrap();
+        assert!(
+            !legal.character_targets.contains(&tgt),
+            "get_valid_targets must drop an Untargetable unit"
+        );
+        assert_eq!(
+            declare_base_attack(
+                &mut state,
+                &reg,
+                &EngineContext::seeded(1),
+                &a2,
+                &tgt,
+                false,
+            )
+            .unwrap_err(),
+            EngineError::illegal("La cible est Inciblable jusqu'a la fin du tour"),
+            "the declaration guard must refuse it even on a direct engine call"
+        );
+        assert_eq!(state.card(&tgt).unwrap().current_pv, pv_before);
+
+        // 3) Turn change — the status falls with the turn that saw it written.
+        state.current_player = PlayerId::Player2;
+        state.turn_number += 1;
+        state.start_turn(&reg, &EngineContext::seeded(1)).unwrap();
+        assert!(
+            !state
+                .card(&tgt)
+                .unwrap()
+                .has_status(StatusEffectType::Untargetable)
+        );
+        let legal = crate::board::get_valid_targets(&state, &reg, &a1, false).unwrap();
+        assert!(legal.character_targets.contains(&tgt));
     }
 
     #[test]

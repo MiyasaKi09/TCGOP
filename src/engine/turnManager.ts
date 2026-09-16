@@ -16,6 +16,11 @@ import {
   moveCharacter,
   getEmptySlots,
   getBoardCharacters,
+  isUntargetableNow,
+  captainIsUntargetable,
+  isSlotFree,
+  assertTargetable,
+  getAdjacentSlots,
   getValidTargets,
   hasSummoningSickness,
   hasTrait,
@@ -27,6 +32,9 @@ import {
   hasFreeObjectSlot,
   captainEquipRestrictionOk,
   captainHasFreeObjectSlot,
+  controllerOf,
+  isEmbargoed,
+  moveAttachedObjectsInDraft,
 } from "./board";
 import {
   declareBaseAttack,
@@ -41,9 +49,26 @@ import {
   supportHitsEnemy,
   supportHelpsAlly,
 } from "./combat";
-import { canFlipCaptain, flipCaptain, declareCaptainBaseAttack, captainCannotAct, captainHasTraitNow } from "./captain";
+import {
+  canFlipCaptain,
+  flipCaptain,
+  declareCaptainBaseAttack,
+  declareCaptainSpecialAttack,
+  useCaptainSurcharge,
+  onceSurchargeKey,
+  captainCannotAct,
+  captainHasTraitNow,
+} from "./captain";
 import { isHakiAvailable, useObservationHaki, useKingHaki, hasConquerorInPlay } from "./haki";
+import { ALL_SLOTS } from "./utils";
 import { produce } from "immer";
+
+/** Decision §8.37 — the refusal an embargoed player gets on `equipObject`.
+ *  Rust: `execute::EMBARGO_EQUIP`. */
+export const EMBARGO_EQUIP = "Embargo: cannot equip an object this turn";
+/** Decision §8.37 — the refusal an embargoed player gets on `deployShip`.
+ *  Rust: `execute::EMBARGO_SHIP`. */
+export const EMBARGO_SHIP = "Embargo: cannot deploy a ship this turn";
 
 // ============================================================
 // Execute a game action — single entry point for all mutations
@@ -61,6 +86,11 @@ export function executeAction(
       return deployCharacter(state, state.currentPlayer, action.instanceId, action.slot);
 
     case "equipObject":
+      // Decision §8.37 (`embargo`, MR-027) : « L'adversaire ne peut ni équiper
+      // ni jouer de Navire à son prochain tour. »
+      if (isEmbargoed(state, state.currentPlayer)) {
+        throw new Error(EMBARGO_EQUIP);
+      }
       // Decision §8.28 (follow-up): `targetIsCaptain` routes the equip to the
       // player's own captain, the printed bearer of the three signature SR
       // Devil Fruits ("Équipable sur Luffy / Crocodile / Akainu").
@@ -73,6 +103,10 @@ export function executeAction(
       );
 
     case "deployShip":
+      // Decision §8.37 (`embargo`, MR-027).
+      if (isEmbargoed(state, state.currentPlayer)) {
+        throw new Error(EMBARGO_SHIP);
+      }
       return deployShip(state, state.currentPlayer, action.instanceId);
 
     case "baseAttack":
@@ -110,8 +144,28 @@ export function executeAction(
     case "flipCaptain":
       return flipCaptain(state, state.currentPlayer, action.slot);
 
+    // Decision §8.34(a): `isSpecial` is honoured — the arm used to drop it on
+    // the floor and always declare the base attack, so the captain's signature
+    // move (Gomu Gomu no Bazooka, Ryusei Kazan, Desert Girasol, Divin Départ)
+    // was unreachable. Rust: `execute::execute_action`, `GameAction::CaptainAttack`.
     case "captainAttack":
-      return declareCaptainBaseAttack(
+      return action.isSpecial
+        ? declareCaptainSpecialAttack(
+            state,
+            state.currentPlayer,
+            action.targetInstanceId,
+            action.targetIsCaptain ?? false
+          )
+        : declareCaptainBaseAttack(
+            state,
+            state.currentPlayer,
+            action.targetInstanceId,
+            action.targetIsCaptain ?? false
+          );
+
+    // Decision §8.34(b): the captain's `surcharge` block.
+    case "useSurcharge":
+      return useCaptainSurcharge(
         state,
         state.currentPlayer,
         action.targetInstanceId,
@@ -150,6 +204,9 @@ export function executeAction(
         action.targetInstanceId,
         action.targetIsCaptain ?? false
       );
+
+    case "activateObject":
+      return activateObject(state, state.currentPlayer, action.objectInstanceId, action.targetInstanceId);
 
     case "endTurn": {
       const next = endTurn(state);
@@ -473,8 +530,39 @@ function resolveEventEffect(
             next = sweepKOs(next, opponentId, playerId);
           }
         }
+      } else if (effect.id === "embargo") {
+        // Decision §8.37 — `MR-027` : « L'adversaire ne peut ni équiper ni
+        // jouer de Navire à son prochain tour. » Un tour, le sien.
+        next = produce(next, (draft) => {
+          draft.players[opponentId].embargoTurns = 1;
+        });
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
+      } else if (effect.id === "noHeal2") {
+        // Decision §8.37 — `BW-028` : « Persistant (2 tours) : les ennemis ne
+        // peuvent pas être soignés. » Tous les chemins de soin sautent déjà une
+        // unité `noHeal` (§8.5). Un statut ne se décrémente que sur les tours de
+        // son porteur : `turnsRemaining: 2` couvre la fin de ce tour plus le
+        // prochain tour adverse. Une unité déjà sous la pluie voit son compteur
+        // rafraîchi, jamais cumulé.
+        next = produce(next, (draft) => {
+          for (const slot of Object.values(draft.players[opponentId].board)) {
+            if (!slot) continue;
+            const c = draft.cards[slot];
+            if (!c) continue;
+            const existing = c.statusEffects.find((e) => e.type === "noHeal");
+            if (existing) existing.turnsRemaining = Math.max(existing.turnsRemaining, 2);
+            else c.statusEffects.push({ type: "noHeal", turnsRemaining: 2, damagePerTurn: 0, source: cardName });
+          }
+        });
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
+      } else if (effect.id === "betrayal") {
+        // Decision §8.37 — `BW-024` : « Prenez le contrôle d'un ennemi de coût
+        // ≤ 2 ce tour. » L'interface n'envoie jamais de `targets`, donc la
+        // convention du moteur choisit l'ennemi légal le plus fort.
+        next = takeControlForTheTurn(next, playerId, cardName);
+        next = addLog(next, playerId, `${cardName} : ${effect.description}`);
       } else {
-        // embargo / betrayal / noHeal2 — flavour-logged (not yet enforced).
+        // Decision §8.37 : un id hors des six légaux garde le journal d'ambiance.
         next = addLog(next, playerId, `${cardName} : ${effect.description}`);
       }
       break;
@@ -484,10 +572,65 @@ function resolveEventEffect(
   return next;
 }
 
+/**
+ * Decision §8.37 (`betrayal`, `BW-024`) — emprunte pour ce tour l'ennemi dont
+ * l'ATK effective est la plus haute parmi ceux dont le coût **imprimé** est ≤ 2.
+ *
+ * Le corps passe dans le premier slot libre du plateau de l'emprunteur avec
+ * `controlledBy = emprunteur` et `loanReturnSlot = <le slot quitté>`, dégagé et
+ * les deux drapeaux d'action remis à zéro : il peut agir tout de suite pour son
+ * nouveau camp. `owner` n'est délibérément pas touché — bonus de KO, cimetière
+ * et condition de victoire continuent de désigner le joueur qui a payé la carte.
+ * `endTurn` le ramène chez lui. Rust: `execute::take_control_for_the_turn`.
+ */
+function takeControlForTheTurn(
+  state: GameState,
+  playerId: PlayerId,
+  cardName: string
+): GameState {
+  const opponentId = getOpponent(playerId);
+  let best: string | null = null;
+  for (const c of getBoardCharacters(state, opponentId)) {
+    if (getCardDef(c.defId).cost > 2) continue;
+    if (best === null || getEffectiveAtk(state, c.instanceId) > getEffectiveAtk(state, best)) {
+      best = c.instanceId;
+    }
+  }
+  if (!best) return state;
+  const targetId = best;
+  const home = state.cards[targetId].slot;
+  if (!home) return state;
+  const dest = getEmptySlots(state, playerId)[0];
+  if (!dest) return state;
+
+  let next = produce(state, (draft) => {
+    draft.players[opponentId].board[home] = null;
+    draft.players[playerId].board[dest] = targetId;
+    const c = draft.cards[targetId];
+    c.slot = dest;
+    c.controlledBy = playerId;
+    c.loanReturnSlot = home;
+    c.tapped = false;
+    c.usedBaseAction = false;
+    c.usedSpecialAttack = false;
+    // Decision §8.29 : l'équipement suit son porteur — le prêt déplace le corps
+    // vers une autre case (d'un autre plateau), ses attachements suivent.
+    moveAttachedObjectsInDraft(draft, c.attachedObjects, dest);
+  });
+
+  next = addLog(next, playerId, `${cardName} : ${getCardDef(next.cards[targetId].defId).name} change de camp !`);
+
+  const { recalculatePassiveBuffs, applyEnemyDebuffAuras } = require("./passives");
+  next = recalculatePassiveBuffs(next, playerId);
+  next = recalculatePassiveBuffs(next, opponentId);
+  next = applyEnemyDebuffAuras(next);
+  return next;
+}
+
 /** Deploy a token body into an empty slot (no cost, no summoning use). */
 function deployToken(state: GameState, playerId: PlayerId, tokenDefId: string, slot?: Slot): GameState {
   const empties = getEmptySlots(state, playerId);
-  const target = slot && state.players[playerId].board[slot] === null ? slot : empties[0];
+  const target = slot && isSlotFree(state, playerId, slot) ? slot : empties[0];
   if (!target) return state;
   const { generateInstanceId } = require("./utils");
   const def = getCardDef(tokenDefId);
@@ -551,6 +694,144 @@ function playCounter(state: GameState, instanceId: string): GameState {
     default:
       return state;
   }
+}
+
+/**
+ * Decision §8.67 — activer la capacite d'un objet equipe.
+ *
+ * Six objets impriment une ligne activable (« 1x/partie : … », « le porteur
+ * gagne une attaque … ») et **aucune** action du moteur ne permettait de la
+ * declencher : les six etaient injouables quel que soit le porteur. Le cout
+ * est en Volonte, le marqueur 1x/partie vit sur le PORTEUR (`usedOnceAbilities`,
+ * comme les spéciales), et l'objet doit etre equipe sur une unite du joueur.
+ */
+function activateObject(
+  state: GameState,
+  playerId: PlayerId,
+  objectInstanceId: string,
+  targetInstanceId?: string
+): GameState {
+  const obj = state.cards[objectInstanceId];
+  if (!obj) throw new Error("Object not found");
+  const objDef = getCardDef(obj.defId);
+  const act = objDef.objectEffects?.activated;
+  const granted = objDef.objectEffects?.grantsAttack;
+  const spec = act ?? (granted
+    ? { name: granted.name, cost: granted.cost, target: "enemy" as const, damage: granted.damage, oncePerGame: false }
+    : undefined);
+  if (!spec) throw new Error("This object has no activated ability");
+
+  // Trouver le porteur (personnage ou capitaine).
+  let bearerId: string | null = null;
+  let bearerName = "";
+  let bearerOnce: string[] = [];
+  for (const slot of ALL_SLOTS) {
+    const id = state.players[playerId].board[slot as Slot];
+    if (id && state.cards[id]?.attachedObjects.includes(objectInstanceId)) {
+      bearerId = id; bearerName = getCardDef(state.cards[id].defId).name;
+      bearerOnce = state.cards[id].usedOnceAbilities; break;
+    }
+  }
+  const cap = state.players[playerId].captain;
+  const onCaptain = (cap.attachedObjects ?? []).includes(objectInstanceId);
+  if (onCaptain) {
+    bearerId = `captain_${playerId}`;
+    bearerName = getCaptainDef(cap.defId).name;
+    bearerOnce = cap.usedOnceAbilities;
+  }
+  if (!bearerId) throw new Error("Object is not equipped on one of your units");
+
+  const onceKey = `obj_${objDef.id}`;
+  if (spec.oncePerGame && bearerOnce.includes(onceKey)) throw new Error("Already used (1x/game)");
+  if (!canAfford(state, playerId, spec.cost)) throw new Error("Cannot afford this ability");
+
+  const target = spec.target === "enemy" ? targetInstanceId : undefined;
+  if (spec.target === "enemy") {
+    if (!target) throw new Error("This ability needs a target");
+    const t = state.cards[target];
+    if (!t || t.zone !== "board" || controllerOf(t) === playerId) throw new Error("Target must be an enemy on the board");
+    assertTargetable(state, getOpponent(playerId), target, false);
+  }
+
+  let next = spendVolonte(state, playerId, spec.cost);
+  next = produce(next, (draft) => {
+    if (spec.oncePerGame) {
+      if (onCaptain) draft.players[playerId].captain.usedOnceAbilities.push(onceKey);
+      else draft.cards[bearerId!].usedOnceAbilities.push(onceKey);
+    }
+  });
+  next = addLog(next, playerId, `${bearerName} active ${objDef.name} : ${spec.name}`);
+
+  const a = act;
+  if (a?.healAllAllies || a?.buffAllAlliesAtk) {
+    // RH-015 « tous vos allies sont soignes de 2 PV et gagnent +1 ATK ».
+    next = produce(next, (draft) => {
+      for (const slot of ALL_SLOTS) {
+        const id = draft.players[playerId].board[slot as Slot];
+        if (!id) continue;
+        if (a.buffAllAlliesAtk) {
+          draft.cards[id].modifiers.push({
+            id: `obj_${objectInstanceId}_atk_${id}`, stat: "atk", amount: a.buffAllAlliesAtk,
+            source: `object_${objDef.id}`, duration: "turn",
+          });
+        }
+      }
+    });
+    if (a.healAllAllies) {
+      for (const slot of ALL_SLOTS) {
+        const id = next.players[playerId].board[slot as Slot];
+        if (id) next = healUnit(next, id, a.healAllAllies).state;
+      }
+    }
+    return next;
+  }
+
+  if (a?.reflectNextAttack) {
+    // MG-018 Dial d'Impact : arme l'absorption sur le porteur.
+    next = produce(next, (draft) => {
+      if (onCaptain) {
+        draft.players[playerId].captain.statusEffects.push({ type: "reflect", turnsRemaining: -1, damagePerTurn: 0, source: objectInstanceId });
+      } else {
+        draft.cards[bearerId!].statusEffects.push({ type: "reflect", turnsRemaining: -1, damagePerTurn: 0, source: objectInstanceId });
+      }
+    });
+    return addLog(next, playerId, `${objDef.name} : la prochaine attaque subie sera absorbee puis renvoyee.`);
+  }
+
+  if (target) {
+    const t = next.cards[target];
+    const tDef = getCardDef(t.defId);
+    const isCursed = hasTrait(next, target, "cursed");
+    const dmg = (isCursed && a?.cursedDamage !== undefined) ? a.cursedDamage : (spec.damage ?? 0);
+    if (dmg > 0) {
+      next = produce(next, (draft) => { draft.cards[target].currentPv -= dmg; });
+      next = addLog(next, playerId, `${objDef.name} : ${tDef.name} subit ${dmg} degats.`);
+      // Zone : les voisins de la cible prennent la meme chose (BW-017).
+      if (a?.zone && t.slot) {
+        for (const adj of getAdjacentSlots(t.slot)) {
+          const id = next.players[controllerOf(t)].board[adj as Slot];
+          if (!id) continue;
+          next = produce(next, (draft) => { draft.cards[id].currentPv -= dmg; });
+          next = addLog(next, playerId, `${objDef.name} (Zone) : ${getCardDef(next.cards[id].defId).name} subit ${dmg} degats.`);
+        }
+      }
+    }
+    if (a?.stripTraitsIfCursed && isCursed) {
+      next = produce(next, (draft) => {
+        draft.cards[target].statusEffects.push({ type: "noStealth", turnsRemaining: -1, damagePerTurn: 0, source: objectInstanceId });
+        draft.cards[target].modifiers.push({ id: `granit_${objectInstanceId}`, stat: "atk", amount: 0, source: `granit_${objDef.id}`, duration: "permanent" });
+      });
+      next = addLog(next, playerId, `${tDef.name} est neutralise par le Granit Marin : il perd ses traits.`);
+    }
+    if (a?.loseAction) {
+      next = produce(next, (draft) => {
+        draft.cards[target].statusEffects.push({ type: "loseAction", turnsRemaining: 1, damagePerTurn: 0, source: objectInstanceId });
+      });
+      next = addLog(next, playerId, `${tDef.name} perd sa prochaine action.`);
+    }
+    next = sweepKOs(next, getOpponent(playerId), playerId);
+  }
+  return next;
 }
 
 // ============================================================
@@ -710,7 +991,9 @@ function executeSupportAction(
 ): GameState {
   const card = state.cards[instanceId];
   if (!card) throw new Error("Card not found");
-  if (card.owner !== playerId) throw new Error("Not your card");
+  // Decision §8.37 (`betrayal`) : un corps emprunte agit pour son emprunteur —
+  // `controllerOf` vaut `owner` pour toute carte qui n'est pas en pret.
+  if (controllerOf(card) !== playerId) throw new Error("Not your card");
   if (card.tapped || card.usedBaseAction) throw new Error("Action already used");
 
   const def = getCardDef(card.defId);
@@ -935,10 +1218,15 @@ export function getValidActions(
   }
 
   // Deploy ships from hand
+  // Decision §8.37 (`embargo`, MR-027) × §8.57 : `executeAction` refuse
+  // `deployShip` et `equipObject` tant que le bannissement dure, donc aucun des
+  // deux n'est proposé — tout ce qui est proposé doit être exécutable.
+  const embargoed = isEmbargoed(state, playerId);
   for (const cardId of player.hand) {
     const card = state.cards[cardId];
     const def = getCardDef(card.defId);
     if (def.type === "ship" && canAfford(state, playerId, def.cost)) {
+      if (embargoed) continue;
       actions.push({ type: "deployShip", instanceId: cardId });
     }
   }
@@ -949,7 +1237,16 @@ export function getValidActions(
     const card = state.cards[cardId];
     const def = getCardDef(card.defId);
     if (def.type === "object" && canAfford(state, playerId, def.cost)) {
+      // Decision §8.37 (`embargo`, MR-027).
+      if (embargoed) continue;
       for (const target of boardChars) {
+        // Decision §8.57 × §8.37 (`betrayal`) : `boardChars` lit des *cases* de
+        // plateau, qui pendant un prêt abritent aussi un corps ennemi emprunté.
+        // Un objet est un attachement permanent — il repartirait avec le corps à
+        // la fin du tour — donc, à la différence des actions de contrôle
+        // (attaque, déplacement, soutien), l'équipement reste réservé aux
+        // personnages que l'on *possède*, ce que `equipObject` impose déjà.
+        if (target.owner !== playerId) continue;
         // Decision §8.28 × §8.57: only the pairs `equipObject` would accept —
         // a character that satisfies the printed restriction and still has a
         // free slot of that subtype. Everything offered must be executable.
@@ -1195,6 +1492,39 @@ export function getValidActions(
     }
   }
 
+  // Decision §8.67 — les capacites activees d'objets. Sans cette enumeration
+  // l'action existerait mais ne serait jamais proposee, donc resterait
+  // injouable — exactement le defaut qu'elle corrige.
+  {
+    const bearers: { id: string; once: string[]; objs: string[] }[] = [];
+    for (const c of boardChars) bearers.push({ id: c.instanceId, once: c.usedOnceAbilities, objs: c.attachedObjects });
+    bearers.push({ id: `captain_${playerId}`, once: player.captain.usedOnceAbilities, objs: player.captain.attachedObjects ?? [] });
+    const oppChars0 = getBoardCharacters(state, getOpponent(playerId)).filter(
+      (c) => !isUntargetableNow(state, c.instanceId)
+    );
+    for (const b of bearers) {
+      for (const objId of b.objs) {
+        const o = state.cards[objId];
+        if (!o) continue;
+        const od = getCardDef(o.defId);
+        const fx = od.objectEffects;
+        const spec = fx?.activated ?? (fx?.grantsAttack
+          ? { name: fx.grantsAttack.name, cost: fx.grantsAttack.cost, target: "enemy" as const, oncePerGame: false }
+          : undefined);
+        if (!spec) continue;
+        if (spec.oncePerGame && b.once.includes(`obj_${od.id}`)) continue;
+        if (!canAfford(state, playerId, spec.cost)) continue;
+        if (spec.target === "enemy") {
+          for (const opp of oppChars0) {
+            actions.push({ type: "activateObject", objectInstanceId: objId, targetInstanceId: opp.instanceId });
+          }
+        } else {
+          actions.push({ type: "activateObject", objectInstanceId: objId });
+        }
+      }
+    }
+  }
+
   // Captain flip
   if (canFlipCaptain(state, playerId)) {
     for (const slot of emptySlots) {
@@ -1202,27 +1532,91 @@ export function getValidActions(
     }
   }
 
-  // Captain attacks (if verso and on board) — frozen/immobilized captains can't act
-  const captainDisabled = player.captain.statusEffects.some(
-    (e) => e.type === "freeze" || e.type === "immobilize"
-  );
+  // Captain attacks (if verso and on board) — frozen / immobilized / sleeping
+  // captains can't act (§8.1 item 35: the enumerator and the executors share
+  // `captainCannotAct`, so a sleeping captain is no longer offered an attack
+  // the declaration would refuse).
+  const captainDisabled = captainCannotAct(player.captain);
   if (player.captain.flipped && player.captain.slot && !player.captain.tapped && !captainDisabled) {
     // Decision §8.28 (follow-up) × §8.40: the same union the executor reads
     // (`declareCaptainBaseAttack`) — an awakened Gomu Gomu no Mi grants `rush`
     // to the captain wearing it, so the enumerator must see it too.
     if (player.captain.deployedTurn !== state.turnNumber || captainHasTraitNow(state, playerId, "rush")) {
-      // Can attack — simplified: target any enemy front or captain
-      actions.push({
-        type: "captainAttack",
-        targetInstanceId: `captain_${getOpponent(playerId)}`,
-        targetIsCaptain: true,
-      });
-      const oppChars = getBoardCharacters(state, getOpponent(playerId));
+      // Can attack — simplified: target any enemy front or captain.
+      // Decision §8.61 — une cible Inciblable est retiree ici aussi : sans ce
+      // filtre l'enumerateur proposait une attaque que `declareCaptainBaseAttack`
+      // refusait ensuite, ce qui viole l'invariant §8.57 (« tout ce qui est
+      // propose doit etre jouable »).
+      const oppId = getOpponent(playerId);
+      if (!captainIsUntargetable(state, oppId)) {
+        actions.push({
+          type: "captainAttack",
+          targetInstanceId: `captain_${oppId}`,
+          targetIsCaptain: true,
+        });
+      }
+      const oppChars = getBoardCharacters(state, oppId).filter(
+        (c) => !isUntargetableNow(state, c.instanceId)
+      );
       for (const opp of oppChars) {
         actions.push({
           type: "captainAttack",
           targetInstanceId: opp.instanceId,
         });
+      }
+
+      // Decision §8.34(a) — the captain's special attack, on the same
+      // `captainAttack` action with `isSpecial: true`, over the same targets
+      // as the base attack. Rust: `actions::get_valid_actions`.
+      const capDefAtk = getCaptainDef(player.captain.defId);
+      const capSpec = capDefAtk.verso.specialAttack;
+      const capSpecOnceUsed =
+        !!capSpec.oncePerGame && player.captain.usedOnceAbilities.includes(capSpec.name);
+      if (
+        !player.captain.usedSpecialAttack &&
+        !capSpecOnceUsed &&
+        canAfford(state, playerId, capSpec.cost)
+      ) {
+        if (!captainIsUntargetable(state, oppId)) {
+          actions.push({
+            type: "captainAttack",
+            targetInstanceId: `captain_${oppId}`,
+            targetIsCaptain: true,
+            isSpecial: true,
+          });
+        }
+        for (const opp of oppChars) {
+          actions.push({
+            type: "captainAttack",
+            targetInstanceId: opp.instanceId,
+            isSpecial: true,
+          });
+        }
+      }
+
+      // Decision §8.34(b) — the active (verso) face's `surcharge`, offered only
+      // when the data defines one (never on the shipped catalogue).
+      const capSurcharge = capDefAtk.verso.surcharge;
+      if (capSurcharge) {
+        const surchargeOnceUsed =
+          !!capSurcharge.oncePerGame &&
+          player.captain.usedOnceAbilities.includes(onceSurchargeKey(capSurcharge.name));
+        if (
+          !player.captain.usedSpecialAttack &&
+          !surchargeOnceUsed &&
+          canAfford(state, playerId, capSurcharge.cost)
+        ) {
+          if (!captainIsUntargetable(state, oppId)) {
+            actions.push({
+              type: "useSurcharge",
+              targetInstanceId: `captain_${oppId}`,
+              targetIsCaptain: true,
+            });
+          }
+          for (const opp of oppChars) {
+            actions.push({ type: "useSurcharge", targetInstanceId: opp.instanceId });
+          }
+        }
       }
 
       // Decision §8.28 (follow-up) — the awakened-fruit special of a fruit the
@@ -1237,13 +1631,15 @@ export function getValidActions(
           if (!fruitSpec) continue;
           if (fruitSpec.oncePerGame && player.captain.usedOnceAbilities.includes(fruitSpec.name)) continue;
           if (!canAfford(state, playerId, fruitSpec.cost)) continue;
-          actions.push({
-            type: "fruitSpecialAttack",
-            attackerInstanceId: `captain_${playerId}`,
-            fruitInstanceId: objId,
-            targetInstanceId: `captain_${getOpponent(playerId)}`,
-            targetIsCaptain: true,
-          });
+          if (!captainIsUntargetable(state, oppId)) {
+            actions.push({
+              type: "fruitSpecialAttack",
+              attackerInstanceId: `captain_${playerId}`,
+              fruitInstanceId: objId,
+              targetInstanceId: `captain_${oppId}`,
+              targetIsCaptain: true,
+            });
+          }
           for (const opp of oppChars) {
             actions.push({
               type: "fruitSpecialAttack",
@@ -1264,7 +1660,8 @@ export function getValidActions(
         const { ADJACENCY } = require("./utils");
         const adjacent = ADJACENCY[char.slot] ?? [];
         for (const adjSlot of adjacent) {
-          if (player.board[adjSlot as keyof typeof player.board] === null) {
+          // §8.31 : ne pas proposer un deplacement vers la case du capitaine.
+          if (isSlotFree(state, playerId, adjSlot as import("@/types").Slot)) {
             actions.push({
               type: "moveCharacter",
               instanceId: char.instanceId,

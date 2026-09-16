@@ -346,43 +346,50 @@
 .will-pip { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.14); box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
 .will-pip.on { background: linear-gradient(180deg, #ffe08a, #ffce5b); box-shadow: 0 0 7px rgba(255,206,91,.8); }
 
-/* Haki pips — état des 3 Haki, toujours visible pour les deux camps.
-   Quatre états mutuellement exclusifs : locked / ready / spent / passive. */
-.haki-pip {
-  width: 19px; height: 19px; border-radius: 6px; flex: none;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 10px; line-height: 1; cursor: help;
+/* Haki — état des 3 Haki, toujours visible pour les deux camps.
+   Chaque Haki est NOMMÉ et porte sa manche de déblocage : un joueur doit
+   pouvoir anticiper, pas découvrir. Quatre états exclusifs :
+   locked / ready / spent / passive. */
+.haki-chip {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  height: 17px; padding: 0 5px; border-radius: 5px;
+  font-family: var(--font-oswald), system-ui, sans-serif;
+  font-weight: 700; font-size: 9px; letter-spacing: .04em; line-height: 1;
+  white-space: nowrap; cursor: help;
   border: 1.5px solid var(--ink-edge);
-  background: rgba(6,10,16,.72);
+  background: rgba(6,10,16,.8);
+  color: rgba(255,255,255,.9);
   transition: filter .15s, box-shadow .15s;
 }
-.haki-pip:hover { filter: brightness(1.25); }
-/* verrouillé : présent mais éteint, pour que le joueur sache qu'il existe */
-.haki-pip.locked { opacity: .34; filter: grayscale(1); }
-/* prêt : on peut s'en servir maintenant */
-.haki-pip.ready {
-  background: linear-gradient(180deg, rgba(255,224,138,.28), rgba(255,206,91,.16));
-  border-color: rgba(255,206,91,.75);
-  box-shadow: 0 0 9px rgba(255,206,91,.55);
+.haki-chip:hover { filter: brightness(1.3); }
+.haki-chip .g { font-size: 10px; }
+/* la manche de déblocage / l'état, en cartouche */
+.haki-chip .w {
+  font-size: 8px; padding: 0 3px; border-radius: 3px;
+  background: rgba(255,255,255,.14); color: rgba(255,255,255,.85);
 }
+/* verrouillé : lisible, simplement en retrait — c'est là qu'on doit
+   apprendre que le Haki existe et quand il arrive. */
+.haki-chip.locked { opacity: .72; color: rgba(255,255,255,.72); }
+/* prêt : utilisable tout de suite */
+.haki-chip.ready {
+  background: linear-gradient(180deg, rgba(255,224,138,.3), rgba(255,206,91,.18));
+  border-color: rgba(255,206,91,.8);
+  box-shadow: 0 0 9px rgba(255,206,91,.5);
+  color: #ffe9b4;
+}
+.haki-chip.ready .w { background: rgba(255,206,91,.3); color: #fff4d6; }
 /* passif actif (Armement) : débloqué, rien à activer */
-.haki-pip.passive {
-  background: linear-gradient(180deg, rgba(127,182,255,.24), rgba(91,151,216,.14));
-  border-color: rgba(127,182,255,.6);
-  box-shadow: 0 0 8px rgba(127,182,255,.4);
+.haki-chip.passive {
+  background: linear-gradient(180deg, rgba(127,182,255,.26), rgba(91,151,216,.15));
+  border-color: rgba(127,182,255,.65);
+  color: #d6e9ff;
 }
-/* dépensé : barré, pour distinguer « pas encore » de « plus maintenant » */
-.haki-pip.spent { opacity: .5; position: relative; }
-.haki-pip.spent::after {
-  content: ""; position: absolute; left: 12%; right: 12%; top: 50%; height: 1.5px;
-  background: var(--color-target); transform: rotate(-38deg); border-radius: 2px;
-  box-shadow: 0 0 5px var(--color-target);
-}
-/* pastille du compte à rebours de déblocage */
-.haki-eta {
-  font-family: var(--font-oswald), system-ui, sans-serif; font-weight: 700;
-  font-size: 8px; color: rgba(255,255,255,.45); letter-spacing: .04em;
-}
+.haki-chip.passive .w { background: rgba(127,182,255,.28); color: #eaf4ff; }
+/* dépensé : distinguer « pas encore » de « plus maintenant » */
+.haki-chip.spent { opacity: .62; border-color: rgba(224,70,63,.5); }
+.haki-chip.spent .g { text-decoration: line-through; }
+.haki-chip.spent .w { background: rgba(224,70,63,.28); color: #ffd7d4; }
 
 /* central waterline — clean, replaces the boxy turn pill */
 .waterline { position: relative; z-index: 4; height: 14px; background: linear-gradient(180deg, transparent, rgba(90,160,255,.3), transparent); }

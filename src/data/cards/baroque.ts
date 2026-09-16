@@ -90,6 +90,7 @@ export const baroqueCards: CardDef[] = [
     id: "BW-014", name: "Lassoo", type: "object", subtype: "weapon", cost: 1,
     faction: "pirate", rarity: "C", set: "ST03", bonusAtk: 1, restriction: "Mr. 4", grantsElement: "fire",
     equipEffect: "+1 ATK. Attaques : Feu. Si détruite : déployez un jeton.",
+    objectEffects: { onDestroy: { deployToken: "TOK-AGENT" } },
   },
 
   // === OBJETS - FRUITS DU DÉMON ===
@@ -125,16 +126,19 @@ export const baroqueCards: CardDef[] = [
     id: "BW-015", name: "Den Den Mushi Secret", type: "object", subtype: "accessory", cost: 1,
     faction: "pirate", rarity: "C", set: "ST03", bonusAtk: 0,
     equipEffect: "À l'entrée, regardez la main adverse. Les attaques du porteur ignorent le Furtif.",
+    objectEffects: { revealEnemyHand: true, ignoreStealth: true },
   },
   {
     id: "BW-016", name: "Bananawani", type: "object", subtype: "accessory", cost: 2,
     faction: "pirate", rarity: "U", set: "ST03", bonusAtk: 0,
     equipEffect: "À l'entrée du porteur, déployez un jeton Bananawani (ATK 4 / DEF 1 / PV 4) adjacent.",
+    objectEffects: { onBearerEntryToken: "TOK-BANANAWANI" },
   },
   {
     id: "BW-017", name: "Poudre Explosive", type: "object", subtype: "accessory", cost: 1,
     faction: "pirate", rarity: "C", set: "ST03", bonusAtk: 0,
     equipEffect: "1x/partie : 3 dégâts à un ennemi (Zone).",
+    objectEffects: { activated: { name: "Poudre Explosive", cost: 0, oncePerGame: true, target: "enemy", damage: 3, zone: true } },
   },
 
   // === NAVIRES ===

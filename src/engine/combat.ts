@@ -19,9 +19,15 @@ import {
   getAdjacentSlots,
   getBoardCharacters,
   getValidTargets,
+  assertTargetable,
+  wornObjectFlag,
+  isSlotFree,
   healUnit,
   applyPermanentPvLoss,
   applyCaptainPermanentPvLoss,
+  controllerOf,
+  grantedAttackTraits,
+  attachmentsGrantedAttackTraits,
 } from "./board";
 import { spendVolonte, canAfford, grantKOBonus } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
@@ -41,7 +47,33 @@ function attackerNoDodge(state: GameState, attackerInstanceId: string): boolean 
     const obj = state.cards[objId];
     if (obj && getCardDef(obj.defId).id === "MG-013") return true; // Kabuto
   }
-  return false;
+  // Decision §8.65 — « Si equipee par Lucky Roux : attaques inesquivables ».
+  return wornObjectFlag(state, card.attachedObjects, def.name, "noDodge");
+}
+
+/**
+ * Decision §8.64 — « Les attaques de X ne peuvent etre ni esquivees ni
+ * bloquees » (RH-003 Yasopp). Le passif `attacksIgnoreShield` etait declare
+ * dans les types et sur la carte, mais AUCUN code ne le lisait : seul
+ * `spec.ignoreShield`, porte par une attaque speciale, atteignait
+ * `pendingAttack.ignoreShield`. Le pendant `noDodge`, lui, etait bien lu —
+ * donc la moitie du texte de Yasopp marchait et l'autre pas.
+ *
+ * Lu aussi sur les objets portes (RH-010 Gryphon, §8.65).
+ */
+function attackerIgnoresShield(state: GameState, attackerInstanceId: string): boolean {
+  const card = state.cards[attackerInstanceId];
+  if (card) {
+    const d = getCardDef(card.defId);
+    if (d.passive?.effects.some((e) => e.type === "attacksIgnoreShield")) return true;
+    return wornObjectFlag(state, card.attachedObjects, d.name, "ignoreShield");
+  }
+  // L'id synthetique `captain_<joueur>` : le capitaine porte des objets
+  // depuis §8.28, et Gryphon (RH-010) nomme Shanks, qui n'existe QUE comme
+  // capitaine — sans ce bras la clause serait injouable sur son porteur.
+  const pid = getAttackerOwner(state, attackerInstanceId);
+  const cap = state.players[pid].captain;
+  return wornObjectFlag(state, cap.attachedObjects ?? [], getCaptainDef(cap.defId).name, "ignoreShield");
 }
 
 /** Whether the attacker strips Furtif from targets it hits (Smoker). */
@@ -51,8 +83,12 @@ function attackerStripsStealth(state: GameState, attackerInstanceId: string): bo
   return getCardDef(card.defId).passive?.effects.some((e) => e.type === "stripStealthOnAttack") ?? false;
 }
 
-/** Conditional ATK bonus from a special when the target matches a trait/faction. */
-function conditionalAtkBonus(
+/**
+ * Conditional ATK bonus from a special when the target matches a trait/faction.
+ * Exported since decision §8.34(a): the captain's special attack reads it too
+ * (Rust `combat::conditional_atk_bonus`, `pub` for `captain.rs`).
+ */
+export function conditionalAtkBonus(
   state: GameState,
   cond: { vsTrait?: import("@/types").Trait; vsFaction?: import("@/types").Faction; amount: number } | undefined,
   targetInstanceId: string,
@@ -133,7 +169,7 @@ export function enforceTaunt(
       .map((e) => e.source)
       .find((src) => {
         const c = state.cards[src];
-        return !!c && c.zone === "board" && c.owner !== owner;
+        return !!c && c.zone === "board" && controllerOf(c) !== owner;
       });
   }
   if (bound === undefined) return;
@@ -143,6 +179,31 @@ export function enforceTaunt(
   const taunterCard = state.cards[bound];
   const taunterName = taunterCard ? getCardDef(taunterCard.defId).name : bound;
   throw new Error(`${attackerName} doit cibler ${taunterName} (Provocation)`);
+}
+
+/**
+ * Decision §8.61 — garde unique de legalite de cible a la declaration.
+ *
+ * `getValidTargets` decide ce que l'interface et l'IA PEUVENT proposer, mais
+ * aucune des fonctions `declare*` ne recoupait la cible recue : un appel direct
+ * au moteur passait outre. On enchaine donc ici les deux liens qui retirent une
+ * cible — l'Inciblable (BW-026) puis la Provocation (§8.38).
+ *
+ * Rust : `combat::enforce_target_legality`.
+ */
+export function enforceTargetLegality(
+  state: GameState,
+  attackerInstanceId: string,
+  targetInstanceId: string,
+  targetIsCaptain: boolean,
+  forSpecial: boolean
+): void {
+  const attacker = state.cards[attackerInstanceId];
+  const attackerSide = attacker
+    ? controllerOf(attacker)
+    : getAttackerOwner(state, attackerInstanceId);
+  assertTargetable(state, getOpponent(attackerSide), targetInstanceId, targetIsCaptain);
+  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, forSpecial);
 }
 
 /**
@@ -174,7 +235,9 @@ function resolveSupportSpecial(
   // Decision §8.38 — the audience split is part of the printed rule, so the
   // executor enforces it and not just the enumerator.
   if (needsTarget) {
-    const targetSide = targetCard ? targetCard.owner : owner;
+    // Decision §8.37 (`betrayal`): a borrowed body counts as an ally of its
+    // borrower for the turn, which is what `getValidActions` enumerates too.
+    const targetSide = targetCard ? controllerOf(targetCard) : owner;
     // Same precedence as `getValidActions`: a special carrying both audiences
     // (none shipped does) is enumerated against the enemy.
     if (supportHitsEnemy(spec)) {
@@ -289,7 +352,7 @@ export function declareBaseAttack(
 
   // Decision §8.38: a taunted unit may only declare against its taunter.
   // Checked before the trap so a refused declaration cannot eat it (§8.12).
-  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, false);
+  enforceTargetLegality(state, attackerInstanceId, targetInstanceId, targetIsCaptain, false);
 
   // Trigger trap on attacker if present
   const trapEffect = attacker.statusEffects.find((e) => e.type === "trap");
@@ -312,9 +375,17 @@ export function declareBaseAttack(
     }
   }
 
+  // Decision §8.37 (`betrayal`): a borrowed body attacks for whoever controls
+  // it this turn; `controllerOf` is `owner` for every card that is not on loan.
+  const actingOwner = controllerOf(attacker);
   const baseAction = def.baseAction;
   const atk = getEffectiveAtk(state, attackerInstanceId);
-  const attackTraits: AttackTrait[] = baseAction?.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = [...(baseAction?.attackTraits ?? [])];
+  // Decision §8.47 : le bras `AttackTrait` du `grantsTraits` d'un objet porté
+  // rejoint chaque attaque déclarée par son porteur.
+  for (const at of grantedAttackTraits(state, attackerInstanceId)) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   // Check equipped objects for granted element (e.g. Baril d'Eau grants "water")
   let attackElement = baseAction?.element;
@@ -331,7 +402,7 @@ export function declareBaseAttack(
   // Calculate raw damage against target
   let targetDef = 0;
   if (targetIsCaptain) {
-    const opponent = getOpponent(attacker.owner);
+    const opponent = getOpponent(actingOwner);
     const cap = state.players[opponent].captain;
     const capDef = getCaptainDef(cap.defId);
     targetDef = cap.flipped ? capDef.verso.def : capDef.recto.def;
@@ -356,9 +427,12 @@ export function declareBaseAttack(
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
     defHasNaturalHaki(def) ||
+    // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) : l'objet
+    // porte donne le Haki a son porteur, quel que soit le tour.
+    wornObjectFlag(state, attacker.attachedObjects, def.name, "grantsHaki") ||
     state.turnNumber >= 7 ||
     attackElement === "water" ||
-    !!state.players[attacker.owner].hakiThisTurn;
+    !!state.players[actingOwner].hakiThisTurn;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -371,6 +445,7 @@ export function declareBaseAttack(
     attackTraits,
     hasHaki: hasHaki ?? false,
     cannotBeDodged: attackerNoDodge(state, attackerInstanceId),
+    ignoreShield: attackerIgnoresShield(state, attackerInstanceId),
     immobilize: baseAction?.immobilize,
     stripStealth: baseAction?.stripStealth || attackerStripsStealth(state, attackerInstanceId),
   };
@@ -388,7 +463,7 @@ export function declareBaseAttack(
     : getCardDef(state.cards[targetInstanceId].defId).name;
   next = addLog(
     next,
-    attacker.owner,
+    actingOwner,
     `${def.name} attaque ${targetName} (ATK ${atk} vs DEF ${targetDef} = ${rawDamage} degats)`
   );
 
@@ -422,7 +497,7 @@ export function declareSpecialAttack(
     !def.specialAttack.transform &&
     (!def.specialAttack.isSupport || supportHitsEnemy(def.specialAttack))
   ) {
-    enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
+    enforceTargetLegality(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
   }
 
   // Trigger trap on attacker if present
@@ -448,19 +523,23 @@ export function declareSpecialAttack(
   const spec = def.specialAttack;
   if (!spec) throw new Error("Character has no special attack");
 
+  // Decision §8.37 (`betrayal`): a borrowed body attacks — and pays — for
+  // whoever controls it this turn; `controllerOf` is `owner` off loan.
+  const actingOwner = controllerOf(attacker);
+
   // Check 1x/game
   if (spec.oncePerGame && attacker.usedOnceAbilities.includes(spec.name)) {
     throw new Error("Already used this ability (1x/game)");
   }
 
-  if (!canAfford(state, attacker.owner, spec.cost)) {
+  if (!canAfford(state, actingOwner, spec.cost)) {
     throw new Error(`Cannot afford special (cost ${spec.cost})`);
   }
 
   // Self-transformation special (Chopper Monster Point): no target, no pending attack.
   if (spec.transform) {
     const t = spec.transform;
-    let tnext = spendVolonte(state, attacker.owner, spec.cost);
+    let tnext = spendVolonte(state, actingOwner, spec.cost);
     const curAtk = getEffectiveAtk(tnext, attackerInstanceId);
     tnext = produce(tnext, (draft) => {
       const c = draft.cards[attackerInstanceId];
@@ -476,27 +555,31 @@ export function declareSpecialAttack(
       // Self-KO countdown — KO'd after `turns` of the owner's turns (no Vol to opponent).
       c.statusEffects.push({ type: "selfKO", turnsRemaining: t.turns, damagePerTurn: 0, source: spec.name });
     });
-    return addLog(tnext, attacker.owner, `${def.name} : ${spec.name} ! ATK ${t.atk} pendant ${t.turns} tours, puis KO.`);
+    return addLog(tnext, actingOwner, `${def.name} : ${spec.name} ! ATK ${t.atk} pendant ${t.turns} tours, puis KO.`);
   }
 
   // Decision §8.38: a *support* special resolves its structured fields and never
   // builds a pending attack — there is nothing to counter, block or dodge.
   if (spec.isSupport) {
-    return resolveSupportSpecial(state, attacker.owner, attackerInstanceId, def.name, spec, targetInstanceId);
+    return resolveSupportSpecial(state, actingOwner, attackerInstanceId, def.name, spec, targetInstanceId);
   }
 
-  let next = spendVolonte(state, attacker.owner, spec.cost);
+  let next = spendVolonte(state, actingOwner, spec.cost);
 
   const baseAtk = getEffectiveAtk(state, attackerInstanceId);
-  const condBonus = conditionalAtkBonus(state, spec.conditionalBonus, targetInstanceId, targetIsCaptain, getOpponent(attacker.owner));
+  const condBonus = conditionalAtkBonus(state, spec.conditionalBonus, targetInstanceId, targetIsCaptain, getOpponent(actingOwner));
   const totalAtk = baseAtk + spec.atkBonus + condBonus;
 
   // "Touche 2 cibles" is approximated as a small Zone (target + adjacents).
   const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? []), ...(spec.twoTargets && !(spec.attackTraits ?? []).includes("zone") ? ["zone" as AttackTrait] : [])];
+  // Decision §8.47 : même fusion que sur l'attaque de base.
+  for (const at of grantedAttackTraits(state, attackerInstanceId)) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
-    const opponent = getOpponent(attacker.owner);
+    const opponent = getOpponent(actingOwner);
     const cap = next.players[opponent].captain;
     const capDef = getCaptainDef(cap.defId);
     targetDefVal = cap.flipped ? capDef.verso.def : capDef.recto.def;
@@ -525,9 +608,12 @@ export function declareSpecialAttack(
   // Haki to pierce Logia: natural Haki, Armament passive (T7+), or Water element (Rulebook v3.1 §7/§9).
   const hasHaki =
     defHasNaturalHaki(def) ||
+    // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) : l'objet
+    // porte donne le Haki a son porteur, quel que soit le tour.
+    wornObjectFlag(state, attacker.attachedObjects, def.name, "grantsHaki") ||
     state.turnNumber >= 7 ||
     spec.element === "water" ||
-    !!state.players[attacker.owner].hakiThisTurn;
+    !!state.players[actingOwner].hakiThisTurn;
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -540,7 +626,7 @@ export function declareSpecialAttack(
     attackTraits,
     hasHaki: hasHaki ?? false,
     cannotBeDodged: spec.cannotBeDodged || attackerNoDodge(state, attackerInstanceId),
-    ignoreShield: spec.ignoreShield,
+    ignoreShield: spec.ignoreShield || attackerIgnoresShield(state, attackerInstanceId),
     immobilize: spec.immobilize,
     sleep: spec.sleep,
     pushback: spec.pushback || (spec.pushbackSlots ?? 0) > 0,
@@ -567,7 +653,7 @@ export function declareSpecialAttack(
     : getCardDef(next.cards[targetInstanceId].defId).name;
   next = addLog(
     next,
-    attacker.owner,
+    actingOwner,
     `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 
@@ -604,7 +690,7 @@ export function declareFruitSpecialAttack(
   }
 
   // Decision §8.38: a taunted unit may only declare against its taunter.
-  enforceTaunt(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
+  enforceTargetLegality(state, attackerInstanceId, targetInstanceId, targetIsCaptain, true);
 
   const fruitCard = state.cards[fruitInstanceId];
   if (!fruitCard || !fruitCard.isAwakened) throw new Error("Fruit not awakened");
@@ -613,26 +699,35 @@ export function declareFruitSpecialAttack(
   const spec = fruitDef.fruitEffects?.awakening?.specialAttack;
   if (!spec) throw new Error("Fruit has no awakening special attack");
 
+  // Decision §8.37 (`betrayal`): the awakened-fruit special is a declaration
+  // like its two siblings — it acts for the body's controller.
+  const actingOwner = controllerOf(attacker);
+
   // Check once per game
   if (spec.oncePerGame && attacker.usedOnceAbilities.includes(spec.name)) {
     throw new Error("Already used this fruit ability (1x/game)");
   }
 
-  if (!canAfford(state, attacker.owner, spec.cost)) {
+  if (!canAfford(state, actingOwner, spec.cost)) {
     throw new Error(`Cannot afford fruit special (cost ${spec.cost})`);
   }
 
-  let next: GameState = spendVolonte(state, attacker.owner, spec.cost);
+  let next: GameState = spendVolonte(state, actingOwner, spec.cost);
 
   const def = getCardDef(attacker.defId);
   const baseAtk = getEffectiveAtk(next, attackerInstanceId);
   const totalAtk = baseAtk + spec.atkBonus;
 
-  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? [])];
+  // Decision §8.47 (suivi) : « chaque déclaration » veut dire les trois — la
+  // spéciale de fruit éveillé fusionne les mêmes mots-clés que ses deux sœurs.
+  for (const at of grantedAttackTraits(state, attackerInstanceId)) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
-    const opponent = getOpponent(attacker.owner);
+    const opponent = getOpponent(actingOwner);
     const cap = next.players[opponent].captain;
     const capDef = getCaptainDef(cap.defId);
     targetDefVal = cap.flipped ? capDef.verso.def : capDef.recto.def;
@@ -648,7 +743,10 @@ export function declareFruitSpecialAttack(
   const rawDamage = Math.max(0, totalAtk - targetDefVal);
 
   const hasHaki =
-    defHasNaturalHaki(def) || next.turnNumber >= 7 || spec.element === "water";
+    defHasNaturalHaki(def) ||
+    // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) : l'objet
+    // porte donne le Haki a son porteur, quel que soit le tour.
+    wornObjectFlag(state, attacker.attachedObjects, def.name, "grantsHaki") || next.turnNumber >= 7 || spec.element === "water";
 
   const pending: PendingAttack = {
     attackerId: attackerInstanceId,
@@ -660,7 +758,7 @@ export function declareFruitSpecialAttack(
     element: spec.element,
     attackTraits,
     hasHaki: hasHaki ?? false,
-    ignoreShield: spec.ignoreShield,
+    ignoreShield: spec.ignoreShield || attackerIgnoresShield(state, attackerInstanceId),
     immobilize: spec.immobilize,
     sleep: spec.sleep,
     pushback: spec.pushback,
@@ -686,7 +784,7 @@ export function declareFruitSpecialAttack(
     : getCardDef(next.cards[targetInstanceId].defId).name;
   next = addLog(
     next,
-    attacker.owner,
+    actingOwner,
     `${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 
@@ -755,7 +853,7 @@ export function declareCaptainFruitSpecialAttack(
 
   // Decision §8.38: every declaration path is bound by a taunt (inert while
   // nothing in the catalogue can taunt a captain).
-  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
+  enforceTargetLegality(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
 
   let next: GameState = spendVolonte(state, playerId, spec.cost);
 
@@ -765,7 +863,12 @@ export function declareCaptainFruitSpecialAttack(
   }
   const totalAtk = baseAtk + spec.atkBonus;
 
-  const attackTraits: AttackTrait[] = spec.attackTraits ?? [];
+  const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? [])];
+  // Decision §8.47 × §8.28 : le capitaine porteur lit le meme bras
+  // `AttackTrait` de `grantsTraits` que ses equivalents personnages.
+  for (const at of attachmentsGrantedAttackTraits(next, captain.attachedObjects ?? [])) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
 
   let targetDefVal = 0;
   if (targetIsCaptain) {
@@ -803,7 +906,7 @@ export function declareCaptainFruitSpecialAttack(
     element: spec.element,
     attackTraits,
     hasHaki,
-    ignoreShield: spec.ignoreShield,
+    ignoreShield: spec.ignoreShield || attackerIgnoresShield(state, `captain_${playerId}`),
     immobilize: spec.immobilize,
     sleep: spec.sleep,
     pushback: spec.pushback,
@@ -911,6 +1014,12 @@ export function applyCounterCancel(state: GameState, counterInstanceId: string):
     }
   }
 
+  // Lu AVANT que le `produce` ne vide `pendingAttack` : c'est la cible de
+  // l'attaque en cours qui devient Inciblable (decision §8.61).
+  const protectedTarget = ce.type === "untargetable"
+    ? { id: state.pendingAttack.targetId, isCaptain: state.pendingAttack.targetIsCaptain }
+    : null;
+
   let next = spendVolonte(state, owner, cdef.cost);
   next = produce(next, (draft) => {
     const p = draft.players[owner];
@@ -918,8 +1027,32 @@ export function applyCounterCancel(state: GameState, counterInstanceId: string):
     draft.cards[counterInstanceId].zone = "graveyard";
     p.graveyard.push(counterInstanceId);
     draft.pendingAttack = null;
+
+    // Decision §8.61 — jusqu'ici le bras `untargetable` ne se distinguait en
+    // rien d'un `cancel` : l'attaque tombait et la cible ne gardait aucune
+    // trace, donc la deuxieme attaque du meme tour la touchait. On pose
+    // maintenant un vrai statut, purge au debut du tour suivant.
+    if (protectedTarget) {
+      const holder = protectedTarget.isCaptain
+        ? draft.players[owner].captain
+        : draft.cards[protectedTarget.id];
+      if (holder && !holder.statusEffects.some((e) => e.type === "untargetable")) {
+        holder.statusEffects.push({
+          type: "untargetable",
+          turnsRemaining: 1,
+          damagePerTurn: 0,
+          source: counterInstanceId,
+        });
+      }
+    }
   });
-  next = addLog(next, owner, `${cdef.name} : attaque annulée !`);
+  next = addLog(
+    next,
+    owner,
+    protectedTarget
+      ? `${cdef.name} : attaque annulée — la cible est Inciblable jusqu'à la fin du tour.`
+      : `${cdef.name} : attaque annulée !`
+  );
 
   if (ce.type === "cancel" && ce.selfCaptainDamage) {
     next = produce(next, (draft) => { draft.players[owner].captain.currentPv -= ce.selfCaptainDamage!; });
@@ -1158,10 +1291,16 @@ export function resolveAttack(state: GameState): GameState {
       if (pending.pushback && !(tdef.passive?.effects.some((e) => e.type === "immuneImpact"))) {
         const back: Record<string, string> = { V1: "A1", V2: "A2", V3: "A3" };
         const slot = tgt.slot;
-        if (slot && back[slot] && next.players[tgt.owner].board[back[slot] as keyof typeof next.players.player1.board] === null) {
+        // Decision §8.37 (`betrayal`): the cell a body occupies belongs to its
+        // *controller*, so that is the board the push reads and writes.
+        const tgtSide = controllerOf(tgt);
+        // §8.31 : la destination de la repoussee est toujours une case A*, et
+        // `flipCaptain` accepte les six cases — sans ce test, un capitaine
+        // engage en A1 se faisait recouvrir par le personnage repousse.
+        if (slot && back[slot] && isSlotFree(next, tgtSide, back[slot] as import("@/types").Slot)) {
           const dest = back[slot];
           next = produce(next, (draft) => {
-            const p = draft.players[tgt.owner];
+            const p = draft.players[tgtSide];
             p.board[slot as keyof typeof p.board] = null;
             p.board[dest as keyof typeof p.board] = pending.targetId;
             draft.cards[pending.targetId].slot = dest as import("@/types").Slot;
@@ -1281,7 +1420,9 @@ function getAttackerOwner(state: GameState, attackerId: string): PlayerId {
   }
   const card = state.cards[attackerId];
   if (!card) throw new Error(`Attacker not found: ${attackerId}`);
-  return card.owner;
+  // Decision §8.37 (`betrayal`): `controlledBy` first, `owner` after — a
+  // borrowed body attacks (and spends Volonte) for whoever controls it.
+  return controllerOf(card);
 }
 
 function applyCaptainDamage(
@@ -1299,9 +1440,16 @@ function applyCaptainDamage(
     const capDef = getCaptainDef(cap.defId);
     const { captainHasTraitNow } = require("./captain");
     const isLogia = captainHasTraitNow(state, opponentId, "logia") as boolean;
-    if (isLogia && !pending.hasHaki && pending.rawDamage > 0) {
+    // Decision §8.40 — une fois par tour, exactement comme un personnage.
+    // Le TS laissait un capitaine Logia ignorer TOUTES les attaques sans Haki
+    // du tour : le Rust (reference) compte la premiere et laisse passer les
+    // suivantes, avec un test dedie.
+    if (isLogia && !pending.hasHaki && pending.rawDamage > 0 && !cap.logiaUsedThisTurn) {
+      const marked = produce(state, (draft) => {
+        draft.players[opponentId].captain.logiaUsedThisTurn = true;
+      });
       return addLog(
-        state,
+        marked,
         attackerOwner,
         `⚠ ${capDef.name} : INTANGIBILITE LOGIA ! L'attaque passe a travers. Utilisez le Haki (T7+) ou l'Eau pour le toucher.`
       );
@@ -1332,6 +1480,30 @@ function applyCharacterDamage(
   if (!target) return state;
 
   const targetDef = getCardDef(target.defId);
+
+  // Decision §8.67 — MG-018 Dial d'Impact : arme, il absorbe entierement la
+  // prochaine attaque subie et la renvoie a l'attaquant. Le texte imprime
+  // renvoie « a votre prochain tour » ; la detente est ramenee a l'instant de
+  // l'absorption, faute de quoi le montant devrait survivre a un changement de
+  // tour ET a une seconde selection de cible — compression assumee et
+  // consignee, le montant et la cible restant ceux du texte.
+  const reflect = target.statusEffects.find((e) => e.type === "reflect");
+  if (reflect && pending.rawDamage > 0) {
+    const amount = pending.rawDamage;
+    const attackerOwner = getAttackerOwner(state, pending.attackerId);
+    let next = produce(state, (draft) => {
+      const t = draft.cards[pending.targetId];
+      t.statusEffects = t.statusEffects.filter((e) => e.type !== "reflect");
+      const a = draft.cards[pending.attackerId];
+      if (a) a.currentPv -= amount;
+    });
+    next = addLog(next, target.owner, `Dial d'Impact : ${amount} degats absorbes puis renvoyes !`);
+    if (state.cards[pending.attackerId]) {
+      const an = getCardDef(state.cards[pending.attackerId].defId).name;
+      next = addLog(next, attackerOwner, `${an} encaisse ${amount} degats (Impact).`);
+    }
+    return next;
+  }
 
   // Logia check (includes traits from equipped Devil Fruits)
   const isLogia = hasTrait(state, pending.targetId, "logia");

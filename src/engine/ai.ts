@@ -114,7 +114,11 @@ function scoreAction(
     case "baseAttack":
     case "specialAttack":
       return scoreAttack(state, playerId, action);
+    // Decision §8.34: the captain's special attack rides on `captainAttack`
+    // (`isSpecial`), and its `surcharge` on `useSurcharge` — both are captain
+    // swings and are scored like one.
     case "captainAttack":
+    case "useSurcharge":
       return scoreAttack(state, playerId, action);
     // Decision §8.19: an awakened-fruit swing is one of the strongest attacks in
     // the game; the switch omitted it, so it scored 0 — below `moveCharacter`.
@@ -207,7 +211,7 @@ function scoreAttack(
   // old `"attackerInstanceId" in action` guard skipped the whole KO block and a
   // lethal captain swing scored a flat 5/20. The attacker's ATK for a captain
   // attack comes from the **active** face plus the captain's ATK modifiers.
-  const isCaptainAttack = action.type === "captainAttack";
+  const isCaptainAttack = action.type === "captainAttack" || action.type === "useSurcharge";
   if (("attackerInstanceId" in action || isCaptainAttack) && "targetInstanceId" in action) {
     if (!("targetIsCaptain" in action && action.targetIsCaptain)) {
       const targetId = (action as { targetInstanceId: string }).targetInstanceId;
@@ -233,7 +237,19 @@ function scoreAttack(
 
   // Special attacks are big commitments — slightly lower base score
   // (§8.19: `fruitSpecialAttack` is a special attack too).
-  if (action.type === "specialAttack" || action.type === "fruitSpecialAttack") {
+  //
+  // ÉCART ASSUMÉ avec `ai.rs` (§8.34 × §8.19) : le Rust liste ici les variantes
+  // `SpecialAttack | FruitSpecialAttack` et oublie la spéciale du capitaine,
+  // arrivée plus tard avec §8.34. Or elle *est* une spéciale — `isSpecial` sur
+  // l'attaque en attente, un coût en Volonté, +4 ATK — et sans ce bonus elle
+  // score exactement comme l'attaque de base du capitaine, gratuite : à égalité
+  // `chooseByScore` garde la première, donc l'IA ne la joue JAMAIS (mesuré :
+  // 1636 propositions, 0 coup joué sur 40 parties). C'est le bug que §8.19 a
+  // corrigé pour `fruitSpecialAttack` — « scoring them below `moveCharacter` is
+  // a scoring bug, not a design choice » — appliqué au dernier porteur.
+  const isCaptainSpecial =
+    (action.type === "captainAttack" && !!action.isSpecial) || action.type === "useSurcharge";
+  if (action.type === "specialAttack" || action.type === "fruitSpecialAttack" || isCaptainSpecial) {
     score += 5; // But they do more damage
   }
 

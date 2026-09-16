@@ -2,9 +2,43 @@
 
 import type { CaptainInstance, CaptainDef, GameState, GameAction, SpecialAttack, BaseAction } from "@/types";
 import { getCardDef } from "@/engine/cardRegistry";
+import { onceSurchargeKey } from "@/engine/captain";
 import { faction, hpColor, TRAIT_LABEL } from "@/data/cardArt";
 import { useFlipZoom } from "@/lib/useFlipZoom";
 import StatusBadges from "./StatusBadges";
+
+const ELEMENT_FR: Record<string, string> = {
+  fire: "Feu", water: "Eau", thunder: "Foudre", ice: "Glace", sand: "Sable", poison: "Poison",
+};
+const ATK_TRAIT_FR: Record<string, string> = {
+  impact: "Impact", zone: "Zone", piercing: "Perçant", total: "Totale",
+};
+
+/**
+ * Effets notables d'une attaque, en clair. Sans ça le joueur lit « Kong Gun »
+ * ou « Ground Death » sans savoir ce que ça fait ni ce que ça coûte.
+ */
+function effectTags(a: {
+  element?: string; attackTraits?: string[]; oncePerGame?: boolean;
+  ignoreShield?: boolean; ignoreDef?: number | boolean; twoTargets?: boolean;
+  permanentPvLoss?: number; noHeal?: boolean; immobilize?: boolean;
+  sleep?: boolean; pushback?: boolean; cannotBeDodged?: boolean;
+}): string[] {
+  const t: string[] = [];
+  if (a.element) t.push(ELEMENT_FR[a.element] ?? a.element);
+  for (const tr of a.attackTraits ?? []) t.push(ATK_TRAIT_FR[tr] ?? tr);
+  if (a.twoTargets) t.push("2 cibles");
+  if (a.ignoreShield) t.push("ignore Bouclier");
+  if (a.ignoreDef) t.push("ignore DEF");
+  if (a.permanentPvLoss) t.push(`−${a.permanentPvLoss} PV max définitif`);
+  if (a.noHeal) t.push("bloque les soins");
+  if (a.immobilize) t.push("immobilise");
+  if (a.sleep) t.push("endort");
+  if (a.pushback) t.push("repousse");
+  if (a.cannotBeDodged) t.push("inesquivable");
+  if (a.oncePerGame) t.push("1×/partie");
+  return t;
+}
 
 interface CaptainMenuProps {
   captain: CaptainInstance;
@@ -14,10 +48,16 @@ interface CaptainMenuProps {
   isYou: boolean;
   onFlip: () => void;
   onAttack: () => void;
+  /** Decision §8.34(a): aim the captain's signature special attack. */
+  onSpecialAttack: () => void;
+  /** Decision §8.34(b): aim the active face's `surcharge`. */
+  onSurcharge: () => void;
   /** Decision §8.28 (follow-up): awaken a fruit the captain wears. */
   onAwakenFruit: (fruitInstanceId: string) => void;
   /** Decision §8.28 (follow-up): aim the awakened fruit's special attack. */
   onFruitSpecial: (fruitInstanceId: string) => void;
+  /** Decision §8.67 — active la capacité d'un objet porté par le Capitaine. */
+  onActivateObject: (objectInstanceId: string, needsTarget: boolean) => void;
   onKingHaki: () => void;
   onClose: () => void;
   originRect?: DOMRect | null;
@@ -43,7 +83,8 @@ function AbilityRow({ a, accent, kind }: { a: SpecialAttack | BaseAction; accent
 }
 
 export default function CaptainMenu({
-  captain, def, state, validActions, isYou, onFlip, onAttack, onAwakenFruit, onFruitSpecial, onKingHaki, onClose, originRect,
+  captain, def, state, validActions, isYou, onFlip, onAttack, onSpecialAttack, onSurcharge,
+  onAwakenFruit, onFruitSpecial, onActivateObject, onKingHaki, onClose, originRect,
 }: CaptainMenuProps) {
   const zoomRef = useFlipZoom<HTMLDivElement>(originRect);
   const fac = faction(def.faction);
@@ -53,13 +94,26 @@ export default function CaptainMenu({
   const edge = captain.flipped ? "var(--color-target)" : "var(--color-gold)";
 
   const canFlip = isYou && !captain.flipped && validActions.some((a) => a.type === "flipCaptain");
-  const canAttack = isYou && captain.flipped && validActions.some((a) => a.type === "captainAttack");
+  const canAttack =
+    isYou && captain.flipped && validActions.some((a) => a.type === "captainAttack" && !a.isSpecial);
+  // Decision §8.34 — la grosse attaque du capitaine (★ du verso) et la
+  // surcharge sont deux actions a part entiere : elles doivent etre visibles,
+  // chiffrees, et dire pourquoi elles sont grisees.
+  const canSpecial =
+    isYou && captain.flipped && validActions.some((a) => a.type === "captainAttack" && a.isSpecial);
+  const canSurcharge = isYou && captain.flipped && validActions.some((a) => a.type === "useSurcharge");
   const canKingHaki = isYou && validActions.some((a) => a.type === "useHaki" && a.hakiType === "king");
 
   // Decision §8.28 (follow-up) — the equipment the captain wears (the three
   // signature SR Devil Fruits are printed "Équipable sur Luffy / Crocodile /
   // Akainu", names only a captain carries), with its two captain-side actions:
   // the awakening and, once awakened, the fruit's special attack.
+  // ATK réellement en vigueur : la base imprimée PLUS les modificateurs
+  // (le bonus d'éveil d'un fruit en est un). Afficher la base seule donnait un
+  // chiffre faux dès qu'un fruit était éveillé.
+  const capAtkNow =
+    def.verso.atk + (captain.modifiers ?? []).reduce((n, m) => n + (m.stat === "atk" ? m.amount : 0), 0);
+
   const gear = (captain.attachedObjects ?? [])
     .map((id) => state.cards[id])
     .filter((c): c is NonNullable<typeof c> => !!c);
@@ -75,7 +129,23 @@ export default function CaptainMenu({
 
   const isFrozen = captain.statusEffects.some((e) => e.type === "freeze");
   const isImmob = captain.statusEffects.some((e) => e.type === "immobilize");
-  const attackReason = isFrozen ? "Gelé !" : isImmob ? "Immobilisé !" : captain.tapped ? "Incliné" : captain.deployedTurn === state.turnNumber ? "Vient d'être engagé" : null;
+  const isAsleep = captain.statusEffects.some((e) => e.type === "sleep");
+  const attackReason = isFrozen ? "Gelé !" : isImmob ? "Immobilisé !" : isAsleep ? "Endormi !" : captain.tapped ? "Incliné" : captain.deployedTurn === state.turnNumber ? "Vient d'être engagé" : null;
+
+  // Decision §8.34 — le motif exact du refus, dans l'ordre ou le moteur le
+  // verifie (`declareCaptainSpecAttack`) : verso requis, incline / gele /
+  // immobilise / endormi / mal de terre, action deja depensee, 1x/partie,
+  // Volonte. Un bouton grise sans motif laisse le joueur deviner.
+  const volonte = state.players[captain.owner].volonte;
+  function powerReason(spec: SpecialAttack, onceKey: string, ok: boolean): string | null {
+    if (ok) return null;
+    if (!captain.flipped) return "Capitaine non engagé (verso requis)";
+    if (attackReason) return attackReason;
+    if (captain.usedSpecialAttack) return "A déjà agi ce tour";
+    if (spec.oncePerGame && captain.usedOnceAbilities.includes(onceKey)) return "Déjà utilisé (1x/partie)";
+    if (volonte < spec.cost) return `Volonté insuffisante (${volonte}/${spec.cost})`;
+    return "Pas de cible";
+  }
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-40 p-4" onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
@@ -174,9 +244,45 @@ export default function CaptainMenu({
                       <button
                         onClick={() => onFruitSpecial(obj.instanceId)}
                         disabled={!ok}
-                        className="btn btn-danger action-btn px-3 py-1.5 text-[11px]"
+                        className="btn btn-danger action-btn px-3 py-1.5 text-[11px] text-left"
                       >
                         ★ {fruitSpec.name} ({fruitSpec.cost} Vol.){reason ? ` — ${reason}` : ""}
+                        <span className="block font-spectral italic normal-case text-[9.5px] leading-snug" style={{ color: "rgba(255,255,255,.85)" }}>
+                          +{fruitSpec.atkBonus} ATK → {capAtkNow + fruitSpec.atkBonus} ATK
+                          {effectTags(fruitSpec).length > 0 ? ` · ${effectTags(fruitSpec).join(" · ")}` : ""}
+                          {fruitSpec.description ? ` · ${fruitSpec.description}` : ""}
+                        </span>
+                      </button>
+                    );
+                  })()}
+                  {/* Decision §8.67 — la ligne activable d'un objet porte par
+                      le Capitaine (Gryphon nomme Shanks, §8.62 suite). */}
+                  {(() => {
+                    const fx = objDef.objectEffects;
+                    const act = fx?.activated ?? (fx?.grantsAttack
+                      ? { name: fx.grantsAttack.name, cost: fx.grantsAttack.cost, target: "enemy" as const, oncePerGame: false }
+                      : null);
+                    if (!act) return null;
+                    const vol = state.players[captain.owner].volonte;
+                    const offered = validActions.filter(
+                      (a) => a.type === "activateObject" && a.objectInstanceId === obj.instanceId
+                    );
+                    const used = !!act.oncePerGame && captain.usedOnceAbilities.includes(`obj_${objDef.id}`);
+                    const reason = used
+                      ? "Déjà utilisé (1x/partie)"
+                      : vol < act.cost
+                        ? `Volonté insuffisante (${vol}/${act.cost})`
+                        : offered.length === 0
+                          ? "Aucune cible"
+                          : null;
+                    return (
+                      <button
+                        onClick={() => onActivateObject(obj.instanceId, act.target === "enemy")}
+                        disabled={reason !== null}
+                        className="btn action-btn px-3 py-1.5 text-[11px] text-left"
+                        style={{ background: "linear-gradient(180deg,#38bdf8,#0284c7)", color: "#fff" }}
+                      >
+                        ⚡ {act.name} ({act.cost} Vol.){act.oncePerGame ? " · 1x/partie" : ""}{reason ? ` — ${reason}` : ""}
                       </button>
                     );
                   })()}
@@ -204,8 +310,44 @@ export default function CaptainMenu({
             )}
             {captain.flipped && (
               <button onClick={onAttack} disabled={!canAttack} className="btn btn-danger action-btn px-3 py-2 text-xs">
-                ⚔ Attaquer{!canAttack && attackReason ? ` — ${attackReason}` : ""}
+                ⚔ {def.verso.baseAction.name}{!canAttack && attackReason ? ` — ${attackReason}` : ""}
               </button>
+            )}
+            {/* Decision §8.34(a) — la grosse attaque du capitaine. */}
+            {captain.flipped && (() => {
+              const spec = def.verso.specialAttack;
+              const reason = powerReason(spec, spec.name, canSpecial);
+              return (
+                <button onClick={onSpecialAttack} disabled={!canSpecial} className="btn btn-gold action-btn px-3 py-2 text-xs">
+                  ★ {spec.name} ({spec.cost} Vol.){reason ? ` — ${reason}` : ""}
+                  <span className="block font-spectral italic normal-case text-[9.5px] text-black/70 leading-snug">
+                    +{spec.atkBonus} ATK → {capAtkNow + spec.atkBonus} ATK
+                    {effectTags(spec).length > 0 ? ` · ${effectTags(spec).join(" · ")}` : ""}
+                    {spec.description ? ` · ${spec.description}` : ""}
+                  </span>
+                </button>
+              );
+            })()}
+            {/* Decision §8.34(b) — la surcharge de la face active, si la carte en imprime une. */}
+            {captain.flipped && def.verso.surcharge && (() => {
+              const sur = def.verso.surcharge!;
+              const reason = powerReason(sur, onceSurchargeKey(sur.name), canSurcharge);
+              return (
+                <button onClick={onSurcharge} disabled={!canSurcharge} className="btn btn-gold action-btn px-3 py-2 text-xs">
+                  ⚡ {sur.name} ({sur.cost} Vol.){reason ? ` — ${reason}` : ""}
+                  <span className="block font-spectral italic normal-case text-[9.5px] text-black/70 leading-snug">
+                    +{sur.atkBonus} ATK → {capAtkNow + sur.atkBonus} ATK
+                    {effectTags(sur).length > 0 ? ` · ${effectTags(sur).join(" · ")}` : ""}
+                    {sur.description ? ` · ${sur.description}` : ""}
+                  </span>
+                </button>
+              );
+            })()}
+            {!captain.flipped && (
+              <div className="font-spectral italic text-[10px] text-white/60 leading-snug px-1">
+                Le Capitaine recto ne peut pas attaquer (Rulebook v3.1 §2.1) : engagez-le pour
+                débloquer {def.verso.baseAction.name} et ★ {def.verso.specialAttack.name}.
+              </div>
             )}
             {canKingHaki && (
               <button onClick={onKingHaki} className="btn btn-gold action-btn px-3 py-2 text-xs">👑 Haki des Rois</button>

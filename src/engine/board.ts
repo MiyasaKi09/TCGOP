@@ -6,7 +6,7 @@ import type {
   CardInstance,
   Trait,
 } from "@/types";
-import type { CardDef, CaptainDef, ObjectSubtype } from "@/types";
+import type { CardDef, CaptainDef, ObjectSubtype, AttackTrait } from "@/types";
 import { getCardDef, getCaptainDef } from "./cardRegistry";
 import { spendVolonte, canAfford } from "./volonte";
 import { addLog, getOpponent } from "./gameState";
@@ -15,6 +15,29 @@ import { ADJACENCY, FRONT_SLOTS, BACK_SLOTS, ALL_SLOTS } from "./utils";
 // ============================================================
 // Queries
 // ============================================================
+
+/**
+ * Decision §8.37 (`betrayal`, BW-024) — who *controls* a body right now.
+ *
+ * `BW-024` Trahison lends an enemy character for one turn: the loan writes
+ * `controlledBy`, never `owner`, "so KO bonuses and win conditions keep
+ * pointing at the original owner". Every turn-scoped question (who may attack
+ * with it, whose enemies are its targets, which board cell holds it, who may
+ * move it) reads this; every ownership question (graveyard, KO bonus, win
+ * condition, equipment) keeps reading `owner`.
+ * Rust: `CardInstance::controller()`.
+ */
+export function controllerOf(card: CardInstance): PlayerId {
+  return card.controlledBy ?? card.owner;
+}
+
+/**
+ * Decision §8.37 (`embargo`, MR-027) — "L'adversaire ne peut ni équiper ni
+ * jouer de Navire à son prochain tour." Rust: `PlayerState::is_embargoed()`.
+ */
+export function isEmbargoed(state: GameState, playerId: PlayerId): boolean {
+  return (state.players[playerId].embargoTurns ?? 0) > 0;
+}
 
 /** Get all characters on the board for a player */
 export function getBoardCharacters(
@@ -44,12 +67,33 @@ export function getCharacterInSlot(
 }
 
 /** Get empty slots for a player */
+/**
+ * Decision §8.31 — un capitaine engage occupe SA case.
+ *
+ * Le moteur web ne comptait que `player.board`, donc un personnage pouvait
+ * etre deploye, deplace ou invoque sur la case ou se tenait deja le capitaine :
+ * deux unites au meme endroit, avec toutes les lectures d'adjacence faussees.
+ * `flipCaptain` refusait pourtant deja une case occupee, donc l'asymetrie
+ * etait un bug, pas une regle. Rust : `board::captain_occupies`.
+ */
+export function captainOccupies(state: GameState, playerId: PlayerId, slot: Slot): boolean {
+  const cap = state.players[playerId].captain;
+  return cap.flipped && cap.slot === slot;
+}
+
+/**
+ * La seule question a poser avant d'ecrire dans une case.
+ * Rust : `board::is_slot_free`.
+ */
+export function isSlotFree(state: GameState, playerId: PlayerId, slot: Slot): boolean {
+  return state.players[playerId].board[slot] === null && !captainOccupies(state, playerId, slot);
+}
+
 export function getEmptySlots(
   state: GameState,
   playerId: PlayerId
 ): Slot[] {
-  const player = state.players[playerId];
-  return ALL_SLOTS.filter((s) => player.board[s] === null) as Slot[];
+  return ALL_SLOTS.filter((s) => isSlotFree(state, playerId, s as Slot)) as Slot[];
 }
 
 /** Get the slot of a card instance on the board */
@@ -162,8 +206,84 @@ export function attachmentsGrantTrait(
     const objCard = state.cards[objId];
     if (!objCard) continue;
     const objDef = getCardDef(objCard.defId);
+    // Decision §8.47 : `CardDef.grantsTraits` est lu. Le champ TS est une union
+    // `(Trait | AttackTrait)[]` là où le Rust porte un `GrantedTrait` à deux
+    // bras ; la seule lecture déterministe côté TS est « la valeur est-elle un
+    // `Trait` ? » — ce qui reproduit exactement les données livrées, où les
+    // trois fusils `RH-011/012/013` portent `GrantedTrait::Trait(Trait::Range)`.
+    // Ici `trait` est typé `Trait`, donc l'appartenance suffit : une entrée
+    // purement `AttackTrait` (zone / total / impact) ne peut jamais l'égaler.
+    if (objDef.grantsTraits?.includes(trait)) return true;
     if (objDef.fruitEffects?.base.grantsTraits?.includes(trait)) return true;
     if (objCard.isAwakened && objDef.fruitEffects?.awakening?.grantsTraits?.includes(trait)) return true;
+  }
+  return false;
+}
+
+/** Les huit `Trait` du jeu — le bras « trait du porteur » de `grantsTraits`. */
+const ALL_TRAITS = ["shield", "range", "stealth", "rush", "cursed", "logia", "piercing", "conqueror"] as const;
+
+/**
+ * Decision §8.47 — le bras `AttackTrait` de `grantsTraits` des objets portés :
+ * les mots-clés qui décrivent l'*attaque* et non l'unité (`zone`, `total`,
+ * `impact`), fusionnés dans les `attackTraits` de **chaque** déclaration du
+ * porteur (base, spéciale, spéciale de fruit éveillé — et les mêmes pour un
+ * capitaine porteur, §8.28). En ordre d'attachement, dédupliqués.
+ * Rust: `board::attachments_granted_attack_traits`.
+ */
+export function attachmentsGrantedAttackTraits(
+  state: GameState,
+  attached: readonly string[],
+  bearerName?: string
+): AttackTrait[] {
+  const out: AttackTrait[] = [];
+  for (const objId of attached) {
+    const objCard = state.cards[objId];
+    if (!objCard) continue;
+    const od = getCardDef(objCard.defId);
+    for (const g of od.grantsTraits ?? []) {
+      if ((ALL_TRAITS as readonly string[]).includes(g)) continue; // bras « trait du porteur »
+      if (!out.includes(g as AttackTrait)) out.push(g as AttackTrait);
+    }
+    // Decision §8.65 — « Si equipee par Yasopp : … et Percant ». Le trait n'est
+    // accorde qu'au porteur nomme, donc il ne peut pas vivre dans
+    // `grantsTraits`, qui vaut pour tout le monde.
+    const wb = od.objectEffects?.wielder;
+    if (wb && bearerName && bearerName.includes(wb.name)) {
+      for (const t of wb.attackTraits ?? []) if (!out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+/** [`attachmentsGrantedAttackTraits`] pour un personnage du plateau. */
+export function grantedAttackTraits(state: GameState, instanceId: string): AttackTrait[] {
+  const card = state.cards[instanceId];
+  if (!card) return [];
+  return attachmentsGrantedAttackTraits(state, card.attachedObjects, getCardDef(card.defId).name);
+}
+
+/**
+ * Decision §8.65 — les drapeaux d'objet qui valent pour TOUT porteur
+ * (`ignoreShield`, `grantsHaki`, `ignoreStealth`) ou pour le porteur nomme
+ * (`noDodge`). Un seul lecteur, pour les personnages comme pour le capitaine.
+ */
+export function wornObjectFlag(
+  state: GameState,
+  attached: readonly string[],
+  bearerName: string,
+  flag: "ignoreShield" | "grantsHaki" | "ignoreStealth" | "noDodge"
+): boolean {
+  for (const objId of attached) {
+    const obj = state.cards[objId];
+    if (!obj) continue;
+    const fx = getCardDef(obj.defId).objectEffects;
+    if (!fx) continue;
+    if (flag === "noDodge") {
+      if (fx.wielder?.noDodge && bearerName.includes(fx.wielder.name)) return true;
+    } else if (fx[flag]) {
+      return true;
+    }
   }
   return false;
 }
@@ -184,6 +304,32 @@ export function hasTrait(
 }
 
 /**
+ * Decision §8.10 — un seul selecteur de portee pour `deployCost` et
+ * `recalculatePassiveBuffs` : le premier mot de faction trouve dans le texte
+ * (minuscule) gagne, et un texte qui n'en nomme aucun vise tout le monde.
+ *
+ * Le TS testait « mugiwara » puis « marine » et retombait sur « tout le monde »
+ * sinon — donc « Vos Baroque Works gagnent … » buffait TOUS les personnages.
+ * Rust : `board::ship_passive_scope`.
+ */
+export type ShipScope = { kind: "all" } | { kind: "tag"; tag: string };
+
+export function shipPassiveScope(desc: string): ShipScope {
+  const lower = desc.toLowerCase();
+  let best: { at: number; tag: string } | null = null;
+  for (const tag of ["mugiwara", "marine", "baroque"]) {
+    const at = lower.indexOf(tag);
+    if (at >= 0 && (best === null || at < best.at)) best = { at, tag };
+  }
+  return best ? { kind: "tag", tag: best.tag } : { kind: "all" };
+}
+
+/** `def` appartient-il a cette portee ? Rust : `ShipScope::matches`. */
+export function shipScopeMatches(scope: ShipScope, def: CardDef): boolean {
+  return scope.kind === "all" || (def.tags?.includes(scope.tag) ?? false);
+}
+
+/**
  * Decision §8.5 — the maximum PV of a board instance: the printed `def.pv`
  * minus its permanent max-PV loss. `undefined` when the definition has no `pv`.
  * Rust: `board::max_pv_of`.
@@ -193,7 +339,14 @@ export function maxPvOf(state: GameState, instanceId: string): number | undefine
   if (!card) return undefined;
   const printed = getCardDef(card.defId).pv;
   if (printed === undefined) return undefined;
-  return printed - (card.pvMaxLoss ?? 0);
+  // Decision §8.63 — un bonus de PV est un bonus de MAXIMUM. Sans cette somme,
+  // le « +1 PV » d'un navire (pose au deploiement comme en continu) montait les
+  // PV courants sans monter le plafond, donc un soin ne pouvait jamais le
+  // rendre apres degats.
+  const pvBonus = card.modifiers
+    .filter((m) => m.stat === "pv")
+    .reduce((acc, m) => acc + m.amount, 0);
+  return printed + pvBonus - (card.pvMaxLoss ?? 0);
 }
 
 /**
@@ -424,11 +577,7 @@ export function deployCost(
     const sd = getCardDef(state.cards[player.activeShip].defId);
     const sp = (sd.shipPassive ?? "").toLowerCase();
     if ((sp.includes("cout") || sp.includes("coût")) && sp.includes("-1")) {
-      const factionOk =
-        (sp.includes("marine") && def.faction === "marine") ||
-        (sp.includes("mugiwara") && (def.tags?.includes("mugiwara") ?? false)) ||
-        (!sp.includes("marine") && !sp.includes("mugiwara"));
-      if (factionOk) cost -= 1;
+      if (shipScopeMatches(shipPassiveScope(sp), def)) cost -= 1;
     }
   }
   return Math.max(1, cost);
@@ -457,7 +606,8 @@ export function deployCharacter(
   if (def.type !== "character") throw new Error("Not a character card");
 
   const player = state.players[playerId];
-  if (player.board[slot] !== null) throw new Error(`Slot ${slot} is occupied`);
+  // §8.31 : « libre » inclut l'absence du capitaine engage.
+  if (!isSlotFree(state, playerId, slot)) throw new Error(`Slot ${slot} is occupied`);
 
   const cost = deployCost(state, playerId, def);
   if (!canAfford(state, playerId, cost)) {
@@ -485,11 +635,7 @@ export function deployCharacter(
       const sd = getCardDef(draft.cards[p.activeShip].defId);
       const sp = (sd.shipPassive ?? "").toLowerCase();
       if (sp.includes("deploiement") || sp.includes("déploiement")) {
-        const factionOk =
-          (sp.includes("mugiwara") && (def.tags?.includes("mugiwara") ?? false)) ||
-          (sp.includes("marine") && def.faction === "marine") ||
-          (!sp.includes("mugiwara") && !sp.includes("marine"));
-        if (factionOk) {
+        if (shipScopeMatches(shipPassiveScope(sp), def)) {
           const pv = sp.match(/\+(\d+)\s*pv/);
           const dfb = sp.match(/\+(\d+)\s*def/);
           if (pv) { c.currentPv += parseInt(pv[1]); c.modifiers.push({ id: `shipdep_pv_${instanceId}`, stat: "pv", amount: parseInt(pv[1]), source: `ship_${sd.id}`, duration: "permanent" }); }
@@ -512,7 +658,13 @@ export function deployCharacter(
     const delta = bestAtk - (def.atk ?? 0);
     if (delta > 0) {
       next = produce(next, (d) => {
-        d.cards[instanceId].modifiers.push({ id: `manemane_${instanceId}`, stat: "atk", amount: delta, source: `passive_${instanceId}`, duration: "permanent" });
+        // Decision §8.1/§8.2 (même classe de bug) : le modificateur portait
+        // `source: passive_<id>`, et le `recalculatePassiveBuffs` qui clôt
+        // `deployCharacter` efface tout modificateur de source `passive_*` — la
+        // copie de Mr. 2 ne survivait donc jamais à son propre déploiement.
+        // Comme la rage de synergie (§8.1) et la Vantardise (§8.2), elle reçoit
+        // une source qui lui est propre ; l'identifiant ne bouge pas.
+        d.cards[instanceId].modifiers.push({ id: `manemane_${instanceId}`, stat: "atk", amount: delta, source: `manemane_${instanceId}`, duration: "permanent" });
       });
     }
   }
@@ -627,16 +779,18 @@ export function equipObject(
     obj.slot = target.slot;
     target.attachedObjects.push(objectInstanceId);
 
-    // Signature-weapon bonuses when wielded by the matching character.
-    const wielderBonus: Record<string, { name: string; stat: "atk" | "def"; amount: number }> = {
-      "MG-009": { name: "Zoro", stat: "def", amount: 1 },        // Wado Ichimonji
-      "MR-013": { name: "Tashigi", stat: "atk", amount: 1 },     // Shigure
-      "RH-011": { name: "Ben Beckman", stat: "atk", amount: 1 }, // Fusil de Beckman
-      "RH-013": { name: "Yasopp", stat: "atk", amount: 1 },      // Fusil de Yasopp
-    };
-    const wb = wielderBonus[objDef.id];
+    // Decision §8.65 — le bonus « Si equipee par X » vient maintenant de la
+    // donnee (`objectEffects.wielder`) et non d'une table en dur : les clauses
+    // non chiffrees (inesquivable, Percant) vivaient au meme endroit imprime
+    // mais nulle part dans le code.
+    const wb = objDef.objectEffects?.wielder;
     if (wb && targetDef.name.includes(wb.name)) {
-      target.modifiers.push({ id: `wield_${objectInstanceId}`, stat: wb.stat, amount: wb.amount, source: `equip_${objDef.id}`, duration: "permanent" });
+      if (wb.atkBonus) {
+        target.modifiers.push({ id: `wield_${objectInstanceId}`, stat: "atk", amount: wb.atkBonus, source: `equip_${objDef.id}`, duration: "permanent" });
+      }
+      if (wb.defBonus) {
+        target.modifiers.push({ id: `wield_def_${objectInstanceId}`, stat: "def", amount: wb.defBonus, source: `equip_${objDef.id}`, duration: "permanent" });
+      }
     }
   });
 
@@ -645,6 +799,33 @@ export function equipObject(
     playerId,
     `Equipe ${objDef.name} sur ${getCardDef(targetCard.defId).name}`
   );
+
+  // Decision §8.66 — « A l'entree du porteur, deployez un jeton … » (BW-016
+  // Bananawani). Un objet se pose sur une unite DEJA deployee, donc « l'entree
+  // du porteur » ne peut se lire qu'au moment ou l'objet le rejoint : c'est
+  // l'evenement d'entree de la paire. Le jeton arrive dans la case libre la
+  // plus proche du porteur, sinon la premiere libre.
+  const tokenId = objDef.objectEffects?.onBearerEntryToken;
+  if (tokenId) {
+    next = produce(next, (draft) => {
+      const p = draft.players[playerId];
+      const bearerSlot = draft.cards[targetInstanceId]?.slot;
+      const free = (bearerSlot ? getAdjacentSlots(bearerSlot) : []).concat(ALL_SLOTS as unknown as Slot[])
+        .find((sl) => p.board[sl] === null && !(p.captain.flipped && p.captain.slot === sl));
+      if (!free) return;
+      const { generateInstanceId } = require("./utils");
+      const tdef = getCardDef(tokenId);
+      const tid = generateInstanceId(tokenId);
+      draft.cards[tid] = {
+        instanceId: tid, defId: tokenId, owner: playerId, zone: "board", slot: free,
+        tapped: false, currentPv: tdef.pv ?? 1, attachedObjects: [], modifiers: [],
+        statusEffects: [], deployedTurn: draft.turnNumber, usedBaseAction: false,
+        usedSpecialAttack: false, usedOnceAbilities: [],
+      };
+      p.board[free] = tid;
+      draft.log.push({ turn: draft.turnNumber, player: playerId, message: `${objDef.name} : ${tdef.name} arrive en ${free}.` });
+    });
+  }
 
   // Apply Devil Fruit effects if it's a fruit
   if (objDef.subtype === "fruit" && objDef.fruitEffects) {
@@ -815,7 +996,8 @@ export function deployShip(
             }
           }
           if (de.deployToken) {
-            const empty = ALL_SLOTS.find((s) => p.board[s] === null);
+            // §8.31 : la case du capitaine engage n'est pas libre.
+            const empty = ALL_SLOTS.find((s) => p.board[s] === null && !(p.captain.flipped && p.captain.slot === s));
             if (empty) {
               const { generateInstanceId } = require("./utils");
               const tdef = getCardDef(de.deployToken);
@@ -861,7 +1043,9 @@ export function moveCharacter(
 
   const card = state.cards[instanceId];
   if (!card || card.zone !== "board") throw new Error("Card not on board");
-  if (card.owner !== playerId) throw new Error("Not your card");
+  // Decision §8.37 (`betrayal`): a borrowed body is the borrower's to move
+  // while the loan lasts — `controllerOf` is `owner` for everything else.
+  if (controllerOf(card) !== playerId) throw new Error("Not your card");
 
   const currentSlot = card.slot;
   if (!currentSlot) throw new Error("Card has no slot");
@@ -871,7 +1055,7 @@ export function moveCharacter(
     throw new Error(`${targetSlot} is not adjacent to ${currentSlot}`);
   }
 
-  if (player.board[targetSlot] !== null) {
+  if (!isSlotFree(state, playerId, targetSlot)) {
     throw new Error(`Slot ${targetSlot} is occupied`);
   }
 
@@ -900,11 +1084,17 @@ export function removeFromBoard(
   return produce(state, (draft) => {
     const c = draft.cards[instanceId];
     const player = draft.players[c.owner];
+    // Decision §8.37 (`betrayal`): a borrowed body sits in the *controller's*
+    // board, so that is the cell to clear — `owner` still owns the graveyard.
+    const controller = draft.players[controllerOf(c)];
     const slot = c.slot;
 
     if (slot) {
-      player.board[slot] = null;
+      controller.board[slot] = null;
     }
+    // A body that leaves the board is no longer on loan.
+    c.controlledBy = undefined;
+    c.loanReturnSlot = undefined;
 
     // Vivre Card: if the KO'd bearer held one, tutor a Mugiwara (cost <= 3) to hand.
     const hadVivre = c.attachedObjects.some((id) => draft.cards[id]?.defId === "MG-019");
@@ -927,6 +1117,38 @@ export function removeFromBoard(
       if (obj) {
         obj.zone = "graveyard";
         player.graveyard.push(objId);
+
+        // Decision §8.66 — « Si detruite : … ». Un objet ne quitte le plateau
+        // qu'avec son porteur (rien dans le jeu ne detruit un equipement
+        // separement), donc c'est ici, et seulement ici, que la clause part.
+        const od = getCardDef(obj.defId).objectEffects?.onDestroy;
+        if (od?.deployToken) {
+          const free = ALL_SLOTS.find(
+            (sl) => player.board[sl] === null && !(player.captain.flipped && player.captain.slot === sl)
+          );
+          if (free) {
+            const { generateInstanceId } = require("./utils");
+            const tdef = getCardDef(od.deployToken);
+            const tid = generateInstanceId(od.deployToken);
+            draft.cards[tid] = {
+              instanceId: tid, defId: od.deployToken, owner: c.owner, zone: "board", slot: free,
+              tapped: false, currentPv: tdef.pv ?? 1, attachedObjects: [], modifiers: [],
+              statusEffects: [], deployedTurn: draft.turnNumber, usedBaseAction: false,
+              usedSpecialAttack: false, usedOnceAbilities: [],
+            };
+            player.board[free] = tid;
+            draft.log.push({ turn: draft.turnNumber, player: c.owner, message: `${getCardDef(obj.defId).name} detruite : ${tdef.name} arrive en ${free}.` });
+          }
+        }
+        // `bearerAtkBonus` ne peut atterrir que sur un porteur encore en jeu ;
+        // sur le catalogue livre, la destruction et le KO du porteur sont le
+        // meme evenement, donc la clause de MG-011 reste latente (signalee).
+        if (od?.bearerAtkBonus && draft.cards[instanceId]?.zone === "board") {
+          draft.cards[instanceId].modifiers.push({
+            id: `destroyed_${objId}`, stat: "atk", amount: od.bearerAtkBonus,
+            source: `destroy_${obj.defId}`, duration: "permanent",
+          });
+        }
       }
     }
     c.attachedObjects = [];
@@ -954,6 +1176,52 @@ export function removeFromBoard(
  * - Captain (verso, on board) → targetable like a normal character
  * - Captain (recto, off board) → targetable if no enemy Front
  */
+/**
+ * Decision §8.61 — « Inciblable jusqu'a la fin du tour » (BW-026 Mirage du
+ * Desert).
+ *
+ * Le contre posait jusqu'ici la meme chose qu'une annulation seche : l'attaque
+ * en cours disparaissait et RIEN n'etait ecrit sur la cible. Une deuxieme
+ * attaque du meme tour touchait donc a plein tarif, alors que la carte, le log
+ * et l'annonce promettent tous les trois un etat qui dure. L'Inciblable est
+ * desormais un vrai statut, purge au debut du tour suivant.
+ *
+ * Contrairement au Furtif, il n'a pas d'echappatoire « si tout le monde l'est,
+ * tout le monde redevient visible » : le texte est absolu.
+ *
+ * Rust : `board::is_untargetable_now`.
+ */
+export function isUntargetableNow(state: GameState, instanceId: string): boolean {
+  const c = state.cards[instanceId];
+  return !!c && c.statusEffects.some((e) => e.type === "untargetable");
+}
+
+/**
+ * Meme test pour un capitaine, dont les statuts vivent sur `player.captain`
+ * et non dans `state.cards`. Rust : `board::captain_is_untargetable`.
+ */
+export function captainIsUntargetable(state: GameState, playerId: PlayerId): boolean {
+  return state.players[playerId].captain.statusEffects.some((e) => e.type === "untargetable");
+}
+
+/**
+ * Garde de declaration. `getValidTargets` suffit a l'interface et a l'IA, qui
+ * passent toutes deux par `getValidActions` ; mais `declareBaseAttack` et ses
+ * jumelles ne recoupaient la legalite de la cible nulle part, donc un appel
+ * direct au moteur contournait le filtre. Rust : `board::assert_targetable`.
+ */
+export function assertTargetable(
+  state: GameState,
+  defenderId: PlayerId,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): void {
+  const hidden = targetIsCaptain
+    ? captainIsUntargetable(state, defenderId)
+    : isUntargetableNow(state, targetInstanceId);
+  if (hidden) throw new Error("La cible est Inciblable jusqu'a la fin du tour");
+}
+
 export function getValidTargets(
   state: GameState,
   attackerInstanceId: string,
@@ -966,7 +1234,11 @@ export function getValidTargets(
   const attackerSlot = attacker.slot;
   if (!attackerSlot) return { characterTargets: [], canTargetCaptain: false };
 
-  const opponentId = getOpponent(attacker.owner);
+  // Decision §8.37 (`betrayal`): a borrowed body fights for whoever controls
+  // it this turn, so its legal targets are its *former* allies — reading
+  // `owner` here offered it the borrower's own units instead, the inverse of
+  // the rule. `controllerOf` is `owner` for every card that is not on loan.
+  const opponentId = getOpponent(controllerOf(attacker));
   const opponent = state.players[opponentId];
 
   // Check range from character trait OR from the specific attack's traits
@@ -999,13 +1271,27 @@ export function getValidTargets(
   }
 
   // Apply Stealth filter (a unit stripped of Furtif this turn counts as non-stealth)
+  // Decision §8.65 — « Les attaques du porteur ignorent le Furtif » (BW-015
+  // Den Den Mushi Secret) : le filtre entier saute pour cet attaquant.
+  const seesThroughStealth = wornObjectFlag(
+    state,
+    attacker.attachedObjects,
+    attackerDef.name,
+    "ignoreStealth"
+  );
   const isStealthed = (c: CardInstance) =>
+    !seesThroughStealth &&
     hasTrait(state, c.instanceId, "stealth") &&
     !c.statusEffects.some((e) => e.type === "noStealth");
   const hasNonStealth = targetable.some((c) => !isStealthed(c));
   if (hasNonStealth) {
     targetable = targetable.filter((c) => !isStealthed(c));
   }
+
+  // Decision §8.61 — l'Inciblable retire la cible de la liste, sans la clause
+  // de secours du Furtif : si toute la ligne est Inciblable, il n'y a pas de
+  // cible, et c'est exactement ce que la carte promet.
+  targetable = targetable.filter((c) => !isUntargetableNow(state, c.instanceId));
 
   // Can target captain?
   let canTargetCaptain = false;
@@ -1022,6 +1308,10 @@ export function getValidTargets(
     // on the board — the crew is wiped (Rulebook v3.1 §2.1). Re-protected as soon as
     // any ally returns to the board.
     canTargetCaptain = opponentChars.length === 0;
+  }
+
+  if (canTargetCaptain && captainIsUntargetable(state, opponentId)) {
+    canTargetCaptain = false;
   }
 
   let characterTargets = targetable.map((c) => c.instanceId);

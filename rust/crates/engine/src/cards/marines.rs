@@ -5,11 +5,11 @@
 //! registry is filled by iterating it, and later ids overwrite earlier ones).
 
 use crate::types::{
-    AllyFilter, AtkDefStat, AttackTrait, BaseAction, BuffDuration, CardDef, CardType,
-    CounterEffect, DamageTarget, Element, EventEffect, Faction, FruitAwakening,
-    FruitAwakeningSpecialAttack, FruitBaseEffects, FruitEffects, HakiType, ObjectSubtype,
-    PassiveDef, PassiveEffect, Rarity, Row, ShipActive, ShipDestroyEffect, SpecialAttack,
-    SynergyDef, Trait,
+    ActivatedObjectAbility, AllyFilter, AtkDefStat, AttackTrait, BaseAction, BuffDuration, CardDef,
+    CardType, CounterEffect, DamageTarget, Element, EventEffect, Faction, FruitAwakening,
+    FruitAwakeningSpecialAttack, FruitBaseEffects, FruitEffects, GrantedAttack, HakiType,
+    ObjectEffects, ObjectSubtype, PassiveDef, PassiveEffect, Rarity, Row, ShipActive,
+    ShipDestroyEffect, SpecialAttack, SynergyDef, Trait, WielderClause,
 };
 
 fn s(v: &str) -> String {
@@ -520,6 +520,14 @@ pub fn cards() -> Vec<CardDef> {
             bonus_atk: Some(1),
             restriction: Some(s("bretteur")),
             equip_effect: Some(s("+1 ATK. Si équipée par Tashigi : +1 ATK de plus.")),
+            object_effects: Some(ObjectEffects {
+                wielder: Some(WielderClause {
+                    name: s("Tashigi"),
+                    atk_bonus: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "MR-013",
                 "Shigure",
@@ -556,6 +564,18 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(s(
                 "Actif (1x/partie) : un ennemi Maudit perd ses traits et son action à son prochain tour.",
             )),
+            object_effects: Some(ObjectEffects {
+                activated: Some(ActivatedObjectAbility {
+                    name: s("Menottes Granit Marin"),
+                    cost: 0,
+                    once_per_game: Some(true),
+                    target: s("enemy"),
+                    strip_traits_if_cursed: Some(true),
+                    lose_action: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "MR-015",
                 "Menottes Granit Marin",
@@ -573,6 +593,14 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(s(
                 "Le porteur gagne une attaque : Tir de Canon — 1 Vol · 3 dégâts (Portée).",
             )),
+            object_effects: Some(ObjectEffects {
+                grants_attack: Some(GrantedAttack {
+                    name: s("Tir de Canon"),
+                    cost: 1,
+                    damage: 3,
+                }),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "MR-016",
                 "Canon Marine",
@@ -590,6 +618,19 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(s(
                 "1x/partie : 2 dégâts à un ennemi ; s'il est Maudit, 4 dégâts et il perd ses traits ce tour.",
             )),
+            object_effects: Some(ObjectEffects {
+                activated: Some(ActivatedObjectAbility {
+                    name: s("Boulet Granit Marin"),
+                    cost: 0,
+                    once_per_game: Some(true),
+                    target: s("enemy"),
+                    damage: Some(2),
+                    cursed_damage: Some(4),
+                    strip_traits_if_cursed: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "MR-017",
                 "Boulet Granit Marin",

@@ -5,9 +5,10 @@
 //! registry is filled by iterating it, and later ids overwrite earlier ones).
 
 use crate::types::{
-    AttackTrait, BaseAction, CardDef, CardType, CounterEffect, DamageTarget, Element, EventEffect,
-    Faction, FruitAwakening, FruitAwakeningSpecialAttack, FruitBaseEffects, FruitEffects,
-    ObjectSubtype, PassiveDef, PassiveEffect, Rarity, Row, ShipActive, SpecialAttack, Trait,
+    ActivatedObjectAbility, AttackTrait, BaseAction, CardDef, CardType, CounterEffect,
+    DamageTarget, Element, EventEffect, Faction, FruitAwakening, FruitAwakeningSpecialAttack,
+    FruitBaseEffects, FruitEffects, ObjectEffects, ObjectSubtype, OnDestroyClause, PassiveDef,
+    PassiveEffect, Rarity, Row, ShipActive, SpecialAttack, Trait,
 };
 
 fn s(v: &str) -> String {
@@ -405,6 +406,13 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(s(
                 "+1 ATK. Attaques : Feu. Si détruite : déployez un jeton.",
             )),
+            object_effects: Some(ObjectEffects {
+                on_destroy: Some(OnDestroyClause {
+                    deploy_token: Some(s("TOK-AGENT")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "BW-014",
                 "Lassoo",
@@ -534,6 +542,11 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(s(
                 "À l'entrée, regardez la main adverse. Les attaques du porteur ignorent le Furtif.",
             )),
+            object_effects: Some(ObjectEffects {
+                reveal_enemy_hand: Some(true),
+                ignore_stealth: Some(true),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "BW-015",
                 "Den Den Mushi Secret",
@@ -551,6 +564,10 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(s(
                 "À l'entrée du porteur, déployez un jeton Bananawani (ATK 4 / DEF 1 / PV 4) adjacent.",
             )),
+            object_effects: Some(ObjectEffects {
+                on_bearer_entry_token: Some(s("TOK-BANANAWANI")),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "BW-016",
                 "Bananawani",
@@ -566,6 +583,18 @@ pub fn cards() -> Vec<CardDef> {
             subtype: Some(ObjectSubtype::Accessory),
             bonus_atk: Some(0),
             equip_effect: Some(s("1x/partie : 3 dégâts à un ennemi (Zone).")),
+            object_effects: Some(ObjectEffects {
+                activated: Some(ActivatedObjectAbility {
+                    name: s("Poudre Explosive"),
+                    cost: 0,
+                    once_per_game: Some(true),
+                    target: s("enemy"),
+                    damage: Some(3),
+                    zone: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             ..CardDef::new(
                 "BW-017",
                 "Poudre Explosive",

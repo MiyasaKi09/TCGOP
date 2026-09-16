@@ -255,7 +255,10 @@ pub fn captain_shanks() -> CaptainDef {
         id: "CAP-SHANKS".to_string(),
         name: "Shanks (Akagami)".to_string(),
         faction: Faction::Pirate,
-        tags: Some(vec!["redhair".to_string()]),
+        // Decision §8.62 (follow-up): Shanks carries the `bretteur` tag.
+        // Gryphon (RH-010) requires `bretteur` and prints "Si equipee par
+        // Shanks : +1 ATK" — a name that exists in the game ONLY as a captain.
+        tags: Some(vec!["redhair".to_string(), "bretteur".to_string()]),
         traits: Some(vec![]),
 
         recto: CaptainRecto {

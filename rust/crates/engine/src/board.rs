@@ -272,7 +272,8 @@ pub fn granted_attack_traits(
         return Ok(Vec::new());
     };
     let attached = card.attached_objects.clone();
-    attachments_granted_attack_traits(state, registry, &attached)
+    let name = registry.get_card_def(&card.def_id)?.name.clone();
+    attachments_granted_attack_traits(state, registry, &attached, Some(&name))
 }
 
 /// [`granted_attack_traits`] over an explicit attachment list — the form the
@@ -282,6 +283,7 @@ pub fn attachments_granted_attack_traits(
     state: &GameState,
     registry: &CardRegistry,
     attached: &[String],
+    bearer_name: Option<&str>,
 ) -> Result<Vec<AttackTrait>, EngineError> {
     let mut out: Vec<AttackTrait> = Vec::new();
     for obj_id in attached {
@@ -296,8 +298,61 @@ pub fn attachments_granted_attack_traits(
                 }
             }
         }
+        // Decision §8.65 — "Si equipee par Yasopp : … et Percant". The trait is
+        // granted to the NAMED bearer only, so it cannot live in
+        // `grants_traits`, which applies to everyone.
+        if let (Some(wb), Some(name)) = (
+            obj_def
+                .object_effects
+                .as_ref()
+                .and_then(|o| o.wielder.as_ref()),
+            bearer_name,
+        ) {
+            if name.contains(&wb.name) {
+                for t in wb.attack_traits.as_deref().unwrap_or(&[]) {
+                    if !out.contains(t) {
+                        out.push(*t);
+                    }
+                }
+            }
+        }
     }
     Ok(out)
+}
+
+/// Decision §8.65 — the object flags that hold for EVERY bearer
+/// (`ignore_shield`, `grants_haki`, `ignore_stealth`) or for the NAMED bearer
+/// (`no_dodge`). One reader, for characters and captains alike.
+/// TS: `board::wornObjectFlag`.
+pub fn worn_object_flag(
+    state: &GameState,
+    registry: &CardRegistry,
+    attached: &[String],
+    bearer_name: &str,
+    flag: &str,
+) -> Result<bool, EngineError> {
+    for obj_id in attached {
+        let Some(obj) = state.cards.get(obj_id) else {
+            continue;
+        };
+        let Some(fx) = registry.get_card_def(&obj.def_id)?.object_effects.as_ref() else {
+            continue;
+        };
+        let hit = match flag {
+            "noDodge" => fx
+                .wielder
+                .as_ref()
+                .is_some_and(|w| w.no_dodge.unwrap_or(false) && bearer_name.contains(&w.name)),
+            "ignoreShield" => fx.ignore_shield.unwrap_or(false),
+            "grantsHaki" => fx.grants_haki.unwrap_or(false),
+            "ignoreStealth" => fx.ignore_stealth.unwrap_or(false),
+            _ => false,
+        };
+        if hit {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Decision §8.5 — the maximum PV of a board instance: the printed `def.pv`
@@ -604,9 +659,69 @@ pub fn remove_from_board(
 
     // Move attached objects to graveyard
     for obj_id in &attached {
-        if let Some(obj) = state.cards.get_mut(obj_id) {
-            obj.zone = Zone::Graveyard;
-            state.players.get_mut(owner).graveyard.push(obj_id.clone());
+        let obj_def_id = match state.cards.get_mut(obj_id) {
+            Some(obj) => {
+                obj.zone = Zone::Graveyard;
+                let d = obj.def_id.clone();
+                state.players.get_mut(owner).graveyard.push(obj_id.clone());
+                d
+            }
+            None => continue,
+        };
+
+        // Decision §8.66 — "Si detruite : …". An object only leaves the board
+        // with its bearer (nothing in the game destroys equipment separately),
+        // so this is the one and only place the clause fires.
+        let od = registry
+            .get_card_def(&obj_def_id)?
+            .object_effects
+            .as_ref()
+            .and_then(|f| f.on_destroy.clone());
+        let Some(od) = od else { continue };
+        let obj_name = registry.get_card_def(&obj_def_id)?.name.clone();
+        if let Some(token) = od.deploy_token.as_deref() {
+            let free = Slot::ALL
+                .iter()
+                .copied()
+                .find(|sl| is_slot_free(state, owner, *sl));
+            if let Some(free) = free {
+                let tdef = registry.get_card_def(token)?;
+                // `remove_from_board` ne recoit pas d'`EngineContext` — et le
+                // faire descendre jusqu'ici toucherait tous ses appelants. L'id
+                // est donc derive de l'objet detruit, qui est deja unique.
+                let tid = format!("{token}#d{obj_id}");
+                let mut inst =
+                    CardInstance::new(tid.clone(), token.to_string(), owner, tdef.pv.unwrap_or(1));
+                inst.zone = Zone::Board;
+                inst.slot = Some(free);
+                inst.deployed_turn = Some(i64::from(state.turn_number));
+                let tname = tdef.name.clone();
+                state.cards.insert(tid.clone(), inst);
+                state.players.get_mut(owner).board.set(free, Some(tid));
+                state.add_log(
+                    owner,
+                    format!("{obj_name} detruite : {tname} arrive en {}.", free.as_str()),
+                );
+            }
+        }
+        // `bearer_atk_bonus` can only land on a bearer still in play; on the
+        // shipped catalogue destruction and the bearer's KO are the same event,
+        // so MG-011's clause stays latent (reported, not invented).
+        if let Some(bonus) = od.bearer_atk_bonus {
+            if state
+                .cards
+                .get(instance_id)
+                .is_some_and(|c| c.zone == Zone::Board)
+            {
+                state.get_card_mut(instance_id)?.modifiers.push(Modifier {
+                    id: format!("destroyed_{obj_id}"),
+                    stat: ModifierStat::Atk,
+                    amount: bonus,
+                    source: format!("destroy_{obj_def_id}"),
+                    duration: ModifierDuration::Permanent,
+                    turns_remaining: None,
+                });
+            }
         }
     }
 
@@ -1213,27 +1328,34 @@ pub fn equip_object(
         .attached_objects
         .push(object_instance_id.to_string());
 
-    // Signature-weapon bonuses when wielded by the matching character.
-    let wielder_bonus: Option<(&str, ModifierStat, i32)> = match obj_def.id.as_str() {
-        "MG-009" => Some(("Zoro", ModifierStat::Def, 1)), // Wado Ichimonji
-        "MR-013" => Some(("Tashigi", ModifierStat::Atk, 1)), // Shigure
-        "RH-011" => Some(("Ben Beckman", ModifierStat::Atk, 1)), // Fusil de Beckman
-        "RH-013" => Some(("Yasopp", ModifierStat::Atk, 1)), // Fusil de Yasopp
-        _ => None,
-    };
-    if let Some((name, stat, amount)) = wielder_bonus {
-        if target_def.name.contains(name) {
-            state
-                .get_card_mut(target_instance_id)?
-                .modifiers
-                .push(Modifier {
-                    id: format!("wield_{object_instance_id}"),
-                    stat,
-                    amount,
-                    source: format!("equip_{}", obj_def.id),
-                    duration: ModifierDuration::Permanent,
-                    turns_remaining: None,
-                });
+    // Decision §8.65 — the "Si equipee par X" bonus now comes from the data
+    // (`object_effects.wielder`) rather than a hard-coded table: the unquantified
+    // clauses (undodgeable, Piercing) lived in the same printed line but nowhere
+    // in the code.
+    if let Some(wb) = obj_def
+        .object_effects
+        .as_ref()
+        .and_then(|f| f.wielder.clone())
+    {
+        if target_def.name.contains(&wb.name) {
+            for (stat, amount, tag) in [
+                (ModifierStat::Atk, wb.atk_bonus, "wield"),
+                (ModifierStat::Def, wb.def_bonus, "wield_def"),
+            ] {
+                if let Some(amount) = amount.filter(|a| *a != 0) {
+                    state
+                        .get_card_mut(target_instance_id)?
+                        .modifiers
+                        .push(Modifier {
+                            id: format!("{tag}_{object_instance_id}"),
+                            stat,
+                            amount,
+                            source: format!("equip_{}", obj_def.id),
+                            duration: ModifierDuration::Permanent,
+                            turns_remaining: None,
+                        });
+                }
+            }
         }
     }
 
@@ -1241,6 +1363,40 @@ pub fn equip_object(
         player_id,
         format!("Equipe {} sur {}", obj_def.name, target_def.name),
     );
+
+    // Decision §8.66 — "A l'entree du porteur, deployez un jeton …" (`BW-016`
+    // Bananawani). An object lands on an ALREADY deployed unit, so "the bearer's
+    // entry" can only be read as the moment the object joins it: that is the
+    // pair's entry event.
+    if let Some(token) = obj_def
+        .object_effects
+        .as_ref()
+        .and_then(|f| f.on_bearer_entry_token.clone())
+    {
+        let bearer_slot = state.cards.get(target_instance_id).and_then(|c| c.slot);
+        let mut order: Vec<Slot> = bearer_slot.map(get_adjacent_slots).unwrap_or(&[]).to_vec();
+        order.extend(Slot::ALL.iter().copied());
+        let free = order
+            .into_iter()
+            .find(|sl| is_slot_free(state, player_id, *sl));
+        if let Some(free) = free {
+            let tdef = registry.get_card_def(&token)?;
+            let tid = format!("{token}#e{object_instance_id}");
+            let mut inst =
+                CardInstance::new(tid.clone(), token.clone(), player_id, tdef.pv.unwrap_or(1));
+            inst.zone = Zone::Board;
+            inst.slot = Some(free);
+            inst.deployed_turn = Some(i64::from(state.turn_number));
+            let tname = tdef.name.clone();
+            let oname = obj_def.name.clone();
+            state.cards.insert(tid.clone(), inst);
+            state.players.get_mut(player_id).board.set(free, Some(tid));
+            state.add_log(
+                player_id,
+                format!("{oname} : {tname} arrive en {}.", free.as_str()),
+            );
+        }
+    }
 
     // Apply Devil Fruit effects if it's a fruit
     if obj_def.subtype == Some(ObjectSubtype::Fruit) && obj_def.fruit_effects.is_some() {
@@ -1651,6 +1807,50 @@ pub enum ValidTarget {
 /// Stealth units drop out while any non-Stealth (or `noStealth`-tagged) target
 /// remains. A flipped captain is targetable like a character; a recto captain
 /// only while the defender has zero board characters.
+/// Decision §8.61 — "Inciblable jusqu'a la fin du tour" (`BW-026` Mirage du
+/// Desert). Mirror of the TS `board::isUntargetableNow`.
+pub fn is_untargetable_now(state: &GameState, instance_id: &str) -> bool {
+    state
+        .cards
+        .get(instance_id)
+        .is_some_and(|c| c.has_status(StatusEffectType::Untargetable))
+}
+
+/// Same test for a captain, whose statuses live on `player.captain` rather than
+/// in `state.cards`. Mirror of the TS `board::captainIsUntargetable`.
+pub fn captain_is_untargetable(state: &GameState, player_id: PlayerId) -> bool {
+    state
+        .players
+        .get(player_id)
+        .captain
+        .status_effects
+        .iter()
+        .any(|e| e.effect_type == StatusEffectType::Untargetable)
+}
+
+/// Declaration guard. [`get_valid_targets`] is enough for the client and the
+/// AI, which both go through `get_valid_actions`; but the `declare_*` functions
+/// never cross-checked the target they were handed, so a direct engine call
+/// went around the filter. Mirror of the TS `board::assertTargetable`.
+pub fn assert_targetable(
+    state: &GameState,
+    defender_id: PlayerId,
+    target_instance_id: &str,
+    target_is_captain: bool,
+) -> Result<(), EngineError> {
+    let hidden = if target_is_captain {
+        captain_is_untargetable(state, defender_id)
+    } else {
+        is_untargetable_now(state, target_instance_id)
+    };
+    if hidden {
+        return Err(EngineError::illegal(
+            "La cible est Inciblable jusqu'a la fin du tour",
+        ));
+    }
+    Ok(())
+}
+
 pub fn get_valid_targets(
     state: &GameState,
     registry: &CardRegistry,
@@ -1737,9 +1937,19 @@ pub fn get_valid_targets(
     }
 
     // Apply Stealth filter (a unit stripped of Furtif this turn counts as non-stealth)
+    // Decision §8.65 — "Les attaques du porteur ignorent le Furtif" (`BW-015`
+    // Den Den Mushi Secret): the whole filter drops for that attacker.
+    let sees_through_stealth = worn_object_flag(
+        state,
+        registry,
+        &attacker.attached_objects,
+        &attacker_def.name,
+        "ignoreStealth",
+    )?;
     let mut stealthed: Vec<bool> = Vec::with_capacity(targetable.len());
     for id in &targetable {
-        let s = has_trait(state, registry, id, Trait::Stealth)?
+        let s = !sees_through_stealth
+            && has_trait(state, registry, id, Trait::Stealth)?
             && !state
                 .cards
                 .get(id)
@@ -1755,6 +1965,11 @@ pub fn get_valid_targets(
             .map(|(id, _)| id)
             .collect();
     }
+
+    // Decision §8.61 — Untargetable removes the unit outright, without the
+    // Stealth fallback: if the whole line is Untargetable there is no target,
+    // which is exactly what the card promises.
+    targetable.retain(|id| !is_untargetable_now(state, id));
 
     // Can target captain?
     let opponent = state.players.get(opponent_id);
@@ -1776,6 +1991,10 @@ pub fn get_valid_targets(
         // on the board — the crew is wiped (Rulebook v3.1 §2.1). Re-protected as soon as
         // any ally returns to the board.
         can_target_captain = opponent_chars.is_empty();
+    }
+
+    if can_target_captain && captain_is_untargetable(state, opponent_id) {
+        can_target_captain = false;
     }
 
     // Decision §8.38 — Provocation (`RH-004`) / Peinture de la Colère
@@ -2238,7 +2457,21 @@ mod tests {
         let reg = registry_with(vec![
             zoro,
             plain,
-            object("MG-009", 1, ObjectSubtype::Weapon),
+            {
+                // Decision §8.65 — le bonus de porteur vient de la DONNEE
+                // desormais, plus d'une table en dur : le fixture doit donc la
+                // porter comme la vraie carte.
+                let mut wado = object("MG-009", 1, ObjectSubtype::Weapon);
+                wado.object_effects = Some(crate::types::ObjectEffects {
+                    wielder: Some(crate::types::WielderClause {
+                        name: "Zoro".to_string(),
+                        def_bonus: Some(1),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                wado
+            },
             object("MG-010", 1, ObjectSubtype::Weapon),
         ]);
         let mut state = blank_state();
@@ -2254,7 +2487,10 @@ mod tests {
         let m = zc
             .modifiers
             .iter()
-            .find(|m| m.id == format!("wield_{w1}"))
+            // §8.65 : l'id du modificateur porte desormais sa statistique dans
+            // les DEUX moteurs (`wield_` pour l'ATK, `wield_def_` pour la DEF),
+            // puisqu'un objet peut accorder les deux. Rien ne lit cet id.
+            .find(|m| m.id == format!("wield_def_{w1}"))
             .unwrap();
         assert_eq!((m.stat, m.amount), (ModifierStat::Def, 1));
         assert_eq!(m.source, "equip_MG-009");

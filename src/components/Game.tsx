@@ -21,7 +21,7 @@ import PlayRevealLayer from "./PlayRevealLayer";
 import VfxStage from "./vfx/VfxStage";
 import CutInLayer from "./vfx/CutInLayer";
 import AmbientStage from "./vfx/AmbientStage";
-import { StatusLegend } from "./StatusBadges";
+import StatusBadges, { StatusLegend } from "./StatusBadges";
 import { useCombatVfx } from "@/lib/useCombatVfx";
 import type { Difficulty } from "@/engine/ai";
 import { FRONT_SLOTS, BACK_SLOTS } from "@/engine/utils";
@@ -39,7 +39,11 @@ interface GameProps {
 type UIMode =
   | { type: "idle" }
   | { type: "selectingSlot"; cardId: string }
-  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string }
+  /** `surcharge` (decision §8.34(b)) aims the captain's `useSurcharge` instead
+   *  of a `captainAttack`; `isSpecial` picks the captain's ★ special attack. */
+  | { type: "selectingTarget"; attackerId: string; isSpecial: boolean; fruitInstanceId?: string; surcharge?: boolean;
+      /** Decision §8.67 — vise la capacite activee d'un objet equipe. */
+      activateObjectId?: string }
   | { type: "selectingSupportTarget"; instanceId: string }
   | { type: "selectingEquipTarget"; objectId: string }
   | { type: "actionMenu"; instanceId: string }
@@ -58,6 +62,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
   const [logExpanded, setLogExpanded] = useState(false);
   const [selectedHandCard, setSelectedHandCard] = useState<string | null>(null);
   const [hoveredHand, setHoveredHand] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const [hoveredUnit, setHoveredUnit] = useState<{ id: string; rect: DOMRect } | null>(null);
   const [webglActive, setWebglActive] = useState(false);
   const onVfxActiveChange = useCallback((a: boolean) => setWebglActive(a), []);
 
@@ -130,6 +135,15 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     const targets = new Set<string>();
     // Decision §8.28 (follow-up): an awakened fruit worn by the captain fires a
     // `fruitSpecialAttack` whose attacker is the synthetic `captain_{id}`.
+    // Decision §8.67 — la capacite activee d'un objet vise ses propres cibles.
+    if (uiMode.activateObjectId) {
+      const objId = uiMode.activateObjectId;
+      for (const a of validActions) {
+        if (a.type !== "activateObject" || a.objectInstanceId !== objId) continue;
+        if (a.targetInstanceId) targets.add(a.targetInstanceId);
+      }
+      return targets;
+    }
     if (uiMode.fruitInstanceId) {
       const fruitId = uiMode.fruitInstanceId;
       for (const a of validActions) {
@@ -141,10 +155,18 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       return targets;
     }
     const isCaptainAttack = uiMode.attackerId.startsWith("captain_");
-    const actionType = isCaptainAttack ? "captainAttack" : (uiMode.isSpecial ? "specialAttack" : "baseAttack");
+    // Decision §8.34: the captain's base attack, its ★ special (same action,
+    // `isSpecial`) and its `surcharge` are three separate aims.
+    const actionType = isCaptainAttack
+      ? (uiMode.surcharge ? "useSurcharge" : "captainAttack")
+      : (uiMode.isSpecial ? "specialAttack" : "baseAttack");
     for (const a of validActions) {
       if (a.type === actionType) {
-        if (isCaptainAttack && a.type === "captainAttack") {
+        if (isCaptainAttack && a.type === "useSurcharge") {
+          if (a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
+          else targets.add(a.targetInstanceId);
+        } else if (isCaptainAttack && a.type === "captainAttack") {
+          if (!!a.isSpecial !== uiMode.isSpecial) continue;
           if (a.targetIsCaptain) targets.add(`captain_${aiPlayer}`);
           else targets.add(a.targetInstanceId);
         } else if ("attackerInstanceId" in a && a.attackerInstanceId === uiMode.attackerId) {
@@ -170,7 +192,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     if (attackerId.startsWith("captain_")) {
       const pid = attackerId.replace("captain_", "") as PlayerId;
       const cd = getCaptainDef(state.players[pid].captain.defId);
-      const atk = isSpecial ? cd.verso.specialAttack : cd.verso.baseAction;
+      const atk = uiMode.surcharge
+        ? cd.verso.surcharge
+        : isSpecial
+          ? cd.verso.specialAttack
+          : cd.verso.baseAction;
       return !!atk?.attackTraits?.includes("zone");
     }
     const inst = state.cards[attackerId];
@@ -250,7 +276,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
     targetId: string,
     targetIsCaptain: boolean
   ) => {
-    if (mode.fruitInstanceId) {
+    if (mode.activateObjectId) {
+      dispatch({
+        type: "activateObject",
+        objectInstanceId: mode.activateObjectId,
+        targetInstanceId: targetId,
+      } as GameAction);
+    } else if (mode.fruitInstanceId) {
       dispatch({
         type: "fruitSpecialAttack",
         attackerInstanceId: mode.attackerId,
@@ -259,10 +291,13 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
         ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
       } as GameAction);
     } else if (mode.attackerId.startsWith("captain_")) {
+      // Decision §8.34: `isSpecial` carries the captain's signature move, and
+      // the `surcharge` is its own action.
       dispatch({
-        type: "captainAttack",
+        type: mode.surcharge ? "useSurcharge" : "captainAttack",
         targetInstanceId: targetId,
         ...(targetIsCaptain ? { targetIsCaptain: true } : {}),
+        ...(!mode.surcharge && mode.isSpecial ? { isSpecial: true } : {}),
       } as GameAction);
     } else {
       dispatch({
@@ -285,7 +320,11 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       resetUI();
       return;
     }
-    if (uiMode.type === "selectingTarget" && !isPlayerSide && attackTargets.has(instanceId)) {
+    // C'est l'appartenance à `attackTargets` qui fait autorité, PAS le camp :
+    // une spéciale peut viser un allié (soin, buff) ou son propre lanceur
+    // (Monster Block de Chopper). Exiger le camp adverse rendait ces attaques
+    // injouables — le clic était simplement avalé.
+    if (uiMode.type === "selectingTarget" && attackTargets.has(instanceId)) {
       fireAtTarget(uiMode, instanceId, false);
       resetUI();
       return;
@@ -366,6 +405,14 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             {capGear.length > 0 && (
               <span className="absolute top-0.5 right-1 font-oswald font-bold text-[9px] px-1 rounded text-gold" style={{ background: "rgba(232,184,75,.25)", border: "1px solid var(--ink-edge)" }}>⚔{capGear.length}</span>
             )}
+            {/* Les statuts du Capitaine n'etaient affiches NULLE PART sur le
+                plateau : brule, gele, empoisonne ou Inciblable, rien ne le
+                disait. Meme pastilles que les personnages. */}
+            {ps.captain.statusEffects.length > 0 && (
+              <div className="absolute top-0.5 left-1 mt-3">
+                <StatusBadges effects={ps.captain.statusEffects} compact />
+              </div>
+            )}
             <div className="absolute left-1 right-1 bottom-1">
               <div className="font-cinzel text-[10px] font-bold text-white truncate leading-none">{capDef.name}</div>
               <div className="hp-gauge w-full h-1.5 rounded-full mt-1">
@@ -380,7 +427,9 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
       const instance = charId ? state.cards[charId] : null;
       const def = instance ? getCardDef(instance.defId) : null;
       const isValidDeploy = isPlayerSide && deploySlots.has(slot);
-      const isValidTarget = (!isPlayerSide && uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
+      // Idem au rendu : une case s'allume si le moteur la propose, quel que
+      // soit le camp — sinon une spéciale alliée ou auto-ciblée reste invisible.
+      const isValidTarget = (uiMode.type === "selectingTarget" && charId !== null && attackTargets.has(charId!))
         || (uiMode.type === "selectingSupportTarget" && charId !== null && supportTargets.has(charId!));
       const isEquipTarget = isPlayerSide && uiMode.type === "selectingEquipTarget" && charId !== null && equipTargets.has(charId!);
       const isImpact = !isPlayerSide && attackIsZone && slot.startsWith("V") && isValidTarget;
@@ -404,6 +453,10 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
           isDimmed={isDimmed}
           onClick={act}
           onDrop={act}
+          onHoverChange={(rect) => {
+            if (rect && charId) setHoveredUnit({ id: charId, rect });
+            else setHoveredUnit((h) => (h && charId && h.id === charId ? null : h));
+          }}
         />
       );
     });
@@ -445,6 +498,12 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="hp-gauge flex-1 h-1.5 rounded-full"><div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, background: hpc }} /></div>
             <span className="font-oswald text-[10px] font-bold" style={{ color: hpc }}>{ps.captain.currentPv}</span>
           </div>
+          {/* Idem sur la proue, la ou le Capitaine passe le plus clair de la
+              partie : sans cela, « Inciblable jusqu'a la fin du tour » n'etait
+              visible que dans le journal. */}
+          {ps.captain.statusEffects.length > 0 && (
+            <div className="mt-1"><StatusBadges effects={ps.captain.statusEffects} compact /></div>
+          )}
           {capGear.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">
               {capGear.map((objId) => {
@@ -713,7 +772,7 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             <div className="flex items-center gap-2 mb-1">
               <span className="font-oswald text-[10px] uppercase tracking-widest text-white/45">Main</span>
               <span className="font-oswald text-[11px] font-bold text-white/60">{player.hand.length}</span>
-              <div className="hidden md:block"><StatusLegend types={["freeze", "burn", "poison", "immobilize", "desiccation"]} /></div>
+              <div className="hidden md:block"><StatusLegend types={["freeze", "burn", "poison", "immobilize", "desiccation", "untargetable"]} /></div>
               <div className="flex-1 h-px bg-white/10" />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1 items-end" style={{ minHeight: "170px" }}>
@@ -822,6 +881,45 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
 
       {showHelp && <HelpPanel state={state} humanPlayer={humanPlayer} onClose={() => setShowHelp(false)} />}
 
+      {/* Équipement porté, révélé EN IMAGE au survol, à côté de l'unité : le
+          jeton ne montre qu'un compteur, donc l'effet d'un Fruit ou d'une arme
+          était invisible sans ouvrir un menu. */}
+      {hoveredUnit && uiMode.type === "idle" && !inCounterWindow && (() => {
+        const unit = state.cards[hoveredUnit.id];
+        if (!unit || unit.attachedObjects.length === 0) return null;
+        const PW = 168;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1600;
+        const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+        const r = hoveredUnit.rect;
+        // À droite de la case, sinon à gauche quand le bord est trop proche.
+        const left = r.right + 10 + PW < vw ? r.right + 10 : Math.max(8, r.left - PW - 10);
+        const height = unit.attachedObjects.length * 236;
+        const top = Math.min(Math.max(8, r.top + r.height / 2 - height / 2), Math.max(8, vh - height - 8));
+        return (
+          <div className="fixed z-40 pointer-events-none flex flex-col gap-2 animate-fade-in" style={{ left, top }}>
+            {unit.attachedObjects.map((objId) => {
+              const obj = state.cards[objId];
+              if (!obj) return null;
+              let objDef;
+              try { objDef = getCardDef(obj.defId); } catch { return null; }
+              return (
+                <div key={objId} className="relative">
+                  <FullCard def={objDef} instance={obj} state={state} width={PW} />
+                  {obj.isAwakened && (
+                    <span
+                      className="absolute top-1 left-1 font-oswald font-bold text-[9px] px-1.5 rounded text-gold"
+                      style={{ background: "rgba(8,12,18,.85)", border: "1px solid var(--gold)" }}
+                    >
+                      ⭐ Éveillé
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
       {/* Refus du moteur : dire pourquoi, plutôt que de ne rien faire. */}
       {notice && (
         <div
@@ -854,6 +952,20 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
                 resetUI();
               }
             }}
+            onAwakenFruit={(fruitInstanceId) => { dispatch({ type: "awakenFruit", fruitInstanceId }); resetUI(); }}
+            onFruitSpecial={(fruitInstanceId) =>
+              setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true, fruitInstanceId })
+            }
+            /* Decision §8.67 — une capacite qui vise passe par la visee
+               normale ; une capacite sans cible part tout de suite. */
+            onActivateObject={(objectInstanceId, needsTarget) => {
+              if (needsTarget) {
+                setUiMode({ type: "selectingTarget", attackerId: uiMode.instanceId, isSpecial: true, activateObjectId: objectInstanceId });
+              } else {
+                dispatch({ type: "activateObject", objectInstanceId });
+                resetUI();
+              }
+            }}
             onViewDetail={() => setUiMode({ type: "cardDetail", defId: inst.defId, instanceId: uiMode.instanceId })}
             onClose={resetUI}
           />
@@ -869,12 +981,22 @@ export default function Game({ playerDeck, aiDeck, difficulty = "intermediate" }
             captain={ps.captain} def={capDef} state={state} validActions={validActions} isYou={isYou} originRect={zoomFromRef.current}
             onFlip={() => setUiMode({ type: "selectingCaptainSlot" })}
             onAttack={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: false })}
+            onSpecialAttack={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true })}
+            onSurcharge={() => setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, surcharge: true })}
             /* Decision §8.28 (follow-up): the fruit the captain wears awakens
                and fires from the captain's own menu. */
             onAwakenFruit={(fruitInstanceId) => { dispatch({ type: "awakenFruit", fruitInstanceId }); resetUI(); }}
             onFruitSpecial={(fruitInstanceId) =>
               setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, fruitInstanceId })
             }
+            onActivateObject={(objectInstanceId, needsTarget) => {
+              if (needsTarget) {
+                setUiMode({ type: "selectingTarget", attackerId: `captain_${humanPlayer}`, isSpecial: true, activateObjectId: objectInstanceId });
+              } else {
+                dispatch({ type: "activateObject", objectInstanceId });
+                resetUI();
+              }
+            }}
             onKingHaki={() => { dispatch({ type: "useHaki", hakiType: "king" }); resetUI(); }}
             onClose={resetUI}
           />

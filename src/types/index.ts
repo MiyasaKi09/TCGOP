@@ -207,6 +207,66 @@ export interface CardDef {
   grantsElement?: Element;
   /** Special equipment effect description */
   equipEffect?: string;
+  /**
+   * Decisions §8.65-§8.67 — les clauses d'equipement, structurees.
+   *
+   * `equipEffect` etait jusqu'ici la SEULE trace de ces regles : du texte
+   * d'affichage qu'aucun des deux moteurs ne lisait. Quatorze objets avaient
+   * donc une ligne imprimee qui ne faisait rien. Meme demarche que §8.38/§8.54
+   * pour les attaques speciales : on sort la regle du texte libre, et les deux
+   * catalogues sont edites en lockstep.
+   */
+  objectEffects?: {
+    /** « Si equipee par X : … » — bonus reserve au porteur nomme. */
+    wielder?: {
+      /** Sous-chaine du nom imprime du porteur (« Lucky Roux », « Shanks »). */
+      name: string;
+      atkBonus?: number;
+      defBonus?: number;
+      /** « attaques inesquivables » */
+      noDodge?: boolean;
+      /** Traits d'attaque accordes au porteur nomme (« Percant »). */
+      attackTraits?: AttackTrait[];
+    };
+    /** « ignore le Bouclier » — vaut pour tout porteur. */
+    ignoreShield?: boolean;
+    /** « Haki de l'Armement » — les attaques du porteur touchent les Logia. */
+    grantsHaki?: boolean;
+    /** « regard sur la main adverse » — la main de l'adversaire est revelee. */
+    revealEnemyHand?: boolean;
+    /** « ignore le Furtif » — le porteur vise une unite Furtive. */
+    ignoreStealth?: boolean;
+    /** « les ennemis adjacents au porteur ont -N ATK » */
+    adjacentEnemyAtk?: number;
+    /** « a l'entree du porteur : deploie un jeton » */
+    onBearerEntryToken?: string;
+    /** « si detruite : … » — quand l'objet quitte le plateau avec son porteur. */
+    onDestroy?: { deployToken?: string; bearerAtkBonus?: number };
+    /** « le porteur gagne l'attaque X » */
+    grantsAttack?: { name: string; cost: number; damage: number };
+    /** Capacite activee depuis le menu du porteur. */
+    activated?: {
+      name: string;
+      cost: number;
+      oncePerGame?: boolean;
+      /** `enemy` vise un personnage adverse ; `none` ne vise rien. */
+      target: "enemy" | "none";
+      damage?: number;
+      /** Degats de remplacement quand la cible est Maudite. */
+      cursedDamage?: number;
+      /** La cible Maudite perd ses traits pour la partie. */
+      stripTraitsIfCursed?: boolean;
+      /** La cible perd sa prochaine action. */
+      loseAction?: boolean;
+      zone?: boolean;
+      /** Soigne tous vos personnages de N (et monte leur maximum). */
+      healAllAllies?: number;
+      /** +N ATK a tous vos personnages, permanent. */
+      buffAllAlliesAtk?: number;
+      /** Absorbe la prochaine attaque subie par le porteur et la renvoie. */
+      reflectNextAttack?: boolean;
+    };
+  };
   /** Devil Fruit structured effects */
   fruitEffects?: {
     base: {
@@ -365,7 +425,10 @@ export interface Modifier {
 }
 
 export interface StatusEffect {
-  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal" | "taunt";
+  type: "burn" | "poison" | "freeze" | "desiccation" | "trap" | "immobilize" | "sleep" | "loseAction" | "selfKO" | "noStealth" | "noHeal" | "taunt" | "untargetable"
+    /** Decision §8.67 — MG-018 Dial d'Impact : la prochaine attaque subie par
+     *  le porteur est absorbee (degats a 0) puis renvoyee a l'attaquant. */
+    | "reflect";
   turnsRemaining: number;  // -1 = permanent (poison)
   damagePerTurn: number;
   source: string;
@@ -398,6 +461,14 @@ export interface CardInstance {
   /** Decision §8.5/§8.38: permanent max-PV loss ("perd N PV permanent (Sable)").
    *  The instance's maximum PV is `def.pv - pvMaxLoss`, never the printed PV alone. */
   pvMaxLoss?: number;
+  /** Decision §8.37 (`betrayal`, BW-024): the player who controls this body
+   *  **for the current turn**. `owner` never moves, so KO bonuses, graveyards
+   *  and the win condition keep pointing at the player who paid for the card.
+   *  Absent for every card that is not on loan. Rust: `CardInstance.controlledBy`. */
+  controlledBy?: PlayerId;
+  /** Decision §8.37: the slot the loan left, where `endTurn` walks the body
+   *  back. Rust: `CardInstance.loanReturnSlot`. */
+  loanReturnSlot?: Slot;
 }
 
 export interface CaptainInstance {
@@ -421,6 +492,10 @@ export interface CaptainInstance {
   /** Decision §8.40: the captain counterpart of `CardInstance.pvMaxLoss` — the
    *  permanent max-PV loss against the **active** face's printed PV. */
   pvMaxLoss?: number;
+  /** Decision §8.40 : le pendant capitaine de `CardInstance.logiaUsedThisTurn`.
+   *  L'intangibilite Logia est une fois par tour sur un personnage ; le
+   *  capitaine porte le meme mot-cle, donc la meme limite. */
+  logiaUsedThisTurn?: boolean;
 }
 
 export interface PlayerState {
@@ -449,6 +524,10 @@ export interface PlayerState {
   charKOedThisGame?: boolean;
   /** This player's attacks pierce Logia this turn (granted Haki this turn) */
   hakiThisTurn?: boolean;
+  /** Decision §8.37 (`embargo`, MR-027): while `> 0` this player can neither
+   *  `equipObject` nor `deployShip`; decremented at the end of their own turn.
+   *  Rust: `PlayerState.embargoTurns` / `is_embargoed()`. */
+  embargoTurns?: number;
 }
 
 export interface PendingAttack {
@@ -521,9 +600,21 @@ export type GameAction =
   | { type: "passCounter" }
   | { type: "flipCaptain"; slot: Slot }
   | { type: "captainAttack"; targetInstanceId: string; targetIsCaptain?: boolean; isSpecial?: boolean }
+  /** Decision §8.34(b): the captain's `surcharge` block — same resolution path
+   *  as the special attack, driven by the active (verso) face's data.
+   *  Rust: `GameAction::UseSurcharge`. */
+  | { type: "useSurcharge"; targetInstanceId: string; targetIsCaptain?: boolean }
   | { type: "useHaki"; hakiType: HakiType; targetInstanceId?: string }
   | { type: "moveCharacter"; instanceId: string; targetSlot: Slot }
   | { type: "activateShip"; shipInstanceId: string }
   | { type: "awakenFruit"; fruitInstanceId: string }
   | { type: "fruitSpecialAttack"; attackerInstanceId: string; fruitInstanceId: string; targetInstanceId: string; targetIsCaptain?: boolean }
+  /**
+   * Decision §8.67 — activer une capacite d'objet equipe.
+   *
+   * Cinq objets impriment « 1x/partie : … » et un sixieme « le porteur gagne
+   * une attaque … » : aucune action du moteur ne permettait de les declencher,
+   * donc les six lignes etaient injouables, quel que soit le porteur.
+   */
+  | { type: "activateObject"; objectInstanceId: string; targetInstanceId?: string }
   | { type: "endTurn" };

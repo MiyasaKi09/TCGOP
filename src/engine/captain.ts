@@ -1,5 +1,15 @@
 import { produce } from "immer";
-import type { GameState, PlayerId, Slot, EntryEffect, Trait, CaptainInstance } from "@/types";
+import type {
+  GameState,
+  PlayerId,
+  Slot,
+  EntryEffect,
+  Trait,
+  CaptainInstance,
+  SpecialAttack,
+  AttackTrait,
+  PendingAttack,
+} from "@/types";
 import { getCaptainDef, getCardDef } from "./cardRegistry";
 import { canAfford, spendVolonte } from "./volonte";
 import { addLog, getOpponent, checkWinCondition } from "./gameState";
@@ -9,7 +19,10 @@ import {
   getEffectiveDef,
   hasTrait,
   attachmentsGrantTrait,
+  attachmentsGrantedAttackTraits,
   moveAttachedObjectsInDraft,
+  isSlotFree,
+  wornObjectFlag,
 } from "./board";
 
 export type FreeFlipReason =
@@ -155,8 +168,9 @@ export function flipCaptain(
   const def = getCaptainDef(captain.defId);
   const condition = def.flipCondition;
 
-  // Check slot availability
-  if (state.players[playerId].board[slot] !== null) {
+  // Check slot availability — §8.31 : un seul predicat pour toutes les
+  // ecritures de case.
+  if (!isSlotFree(state, playerId, slot)) {
     throw new Error(`Slot ${slot} is occupied`);
   }
 
@@ -388,13 +402,18 @@ export function declareCaptainBaseAttack(
   if (!captain.flipped) throw new Error("Captain not flipped (verso required)");
   if (captain.tapped) throw new Error("Captain is tapped");
   if (captain.usedBaseAction) throw new Error("Captain base action already used");
+  // Decision §8.1 item 35 : un capitaine gelé / immobilisé / endormi n'agit
+  // pas. L'énumérateur le savait déjà, l'exécuteur non — ses deux voisins
+  // (`declareCaptainSpecAttack`, `declareCaptainFruitSpecialAttack`) le
+  // vérifient. Rust : `captain::declare_captain_base_attack`.
+  if (captainCannotAct(captain)) throw new Error(CAPTAIN_CANNOT_ACT);
 
   const def = getCaptainDef(captain.defId);
   const baseAction = def.verso.baseAction;
 
   // Decision §8.38: a taunted attacker may only declare against its taunter.
-  const { enforceTaunt } = require("./combat");
-  enforceTaunt(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, false);
+  const { enforceTargetLegality } = require("./combat");
+  enforceTargetLegality(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, false);
 
   // Captain summoning sickness
   if (captain.deployedTurn === state.turnNumber) {
@@ -427,9 +446,23 @@ export function declareCaptainBaseAttack(
 
   const rawDamage = Math.max(0, atk - targetDefVal);
 
+  // Decision §8.65 — les drapeaux des objets que porte le capitaine valent pour
+  // son attaque de base aussi : Gryphon (RH-010) nomme Shanks, qui n'existe que
+  // comme capitaine, donc sans ces deux lectures sa clause etait injouable sur
+  // son porteur imprime.
+  const capObjs = captain.attachedObjects ?? [];
   const hasHaki =
     ((def.verso.naturalHaki && def.verso.naturalHaki.length > 0) ?? false) ||
+    wornObjectFlag(state, capObjs, def.name, "grantsHaki") ||
     state.turnNumber >= 7;
+  const capIgnoresShield = wornObjectFlag(state, capObjs, def.name, "ignoreShield");
+
+  // Decision §8.47 × §8.28 : le bras `AttackTrait` de `grantsTraits` des objets
+  // que porte le capitaine rejoint son attaque de base, comme pour un personnage.
+  const baseAttackTraits: AttackTrait[] = [...(baseAction.attackTraits ?? [])];
+  for (const at of attachmentsGrantedAttackTraits(state, capObjs, def.name)) {
+    if (!baseAttackTraits.includes(at)) baseAttackTraits.push(at);
+  }
 
   let next = produce(state, (draft) => {
     const cap = draft.players[playerId].captain;
@@ -445,8 +478,9 @@ export function declareCaptainBaseAttack(
       rawDamage,
       attackPower: atk,
       element: baseAction.element,
-      attackTraits: baseAction.attackTraits ?? [],
+      attackTraits: baseAttackTraits,
       hasHaki,
+      ignoreShield: capIgnoresShield,
     };
   });
 
@@ -454,5 +488,242 @@ export function declareCaptainBaseAttack(
     next,
     playerId,
     `Capitaine ${def.name} attaque avec ${baseAction.name} ! (${rawDamage} degats)`
+  );
+}
+
+// ============================================================
+// Decision §8.34 — the captain's special attack and its surcharge
+// ============================================================
+
+/**
+ * The `usedOnceAbilities` key guarding a `oncePerGame` captain surcharge named
+ * `name` (decision §8.34/§8.50). Rust: `state::once_surcharge`.
+ */
+export function onceSurchargeKey(name: string): string {
+  return `surcharge_${name}`;
+}
+
+/** The error a frozen / immobilized / sleeping captain gets (decision §8.1 item 35). */
+const CAPTAIN_CANNOT_ACT = "Captain cannot act (frozen, immobilized or asleep)";
+
+/**
+ * The captain's signature move — decision §8.34(a).
+ *
+ * Dispatched from the existing `captainAttack` action with `isSpecial: true`
+ * (the field was already on the wire, so no new action type is introduced).
+ * It pays `verso.specialAttack.cost`, taps the captain, sets both action flags
+ * and builds the pending attack exactly like a character special: `atkBonus`,
+ * `element`, `attackTraits` (+ `zone` for `twoTargets`), `conditionalBonus`,
+ * piercing, `ignoreDef`, `ignoreShield`, `immobilize`, `sleep`,
+ * `cannotBeDodged`, `pushback`, `stripStealth` and `oncePerGame` (recorded
+ * under the attack name in `captain.usedOnceAbilities`).
+ *
+ * `permanentPvLoss` (Crocodile's Desert Girasol, −2 PV) and `noHeal` ride on
+ * the pending attack (decision §8.38) and are applied by `resolveAttack` once
+ * the blow lands — they are never folded into the raw damage, where a counter
+ * could have reduced them away.
+ *
+ * Rust: `captain::declare_captain_special_attack`.
+ */
+export function declareCaptainSpecialAttack(
+  state: GameState,
+  playerId: PlayerId,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): GameState {
+  const captain = state.players[playerId].captain;
+  const def = getCaptainDef(captain.defId);
+  const spec = def.verso.specialAttack;
+  return declareCaptainSpecAttack(
+    state,
+    playerId,
+    spec,
+    spec.oncePerGame ? spec.name : undefined,
+    targetInstanceId,
+    targetIsCaptain
+  );
+}
+
+/**
+ * The `useSurcharge` action — decision §8.34(b).
+ *
+ * Generic, data-driven plumbing for the `surcharge` block of the captain's
+ * **active** face: it resolves through the same code path as
+ * `declareCaptainSpecialAttack` and costs `surcharge.cost`. Inert on the
+ * shipped catalogue (every face has no `surcharge`).
+ *
+ * The active face is always the verso: the surcharge is an attack and "Le
+ * Capitaine recto ne peut pas attaquer" (Rulebook v3.1 §2.1, quoted verbatim
+ * in `captains.ts`), so a recto captain is refused before its face is read —
+ * a `recto.surcharge` could never be played.
+ *
+ * The one-per-turn limit falls out of the shared per-turn flags
+ * (`tapped` / `usedSpecialAttack`); the `surcharge_{name}` key in
+ * `captain.usedOnceAbilities` — that list is never cleared — guards a
+ * `oncePerGame` surcharge.
+ *
+ * Rust: `captain::use_captain_surcharge`.
+ */
+export function useCaptainSurcharge(
+  state: GameState,
+  playerId: PlayerId,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): GameState {
+  const captain = state.players[playerId].captain;
+  if (!captain.flipped) throw new Error("Captain not flipped (verso required)");
+  const def = getCaptainDef(captain.defId);
+  const surcharge = def.verso.surcharge;
+  if (!surcharge) throw new Error("Captain face has no surcharge");
+  return declareCaptainSpecAttack(
+    state,
+    playerId,
+    surcharge,
+    surcharge.oncePerGame ? onceSurchargeKey(surcharge.name) : undefined,
+    targetInstanceId,
+    targetIsCaptain
+  );
+}
+
+/**
+ * The shared body of `declareCaptainSpecialAttack` and `useCaptainSurcharge` —
+ * a captain attack driven by a `SpecialAttack` block.
+ * Rust: `captain::declare_captain_spec_attack`.
+ */
+function declareCaptainSpecAttack(
+  state: GameState,
+  playerId: PlayerId,
+  spec: SpecialAttack,
+  onceKey: string | undefined,
+  targetInstanceId: string,
+  targetIsCaptain: boolean
+): GameState {
+  const captain = state.players[playerId].captain;
+  if (!captain.flipped) throw new Error("Captain not flipped (verso required)");
+  if (captain.tapped) throw new Error("Captain is tapped");
+  if (captain.usedSpecialAttack) throw new Error("Captain special already used");
+  if (captainCannotAct(captain)) throw new Error(CAPTAIN_CANNOT_ACT);
+
+  const def = getCaptainDef(captain.defId);
+
+  // Captain summoning sickness — same rule as the base action (§8.40: the
+  // trait read goes through the union helper, `rush` included).
+  if (
+    captain.deployedTurn === state.turnNumber &&
+    !captainHasTraitNow(state, playerId, "rush")
+  ) {
+    throw new Error("Captain has summoning sickness");
+  }
+
+  if (onceKey !== undefined && captain.usedOnceAbilities.includes(onceKey)) {
+    throw new Error("Already used this ability (1x/game)");
+  }
+  if (!canAfford(state, playerId, spec.cost)) {
+    throw new Error(`Cannot afford captain special (cost ${spec.cost})`);
+  }
+
+  // Decision §8.38: the taunt binds the captain's special too (inert while
+  // nothing in the shipped catalogue can taunt a captain).
+  const { enforceTargetLegality, conditionalAtkBonus } = require("./combat");
+  enforceTargetLegality(state, `captain_${playerId}`, targetInstanceId, targetIsCaptain, true);
+
+  const facePiercing = captainHasTraitNow(state, playerId, "piercing");
+  const hasNaturalHaki = (def.verso.naturalHaki?.length ?? 0) > 0;
+
+  // Base ATK = the verso stat plus the captain's ATK modifiers, then the
+  // attack's own bonus (the character path does exactly this).
+  let baseAtk = def.verso.atk;
+  for (const mod of captain.modifiers) {
+    if (mod.stat === "atk") baseAtk += mod.amount;
+  }
+  const condBonus: number = conditionalAtkBonus(
+    state,
+    spec.conditionalBonus,
+    targetInstanceId,
+    targetIsCaptain,
+    getOpponent(playerId)
+  );
+  const totalAtk = baseAtk + spec.atkBonus + condBonus;
+
+  // "Touche 2 cibles" is approximated as a small Zone, like the character special.
+  const attackTraits: AttackTrait[] = [...(spec.attackTraits ?? [])];
+  if (spec.twoTargets && !attackTraits.includes("zone")) attackTraits.push("zone");
+  // Decision §8.47 × §8.28.
+  for (const at of attachmentsGrantedAttackTraits(state, state.players[playerId].captain.attachedObjects ?? [])) {
+    if (!attackTraits.includes(at)) attackTraits.push(at);
+  }
+
+  let targetDefVal = 0;
+  if (targetIsCaptain) {
+    const opponentId = getOpponent(playerId);
+    const oppCap = state.players[opponentId].captain;
+    const oppCapDef = getCaptainDef(oppCap.defId);
+    targetDefVal = oppCap.flipped ? oppCapDef.verso.def : oppCapDef.recto.def;
+    for (const mod of oppCap.modifiers) {
+      if (mod.stat === "def") targetDefVal += mod.amount;
+    }
+    // Decision §8.55: DEF is a non-negative stat — a captain debuffed below 0
+    // must not *gain* damage through the piercing `floor(def / 2)`.
+    targetDefVal = Math.max(0, targetDefVal);
+  } else {
+    targetDefVal = getEffectiveDef(state, targetInstanceId);
+  }
+  if (attackTraits.includes("piercing") || facePiercing) {
+    targetDefVal = Math.floor(Math.max(0, targetDefVal) / 2);
+  }
+  // TS truthiness: `ignoreDef: 0` is falsy — no clamp at all.
+  if (spec.ignoreDef) targetDefVal = Math.max(0, targetDefVal - spec.ignoreDef);
+
+  const rawDamage = Math.max(0, totalAtk - targetDefVal);
+
+  // Haki to pierce Logia: natural Haki, Armament passive (T7+), Water element
+  // or a Haki granted this turn (Rulebook v3.1 §7/§9).
+  const hasHaki =
+    hasNaturalHaki ||
+    state.turnNumber >= 7 ||
+    spec.element === "water" ||
+    !!state.players[playerId].hakiThisTurn;
+
+  let next = spendVolonte(state, playerId, spec.cost);
+
+  const pending: PendingAttack = {
+    attackerId: `captain_${playerId}`,
+    targetId: targetInstanceId,
+    targetIsCaptain,
+    isSpecial: true,
+    rawDamage,
+    attackPower: totalAtk,
+    element: spec.element,
+    attackTraits,
+    hasHaki,
+    ignoreShield: spec.ignoreShield,
+    cannotBeDodged: spec.cannotBeDodged,
+    immobilize: spec.immobilize,
+    sleep: spec.sleep,
+    pushback: spec.pushback || (spec.pushbackSlots ?? 0) > 0,
+    stripStealth: spec.stripStealth,
+    // Decision §8.38: "La cible perd N PV permanent (Sable)" / "… et ne peut
+    // plus etre soignee" ride on the pending attack and resolve after damage.
+    permanentPvLoss: spec.permanentPvLoss,
+    noHeal: spec.noHeal,
+  };
+
+  next = produce(next, (draft) => {
+    const cap = draft.players[playerId].captain;
+    cap.tapped = true;
+    // One action per turn (Rulebook v3.1 §2.2/§6): base OR special, never both.
+    cap.usedSpecialAttack = true;
+    cap.usedBaseAction = true;
+    if (onceKey !== undefined) cap.usedOnceAbilities.push(onceKey);
+    draft.pendingAttack = pending;
+  });
+
+  const targetName = targetIsCaptain
+    ? "Capitaine"
+    : getCardDef(next.cards[targetInstanceId].defId).name;
+  return addLog(
+    next,
+    playerId,
+    `Capitaine ${def.name} utilise ${spec.name} sur ${targetName} (ATK ${totalAtk} vs DEF ${targetDefVal} = ${rawDamage} degats)`
   );
 }
