@@ -182,6 +182,54 @@ fn all_four_decks_verify_against_the_registry() {
 /// Crocodile / Akainu": names that exist in the game only as captains. Under
 /// the character-only reading each of the three decks carried a permanently
 /// dead SR card, and `BW-011`'s Ground Death — the §8.38 × §8.48 work — could
+/// Decisions §8.64-§8.67 — every printed object clause now has somewhere to
+/// live. This asserts the *data* half across the whole catalogue: any object
+/// whose `equip_effect` promises an activatable line, a wielder bonus, an
+/// entry/destroy trigger or an aura must carry the matching structured field,
+/// so the clause can never silently go back to being display text.
+#[test]
+fn every_structured_object_clause_has_its_field() {
+    let registry = cards::registry();
+    let expected: &[(&str, &str)] = &[
+        ("BW-014", "on_destroy"),
+        ("BW-015", "ignore_stealth"),
+        ("BW-016", "on_bearer_entry_token"),
+        ("BW-017", "activated"),
+        ("MG-009", "wielder"),
+        ("MG-011", "on_destroy"),
+        ("MG-018", "activated"),
+        ("MR-013", "wielder"),
+        ("MR-015", "activated"),
+        ("MR-016", "grants_attack"),
+        ("MR-017", "activated"),
+        ("RH-010", "ignore_shield"),
+        ("RH-011", "wielder"),
+        ("RH-012", "wielder"),
+        ("RH-013", "wielder"),
+        ("RH-015", "activated"),
+        ("RH-016", "adjacent_enemy_atk"),
+    ];
+    for (id, field) in expected {
+        let def = registry.get_card_def(id).expect("a shipped object");
+        let fx = def
+            .object_effects
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} has no object_effects"));
+        let present = match *field {
+            "on_destroy" => fx.on_destroy.is_some(),
+            "ignore_stealth" => fx.ignore_stealth.unwrap_or(false),
+            "on_bearer_entry_token" => fx.on_bearer_entry_token.is_some(),
+            "activated" => fx.activated.is_some(),
+            "wielder" => fx.wielder.is_some(),
+            "grants_attack" => fx.grants_attack.is_some(),
+            "ignore_shield" => fx.ignore_shield.unwrap_or(false),
+            "adjacent_enemy_atk" => fx.adjacent_enemy_atk.is_some(),
+            other => panic!("unknown field {other}"),
+        };
+        assert!(present, "{id} ({}) is missing `{field}`", def.name);
+    }
+}
+
 /// Decision §8.62 — each Red Hair rifle prints "Si equipee par <name>" and
 /// requires the `tireur` tag. Only Yasopp carried it, so Beckman's own rifle
 /// and Lucky Roux's own pistol could never reach the wielder they name, and

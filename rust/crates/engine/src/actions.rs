@@ -657,6 +657,66 @@ fn build_valid_actions(
     }
 
     // ------------------------------------------------------------
+    // Decision §8.67 — activated object abilities. Without this enumeration the
+    // action would exist but never be offered, so it would stay unplayable —
+    // exactly the defect it fixes.
+    {
+        let mut bearers: Vec<(Option<String>, Vec<String>, Vec<String>)> = Vec::new();
+        for ch in &board_chars {
+            bearers.push((
+                Some(ch.instance_id.clone()),
+                ch.used_once_abilities.clone(),
+                ch.attached_objects.clone(),
+            ));
+        }
+        let cap = &state.players.get(player_id).captain;
+        bearers.push((
+            None,
+            cap.used_once_abilities.clone(),
+            cap.attached_objects.clone(),
+        ));
+        let live_foes: Vec<String> = opp_chars
+            .iter()
+            .filter(|c| !crate::board::is_untargetable_now(state, &c.instance_id))
+            .map(|c| c.instance_id.clone())
+            .collect();
+        for (_, once, objs) in &bearers {
+            for obj_id in objs {
+                let Some(o) = state.cards.get(obj_id) else {
+                    continue;
+                };
+                let od = registry.get_card_def(&o.def_id)?;
+                let Some(fx) = od.object_effects.as_ref() else {
+                    continue;
+                };
+                let (cost, kind, per_game) = match (&fx.activated, &fx.grants_attack) {
+                    (Some(a), _) => (a.cost, a.target.clone(), a.once_per_game.unwrap_or(false)),
+                    (None, Some(g)) => (g.cost, "enemy".to_string(), false),
+                    _ => continue,
+                };
+                if per_game && once.iter().any(|k| k == &format!("obj_{}", od.id)) {
+                    continue;
+                }
+                if !state.can_afford(player_id, cost) {
+                    continue;
+                }
+                if kind == "enemy" {
+                    for foe in &live_foes {
+                        actions.push(GameAction::ActivateObject {
+                            object_instance_id: obj_id.clone(),
+                            target_instance_id: Some(foe.clone()),
+                        });
+                    }
+                } else {
+                    actions.push(GameAction::ActivateObject {
+                        object_instance_id: obj_id.clone(),
+                        target_instance_id: None,
+                    });
+                }
+            }
+        }
+    }
+
     // Captain flip
     // ------------------------------------------------------------
     if can_flip_captain(state, registry, player_id)? {

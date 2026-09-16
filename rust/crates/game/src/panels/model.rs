@@ -77,6 +77,7 @@ pub fn status_label(effect: StatusEffectType) -> &'static str {
         StatusEffectType::NoHeal => "Soins bloqués",
         StatusEffectType::Taunt => "Provoqué",
         StatusEffectType::Untargetable => "Inciblable",
+        StatusEffectType::Reflect => "Dial armé",
     }
 }
 
@@ -219,6 +220,8 @@ pub struct ActionMenuView {
     /// [`GameAction::AwakenFruit`] for, plus the fruits it refuses with the
     /// reason why.
     pub awakenings: Vec<AbilityButton>,
+    /// Decision §8.67 — *⚡* — the activatable line of each worn object.
+    pub activations: Vec<AbilityButton>,
     /// *Déplacer* — the once-per-turn free repositioning (§8.29). `None` when
     /// the unit carries no move at all (never deployed, off the board).
     pub free_move: Option<AbilityButton>,
@@ -523,6 +526,14 @@ pub fn action_menu_view(
 
     // --- *Éveiller* (§8.47/§8.48: awakening is what unlocks the above) ---
     let awakenings = awakening_rows(state, registry, valid, &instance.attached_objects, volonte);
+    let activations = activation_rows(
+        state,
+        registry,
+        valid,
+        &instance.attached_objects,
+        &instance.used_once_abilities,
+        volonte,
+    );
 
     // --- the free move (§8.29) ---
     let move_targets = move_slots(valid, instance_id);
@@ -564,6 +575,7 @@ pub fn action_menu_view(
         special,
         fruit_specials,
         awakenings,
+        activations,
         free_move,
         equipment: equipment_lines(state, registry, &instance.attached_objects),
         pv_max_loss: instance.pv_max_loss.unwrap_or(0).max(0),
@@ -709,6 +721,65 @@ fn awakening_rows(
     rows
 }
 
+/// Decision §8.67 — *⚡ <capacite>* — one row per equipped object whose printed
+/// line is activatable ("1x/partie : …", "le porteur gagne une attaque …").
+/// Without these rows the action exists in the engine but no click produces it,
+/// so the six printed lines would stay unplayable.
+fn activation_rows(
+    state: &GameState,
+    registry: &CardRegistry,
+    valid: &[GameAction],
+    attached: &[String],
+    used_once: &[String],
+    volonte: i32,
+) -> Vec<AbilityButton> {
+    let mut rows = Vec::new();
+    for obj_id in attached {
+        let Some(obj) = state.card(obj_id) else {
+            continue;
+        };
+        let Some(def) = registry.card_def(&obj.def_id) else {
+            continue;
+        };
+        let Some(fx) = def.object_effects.as_ref() else {
+            continue;
+        };
+        let (name, cost, once) = match (&fx.activated, &fx.grants_attack) {
+            (Some(a), _) => (a.name.clone(), a.cost, a.once_per_game.unwrap_or(false)),
+            (None, Some(g)) => (g.name.clone(), g.cost, false),
+            _ => continue,
+        };
+        let offered: Vec<&GameAction> = valid
+            .iter()
+            .filter(|a| {
+                matches!(a, GameAction::ActivateObject { object_instance_id, .. }
+                    if object_instance_id == obj_id)
+            })
+            .collect();
+        let spent = once && used_once.iter().any(|k| k == &format!("obj_{}", def.id));
+        let reason = first_reason(&[
+            (spent, "Déjà utilisé (1x/partie)"),
+            (volonte < cost, "Volonté insuffisante"),
+            (offered.is_empty(), "Aucune cible"),
+        ]);
+        let command = offered
+            .first()
+            .map(|a| UiCommand::Dispatch((*a).clone()))
+            .unwrap_or(UiCommand::Dispatch(GameAction::ActivateObject {
+                object_instance_id: obj_id.clone(),
+                target_instance_id: None,
+            }));
+        rows.push(AbilityButton {
+            label: format!("{name} ({})", def.name),
+            cost,
+            disabled: reason.is_some(),
+            reason,
+            command,
+        });
+    }
+    rows
+}
+
 // ============================================================
 // Captain menu (CaptainMenu.tsx)
 // ============================================================
@@ -827,6 +898,8 @@ pub struct CaptainMenuView {
     pub fruit_specials: Vec<AttackOption>,
     /// *Éveiller* for a fruit the captain wears but has not awakened yet.
     pub awakenings: Vec<AbilityButton>,
+    /// Decision §8.67 — *⚡* — the activatable line of each worn object.
+    pub activations: Vec<AbilityButton>,
     /// The equipment the captain wears (§8.28 follow-up).
     pub equipment: Vec<EquipmentLine>,
     /// *Haki des Rois* is drawn from the turn it becomes a rule at all, so the
@@ -1241,6 +1314,14 @@ pub fn captain_menu_view(
         surcharge,
         fruit_specials,
         awakenings,
+        activations: activation_rows(
+            state,
+            registry,
+            valid,
+            &captain.attached_objects,
+            &captain.used_once_abilities,
+            state.player(captain.owner).volonte,
+        ),
         equipment: equipment_lines(state, registry, &captain.attached_objects),
         show_king_haki: is_you,
         can_king_haki,

@@ -2772,7 +2772,43 @@ pub fn apply_character_damage(
     let target_owner = target.owner;
     let target_def_id = target.def_id.clone();
     let logia_used_this_turn = target.logia_used_this_turn.unwrap_or(false);
+    let has_reflect = target.has_status(StatusEffectType::Reflect);
     let target_name = registry.get_card_def(&target_def_id)?.name.clone();
+
+    // Decision §8.67 — `MG-018` Dial d'Impact: armed, it absorbs the next
+    // attack in full and sends it back at the attacker. The printed text sends
+    // it back "a votre prochain tour"; the trigger is pulled back to the moment
+    // of absorption, since otherwise the amount would have to survive a turn
+    // change AND a second target selection — a deliberate, recorded
+    // compression, the amount and the target staying those of the text.
+    if has_reflect && pending.raw_damage > 0 {
+        let amount = pending.raw_damage;
+        let attacker_owner = get_attacker_owner(state, &pending.attacker_id)?;
+        let t = state.get_card_mut(&pending.target_id)?;
+        t.status_effects
+            .retain(|e| e.effect_type != StatusEffectType::Reflect);
+        if state.cards.contains_key(&pending.attacker_id) {
+            state.get_card_mut(&pending.attacker_id)?.current_pv -= amount;
+            let an = registry
+                .get_card_def(&state.cards[&pending.attacker_id].def_id)?
+                .name
+                .clone();
+            state.add_log(
+                target_owner,
+                format!("Dial d'Impact : {amount} degats absorbes puis renvoyes !"),
+            );
+            state.add_log(
+                attacker_owner,
+                format!("{an} encaisse {amount} degats (Impact)."),
+            );
+        } else {
+            state.add_log(
+                target_owner,
+                format!("Dial d'Impact : {amount} degats absorbes puis renvoyes !"),
+            );
+        }
+        return Ok(());
+    }
 
     // Logia check (includes traits from equipped Devil Fruits)
     let is_logia = has_trait(state, registry, &pending.target_id, Trait::Logia)?;

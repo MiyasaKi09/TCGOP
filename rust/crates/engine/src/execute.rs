@@ -66,6 +66,270 @@ use crate::types::{
 // Small local helpers (no TS counterpart)
 // ============================================================
 
+/// Decision §8.67 — activate an equipped object's ability.
+///
+/// Six objects print an activatable line ("1x/partie : …", "le porteur gagne
+/// une attaque …") and **no** engine action could fire it: all six were
+/// unplayable whoever wore them. The cost is in Volonte, the once-per-game mark
+/// lives on the BEARER (`used_once_abilities`, like specials), and the object
+/// must be equipped on one of the player's own units.
+///
+/// TS: `turnManager::activateObject`.
+fn activate_object(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    ctx: &mut EngineContext,
+    player_id: PlayerId,
+    object_instance_id: &str,
+    target_instance_id: Option<&str>,
+) -> Result<(), EngineError> {
+    let _ = ctx;
+    let Some(obj) = state.cards.get(object_instance_id) else {
+        return Err(EngineError::illegal("Object not found"));
+    };
+    let obj_def = registry.get_card_def(&obj.def_id)?.clone();
+    let fx = obj_def.object_effects.clone().unwrap_or_default();
+    let act = fx.activated.clone();
+    let granted = fx.grants_attack.clone();
+    let (name, cost, target_kind, once) = match (&act, &granted) {
+        (Some(a), _) => (
+            a.name.clone(),
+            a.cost,
+            a.target.clone(),
+            a.once_per_game.unwrap_or(false),
+        ),
+        (None, Some(g)) => (g.name.clone(), g.cost, "enemy".to_string(), false),
+        _ => return Err(EngineError::illegal("This object has no activated ability")),
+    };
+
+    // Find the bearer (character or captain).
+    let mut bearer: Option<String> = None;
+    for sl in Slot::ALL {
+        if let Some(id) = state.players.get(player_id).board.get(sl) {
+            if state
+                .cards
+                .get(id)
+                .is_some_and(|c| c.attached_objects.iter().any(|o| o == object_instance_id))
+            {
+                bearer = Some(id.clone());
+                break;
+            }
+        }
+    }
+    let on_captain = state
+        .players
+        .get(player_id)
+        .captain
+        .attached_objects
+        .iter()
+        .any(|o| o == object_instance_id);
+    let bearer_name = if on_captain {
+        registry
+            .get_captain_def(&state.players.get(player_id).captain.def_id)?
+            .name
+            .clone()
+    } else {
+        match &bearer {
+            Some(id) => registry.get_card_def(&state.cards[id].def_id)?.name.clone(),
+            None => {
+                return Err(EngineError::illegal(
+                    "Object is not equipped on one of your units",
+                ));
+            }
+        }
+    };
+
+    let once_key = format!("obj_{}", obj_def.id);
+    let already = if on_captain {
+        state.players.get(player_id).captain.used_once(&once_key)
+    } else {
+        state.cards[bearer.as_ref().unwrap()]
+            .used_once_abilities
+            .iter()
+            .any(|k| k == &once_key)
+    };
+    if once && already {
+        return Err(EngineError::illegal("Already used (1x/game)"));
+    }
+    if !state.can_afford(player_id, cost) {
+        return Err(EngineError::illegal("Cannot afford this ability"));
+    }
+
+    let target = if target_kind == "enemy" {
+        let Some(t) = target_instance_id else {
+            return Err(EngineError::illegal("This ability needs a target"));
+        };
+        let ok = state
+            .cards
+            .get(t)
+            .is_some_and(|c| c.zone == Zone::Board && c.controller() != player_id);
+        if !ok {
+            return Err(EngineError::illegal("Target must be an enemy on the board"));
+        }
+        crate::board::assert_targetable(state, player_id.opponent(), t, false)?;
+        Some(t.to_string())
+    } else {
+        None
+    };
+
+    state.spend_volonte(player_id, cost)?;
+    if once {
+        if on_captain {
+            state
+                .players
+                .get_mut(player_id)
+                .captain
+                .used_once_abilities
+                .push(once_key);
+        } else {
+            state
+                .get_card_mut(bearer.as_ref().unwrap())?
+                .used_once_abilities
+                .push(once_key);
+        }
+    }
+    let obj_name = obj_def.name.clone();
+    state.add_log(
+        player_id,
+        format!("{bearer_name} active {obj_name} : {name}"),
+    );
+
+    // RH-015 "tous vos allies sont soignes de 2 PV et gagnent +1 ATK".
+    if let Some(a) = act
+        .as_ref()
+        .filter(|a| a.heal_all_allies.unwrap_or(0) > 0 || a.buff_all_allies_atk.unwrap_or(0) > 0)
+    {
+        let ids: Vec<String> = Slot::ALL
+            .iter()
+            .filter_map(|sl| state.players.get(player_id).board.get(*sl).cloned())
+            .collect();
+        for id in &ids {
+            if let Some(amount) = a.buff_all_allies_atk.filter(|x| *x != 0) {
+                state.get_card_mut(id)?.modifiers.push(Modifier {
+                    id: format!("obj_{object_instance_id}_atk_{id}"),
+                    stat: ModifierStat::Atk,
+                    amount,
+                    source: format!("object_{}", obj_def.id),
+                    duration: ModifierDuration::Turn,
+                    turns_remaining: None,
+                });
+            }
+        }
+        if let Some(heal) = a.heal_all_allies.filter(|x| *x > 0) {
+            for id in &ids {
+                crate::board::heal_unit(state, registry, id, heal)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // MG-018 Dial d'Impact: arm the absorption on the bearer.
+    if act
+        .as_ref()
+        .is_some_and(|a| a.reflect_next_attack.unwrap_or(false))
+    {
+        let eff = StatusEffect {
+            effect_type: StatusEffectType::Reflect,
+            turns_remaining: -1,
+            damage_per_turn: 0,
+            source: object_instance_id.to_string(),
+        };
+        if on_captain {
+            state
+                .players
+                .get_mut(player_id)
+                .captain
+                .status_effects
+                .push(eff);
+        } else {
+            state
+                .get_card_mut(bearer.as_ref().unwrap())?
+                .status_effects
+                .push(eff);
+        }
+        state.add_log(
+            player_id,
+            format!("{obj_name} : la prochaine attaque subie sera absorbee puis renvoyee."),
+        );
+        return Ok(());
+    }
+
+    if let Some(target) = target {
+        let t_def_id = state.cards[&target].def_id.clone();
+        let t_name = registry.get_card_def(&t_def_id)?.name.clone();
+        let is_cursed = crate::board::has_trait(state, registry, &target, Trait::Cursed)?;
+        let dmg = match (is_cursed, act.as_ref().and_then(|a| a.cursed_damage)) {
+            (true, Some(c)) => c,
+            _ => act
+                .as_ref()
+                .and_then(|a| a.damage)
+                .or(granted.as_ref().map(|g| g.damage))
+                .unwrap_or(0),
+        };
+        if dmg > 0 {
+            state.get_card_mut(&target)?.current_pv -= dmg;
+            state.add_log(
+                player_id,
+                format!("{obj_name} : {t_name} subit {dmg} degats."),
+            );
+            // Zone: the target's neighbours take the same (BW-017).
+            if act.as_ref().is_some_and(|a| a.zone.unwrap_or(false)) {
+                let owner = state.cards[&target].controller();
+                let slot = state.cards[&target].slot;
+                if let Some(slot) = slot {
+                    for adj in crate::board::get_adjacent_slots(slot) {
+                        let Some(id) = state.players.get(owner).board.get(*adj).cloned() else {
+                            continue;
+                        };
+                        state.get_card_mut(&id)?.current_pv -= dmg;
+                        let n = registry
+                            .get_card_def(&state.cards[&id].def_id)?
+                            .name
+                            .clone();
+                        state.add_log(
+                            player_id,
+                            format!("{obj_name} (Zone) : {n} subit {dmg} degats."),
+                        );
+                    }
+                }
+            }
+        }
+        if act
+            .as_ref()
+            .is_some_and(|a| a.strip_traits_if_cursed.unwrap_or(false))
+            && is_cursed
+        {
+            state
+                .get_card_mut(&target)?
+                .status_effects
+                .push(StatusEffect {
+                    effect_type: StatusEffectType::NoStealth,
+                    turns_remaining: -1,
+                    damage_per_turn: 0,
+                    source: object_instance_id.to_string(),
+                });
+            state.add_log(
+                player_id,
+                format!("{t_name} est neutralise par le Granit Marin : il perd ses traits."),
+            );
+        }
+        if act.as_ref().is_some_and(|a| a.lose_action.unwrap_or(false)) {
+            state
+                .get_card_mut(&target)?
+                .status_effects
+                .push(StatusEffect {
+                    effect_type: StatusEffectType::LoseAction,
+                    turns_remaining: 1,
+                    damage_per_turn: 0,
+                    source: object_instance_id.to_string(),
+                });
+            state.add_log(player_id, format!("{t_name} perd sa prochaine action."));
+        }
+        sweep_kos(state, registry, ctx, player_id.opponent(), player_id)?;
+    }
+    Ok(())
+}
+
 /// Decision §8.37 — the refusal an embargoed player gets on `equipObject`.
 pub const EMBARGO_EQUIP: &str = "Embargo: cannot equip an object this turn";
 /// Decision §8.37 — the refusal an embargoed player gets on `deployShip`.
@@ -414,6 +678,18 @@ fn execute_action_inner(
         GameAction::AwakenFruit { fruit_instance_id } => {
             awaken_fruit(state, registry, current, fruit_instance_id)
         }
+
+        GameAction::ActivateObject {
+            object_instance_id,
+            target_instance_id,
+        } => activate_object(
+            state,
+            registry,
+            ctx,
+            current,
+            object_instance_id,
+            target_instance_id.as_deref(),
+        ),
 
         GameAction::FruitSpecialAttack {
             attacker_instance_id,

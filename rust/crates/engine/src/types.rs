@@ -461,6 +461,10 @@ pub enum StatusEffectType {
     /// printed text is absolute — and it is purged when the turn changes.
     #[serde(rename = "untargetable")]
     Untargetable,
+    /// Decision §8.67 — `MG-018` Dial d'Impact: the next attack the bearer
+    /// takes is absorbed (damage to 0) and sent back at the attacker.
+    #[serde(rename = "reflect")]
+    Reflect,
 }
 
 /// TS `CardInstance.zone: "deck" | "hand" | "board" | "graveyard" | "banished"`.
@@ -1520,6 +1524,17 @@ pub enum GameAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_is_captain: Option<bool>,
     },
+    /// Decision §8.67 — activate an equipped object's ability.
+    ///
+    /// Five objects print "1x/partie : …" and a sixth "le porteur gagne une
+    /// attaque …": no engine action could fire them, so all six printed lines
+    /// were unplayable whoever wore them.
+    #[serde(rename = "activateObject")]
+    ActivateObject {
+        object_instance_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_instance_id: Option<String>,
+    },
     #[serde(rename = "endTurn")]
     EndTurn,
 }
@@ -1546,6 +1561,7 @@ impl GameAction {
             GameAction::ActivateShip { .. } => "activateShip",
             GameAction::AwakenFruit { .. } => "awakenFruit",
             GameAction::FruitSpecialAttack { .. } => "fruitSpecialAttack",
+            GameAction::ActivateObject { .. } => "activateObject",
             GameAction::EndTurn => "endTurn",
         }
     }

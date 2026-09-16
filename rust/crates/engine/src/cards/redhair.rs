@@ -295,6 +295,7 @@ pub fn cards() -> Vec<CardDef> {
                 "+2 ATK. Attaques : Haki Armement (touchent les Logia) et ignorent le Bouclier. Si équipée par Shanks : +1 ATK."
                     .to_string(),
             ),
+            object_effects: Some(ObjectEffects { grants_haki: Some(true), ignore_shield: Some(true), wielder: Some(WielderClause { name: "Shanks".to_string(), atk_bonus: Some(1), ..Default::default() }), ..Default::default() }),
             ..base("RH-010", "Gryphon", CardType::Object, 2, Rarity::R)
         },
         CardDef {
@@ -305,6 +306,7 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(
                 "+1 ATK. Attaques : Portée. Si équipée par Beckman : +1 ATK.".to_string(),
             ),
+            object_effects: Some(ObjectEffects { wielder: Some(WielderClause { name: "Ben Beckman".to_string(), atk_bonus: Some(1), ..Default::default() }), ..Default::default() }),
             ..base("RH-011", "Fusil de Beckman", CardType::Object, 1, Rarity::C)
         },
         CardDef {

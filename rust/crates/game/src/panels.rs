@@ -960,7 +960,14 @@ fn spawn_action_menu(
                 }
 
                 // *Éveiller* (`awakenFruit`) and *Déplacer* (`moveCharacter`).
-                for extra in view.awakenings.iter().chain(view.free_move.as_ref()) {
+                // Decision §8.67 — les capacites activees d'objets, rendues
+                // avec les eveils et le deplacement.
+                for extra in view
+                    .awakenings
+                    .iter()
+                    .chain(view.activations.iter())
+                    .chain(view.free_move.as_ref())
+                {
                     pop.spawn((row(6.), Pickable::IGNORE))
                         .with_children(|acts| {
                             spawn_popover_ability(acts, ctx, extra);
@@ -1425,7 +1432,7 @@ fn spawn_captain_menu(
                                     .disabled(fruit.disabled),
                             );
                         }
-                        for awakening in &view.awakenings {
+                        for awakening in view.awakenings.iter().chain(view.activations.iter()) {
                             let label = match (&awakening.reason, awakening.cost) {
                                 (Some(reason), _) => {
                                     format!("{} \u{2014} {reason}", awakening.label)

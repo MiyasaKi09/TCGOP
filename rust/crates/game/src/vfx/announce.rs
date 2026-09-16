@@ -250,6 +250,19 @@ pub fn build_announcement(
     let kind = action.type_name();
 
     match action {
+        // Decision §8.67 — une capacite d'objet activee s'annonce comme le
+        // reste, sinon elle se declencherait sans que rien ne le dise.
+        GameAction::ActivateObject {
+            object_instance_id,
+            target_instance_id,
+        } => {
+            let def = def_of(state, registry, object_instance_id)?;
+            let mut ann = PlayAnnouncement::base(side, kind, format!("Active {}", def.name));
+            ann.def_id = Some(def.id.clone());
+            ann.instance_id = Some(object_instance_id.clone());
+            ann.dest_id = target_instance_id.clone();
+            Some(ann)
+        }
         GameAction::DeployCharacter { instance_id, slot } => {
             let def = def_of(state, registry, instance_id)?;
             let mut ann = PlayAnnouncement::base(
