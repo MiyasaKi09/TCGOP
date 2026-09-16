@@ -5,9 +5,10 @@
 //! registry is filled by iterating it, and later ids overwrite earlier ones).
 
 use crate::types::{
-    AttackTrait, BaseAction, BuffDuration, CardDef, CardType, CounterEffect, EventEffect, Faction,
-    GrantedTrait, HakiType, ObjectSubtype, PassiveDef, PassiveEffect, Rarity, Row, ShipActive,
-    ShipDestroyEffect, SpecialAttack, SynergyDef, Trait,
+    ActivatedObjectAbility, AttackTrait, BaseAction, BuffDuration, CardDef, CardType,
+    CounterEffect, EventEffect, Faction, GrantedTrait, HakiType, ObjectEffects, ObjectSubtype,
+    PassiveDef, PassiveEffect, Rarity, Row, ShipActive, ShipDestroyEffect, SpecialAttack,
+    SynergyDef, Trait, WielderClause,
 };
 
 /// TS `redhairCards: CardDef[]` (`src/data/cards/redhair.ts`).
@@ -315,6 +316,7 @@ pub fn cards() -> Vec<CardDef> {
                 "+1 ATK. Attaques : Portée. Si équipée par Lucky Roux : attaques inesquivables."
                     .to_string(),
             ),
+            object_effects: Some(ObjectEffects { wielder: Some(WielderClause { name: "Lucky Roux".to_string(), no_dodge: Some(true), ..Default::default() }), ..Default::default() }),
             ..base(
                 "RH-012",
                 "Pistolet de Lucky Roux",
@@ -331,6 +333,7 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(
                 "+1 ATK. Attaques : Portée. Si équipée par Yasopp : +1 ATK et Perçant.".to_string(),
             ),
+            object_effects: Some(ObjectEffects { wielder: Some(WielderClause { name: "Yasopp".to_string(), atk_bonus: Some(1), attack_traits: Some(vec![AttackTrait::Piercing]), ..Default::default() }), ..Default::default() }),
             ..base("RH-013", "Fusil de Yasopp", CardType::Object, 1, Rarity::C)
         },
         // === OBJETS - ACCESSOIRES ===
@@ -350,6 +353,7 @@ pub fn cards() -> Vec<CardDef> {
                 "1x/partie : tous vos alliés sont soignés de 2 PV et gagnent +1 ATK ce tour."
                     .to_string(),
             ),
+            object_effects: Some(ObjectEffects { activated: Some(ActivatedObjectAbility { name: "Sake de la Fete".to_string(), cost: 0, once_per_game: Some(true), target: "none".to_string(), heal_all_allies: Some(2), buff_all_allies_atk: Some(1), ..Default::default() }), ..Default::default() }),
             ..base("RH-015", "Sake de la Fête", CardType::Object, 1, Rarity::U)
         },
         CardDef {
@@ -359,6 +363,7 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(
                 "+2 DEF. Les ennemis adjacents au porteur ont -1 ATK.".to_string(),
             ),
+            object_effects: Some(ObjectEffects { adjacent_enemy_atk: Some(1), ..Default::default() }),
             ..base(
                 "RH-016",
                 "Cape de l'Empereur",

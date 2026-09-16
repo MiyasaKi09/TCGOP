@@ -665,11 +665,26 @@ pub fn declare_captain_base_attack(
     }
 
     let cap_name = def.name.clone();
+    // Decision §8.65 — les drapeaux des objets que porte le capitaine valent
+    // pour son attaque de BASE aussi : Gryphon (RH-010) nomme Shanks, qui
+    // n'existe que comme capitaine, donc sans ces lectures sa clause etait
+    // injouable sur son porteur imprime.
+    let cap_objs = state
+        .players
+        .get(player_id)
+        .captain
+        .attached_objects
+        .clone();
+    let cap_grants_haki =
+        crate::board::worn_object_flag(state, registry, &cap_objs, &cap_name, "grantsHaki")?;
+    let cap_ignores_shield =
+        crate::board::worn_object_flag(state, registry, &cap_objs, &cap_name, "ignoreShield")?;
     let has_haki = def
         .verso
         .natural_haki
         .as_ref()
         .is_some_and(|h| !h.is_empty())
+        || cap_grants_haki
         || state.turn_number >= 7
         // Decision §8.23: a `haki` modifier on the captain itself.
         || crate::combat::attacker_haki_modifier(
@@ -678,7 +693,19 @@ pub fn declare_captain_base_attack(
         );
     let face_piercing = captain_has_trait_now(state, registry, player_id, Trait::Piercing)?;
 
-    let attack_traits: Vec<AttackTrait> = base_action.attack_traits.clone().unwrap_or_default();
+    let mut attack_traits: Vec<AttackTrait> = base_action.attack_traits.clone().unwrap_or_default();
+    // Decision §8.47 × §8.65 — les traits d'attaque des objets portes, dont la
+    // clause reservee au porteur nomme.
+    for at in crate::board::attachments_granted_attack_traits(
+        state,
+        registry,
+        &cap_objs,
+        Some(&cap_name),
+    )? {
+        if !attack_traits.contains(&at) {
+            attack_traits.push(at);
+        }
+    }
 
     // Get target DEF
     let mut target_def_val = captain_target_def(
@@ -717,7 +744,7 @@ pub fn declare_captain_base_attack(
         pushback: attack_traits.contains(&AttackTrait::Impact).then_some(true),
         attack_traits,
         has_haki,
-        ignore_shield: None,
+        ignore_shield: Some(cap_ignores_shield),
         cannot_be_dodged: base_action.cannot_be_dodged,
         immobilize: base_action.immobilize,
         sleep: None,

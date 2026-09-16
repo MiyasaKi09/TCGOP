@@ -151,7 +151,7 @@ fn build_valid_actions(
             actions.push(GameAction::PassCounter);
 
             // Observation Haki to dodge (unless the attack cannot be dodged)
-            if is_haki_available(state, player_id, HakiType::Observation)
+            if is_haki_available(state, registry, player_id, HakiType::Observation)
                 && !pending.cannot_be_dodged.unwrap_or(false)
             {
                 actions.push(GameAction::UseHaki {
@@ -898,7 +898,7 @@ fn build_valid_actions(
     // Roi Haki (T10+): requires a Conquerant unit in play, KOs all enemies
     // DEF <= 3, 1x/game.
     // ------------------------------------------------------------
-    if is_haki_available(state, player_id, HakiType::King)
+    if is_haki_available(state, registry, player_id, HakiType::King)
         && has_conqueror_in_play(state, registry, player_id)?
     {
         let mut has_target = false;

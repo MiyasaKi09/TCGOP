@@ -545,6 +545,39 @@ pub fn apply_enemy_debuff_auras(
                 }
             }
         }
+        // Decision §8.65 — "Les ennemis adjacents au porteur ont -1 ATK"
+        // (`RH-016` Cape de l'Empereur). Same accumulator as the equivalent
+        // character passive, so the same "adjacent" approximation the engine
+        // already applies everywhere: the enemy front row.
+        {
+            let mut worn: Vec<String> = Vec::new();
+            for sl in Slot::ALL {
+                if let Some(id) = state.players.get(pid).board.get(sl) {
+                    if let Some(c) = state.cards.get(id) {
+                        worn.extend(c.attached_objects.iter().cloned());
+                    }
+                }
+            }
+            worn.extend(
+                state
+                    .players
+                    .get(pid)
+                    .captain
+                    .attached_objects
+                    .iter()
+                    .cloned(),
+            );
+            for obj_id in &worn {
+                if let Some(o) = state.cards.get(obj_id) {
+                    adj += registry
+                        .get_card_def(&o.def_id)?
+                        .object_effects
+                        .as_ref()
+                        .and_then(|f| f.adjacent_enemy_atk)
+                        .unwrap_or(0);
+                }
+            }
+        }
         if adj > 0 {
             for s in Slot::FRONT {
                 if let Some(id) = state.players.get(opp).board.get(s).cloned() {

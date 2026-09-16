@@ -194,6 +194,12 @@ pub fn attacker_no_dodge(
     }) {
         return Ok(true);
     }
+    // Decision §8.65 — « Si equipee par Lucky Roux : attaques inesquivables ».
+    let name = def.name.clone();
+    let attached = card.attached_objects.clone();
+    if crate::board::worn_object_flag(state, registry, &attached, &name, "noDodge")? {
+        return Ok(true);
+    }
     for obj_id in &card.attached_objects {
         if let Some(obj) = state.cards.get(obj_id) {
             if registry.get_card_def(&obj.def_id)?.id == "MG-013" {
@@ -202,6 +208,56 @@ pub fn attacker_no_dodge(
         }
     }
     Ok(false)
+}
+
+/// Decision §8.64 — "Les attaques de X ne peuvent etre ni esquivees ni
+/// bloquees" (`RH-003` Yasopp). The `AttacksIgnoreShield` passive was declared
+/// in the types and printed on the card, but NO code read it: only
+/// `spec.ignore_shield`, carried by a special attack, ever reached
+/// `PendingAttack::ignore_shield`. Its `NoDodge` twin *was* read — so half of
+/// Yasopp's printed text worked and half did not.
+///
+/// Also read on worn objects (`RH-010` Gryphon, §8.65), for a character or a
+/// captain alike. TS: `combat::attackerIgnoresShield`.
+pub fn attacker_ignores_shield(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+) -> Result<bool, EngineError> {
+    if let Some(card) = state.cards.get(attacker_instance_id) {
+        let def = registry.get_card_def(&card.def_id)?;
+        if def.passive.as_ref().is_some_and(|p| {
+            p.effects
+                .iter()
+                .any(|e| matches!(e, PassiveEffect::AttacksIgnoreShield))
+        }) {
+            return Ok(true);
+        }
+        let name = def.name.clone();
+        let attached = card.attached_objects.clone();
+        return crate::board::worn_object_flag(state, registry, &attached, &name, "ignoreShield");
+    }
+    // The synthetic `captain_<player>` id: the captain wears objects since
+    // §8.28, and Gryphon names Shanks, who exists ONLY as a captain.
+    let pid = get_attacker_owner(state, attacker_instance_id)?;
+    let cap = &state.players.get(pid).captain;
+    let cap_name = registry.get_captain_def(&cap.def_id)?.name.clone();
+    let attached = cap.attached_objects.clone();
+    crate::board::worn_object_flag(state, registry, &attached, &cap_name, "ignoreShield")
+}
+
+/// Decision §8.65 — a worn object that grants Haki de l'Armement (`RH-010`).
+pub fn attacker_grants_haki(
+    state: &GameState,
+    registry: &CardRegistry,
+    attacker_instance_id: &str,
+) -> Result<bool, EngineError> {
+    let Some(card) = state.cards.get(attacker_instance_id) else {
+        return Ok(false);
+    };
+    let name = registry.get_card_def(&card.def_id)?.name.clone();
+    let attached = card.attached_objects.clone();
+    crate::board::worn_object_flag(state, registry, &attached, &name, "grantsHaki")
 }
 
 /// TS `attackerStripsStealth(state, attackerInstanceId)`
@@ -650,7 +706,10 @@ fn declare_base_attack_inner(
         || state.turn_number >= 7
         || attack_element == Some(Element::Water)
         || state.players.get(owner).has_haki_this_turn()
-        || attacker_haki_modifier(state, attacker_instance_id);
+        || attacker_haki_modifier(state, attacker_instance_id)
+        // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) :
+        // l'objet porte donne le Haki a son porteur, quel que soit le tour.
+        || attacker_grants_haki(state, registry, attacker_instance_id)?;
 
     let strips_stealth = attacker_strips_stealth(state, registry, attacker_instance_id)?;
     let pending = PendingAttack {
@@ -663,7 +722,12 @@ fn declare_base_attack_inner(
         element: attack_element,
         attack_traits,
         has_haki,
-        ignore_shield: None,
+        // Decision §8.64/§8.65 — le passif du personnage et les objets portes.
+        ignore_shield: Some(attacker_ignores_shield(
+            state,
+            registry,
+            attacker_instance_id,
+        )?),
         // Decision §8.38: `BaseAction.cannotBeDodged` is finally *read* (no
         // shipped base action sets it, so this is inert on the catalogue).
         cannot_be_dodged: Some(
@@ -987,7 +1051,10 @@ fn declare_special_attack_inner(
         || state.turn_number >= 7
         || spec.element == Some(Element::Water)
         || state.players.get(owner).has_haki_this_turn()
-        || attacker_haki_modifier(state, attacker_instance_id);
+        || attacker_haki_modifier(state, attacker_instance_id)
+        // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) :
+        // l'objet porte donne le Haki a son porteur, quel que soit le tour.
+        || attacker_grants_haki(state, registry, attacker_instance_id)?;
 
     let strips_stealth = attacker_strips_stealth(state, registry, attacker_instance_id)?;
     let pending = PendingAttack {
@@ -1000,7 +1067,10 @@ fn declare_special_attack_inner(
         element: spec.element,
         attack_traits,
         has_haki,
-        ignore_shield: spec.ignore_shield,
+        ignore_shield: Some(
+            spec.ignore_shield.unwrap_or(false)
+                || attacker_ignores_shield(state, registry, attacker_instance_id)?,
+        ),
         cannot_be_dodged: Some(
             spec.cannot_be_dodged.unwrap_or(false)
                 || attacker_no_dodge(state, registry, attacker_instance_id)?,
@@ -1448,7 +1518,12 @@ fn declare_captain_fruit_special_attack_inner(
     let mut attack_traits: Vec<AttackTrait> = spec.attack_traits.clone().unwrap_or_default();
     // Decision §8.47 — the `AttackTrait` arm of the bearer's equipment.
     let attached = state.players.get(owner).captain.attached_objects.clone();
-    for at in crate::board::attachments_granted_attack_traits(state, registry, &attached)? {
+    for at in crate::board::attachments_granted_attack_traits(
+        state,
+        registry,
+        &attached,
+        Some(&cap_def.name),
+    )? {
         if !attack_traits.contains(&at) {
             attack_traits.push(at);
         }
@@ -1503,7 +1578,10 @@ fn declare_captain_fruit_special_attack_inner(
         element: spec.element,
         attack_traits,
         has_haki,
-        ignore_shield: spec.ignore_shield,
+        ignore_shield: Some(
+            spec.ignore_shield.unwrap_or(false)
+                || attacker_ignores_shield(state, registry, &captain_attacker_id(owner))?,
+        ),
         cannot_be_dodged: None,
         immobilize: spec.immobilize,
         sleep: spec.sleep,
@@ -1646,7 +1724,10 @@ fn declare_fruit_special_attack_inner(
     let has_haki = def_has_natural_haki
         || state.turn_number >= 7
         || spec.element == Some(Element::Water)
-        || attacker_haki_modifier(state, attacker_instance_id);
+        || attacker_haki_modifier(state, attacker_instance_id)
+        // Decision §8.65 — « Attaques : Haki Armement » (RH-010 Gryphon) :
+        // l'objet porte donne le Haki a son porteur, quel que soit le tour.
+        || attacker_grants_haki(state, registry, attacker_instance_id)?;
 
     let pending = PendingAttack {
         attacker_id: attacker_instance_id.to_string(),
@@ -1658,7 +1739,10 @@ fn declare_fruit_special_attack_inner(
         element: spec.element,
         attack_traits,
         has_haki,
-        ignore_shield: spec.ignore_shield,
+        ignore_shield: Some(
+            spec.ignore_shield.unwrap_or(false)
+                || attacker_ignores_shield(state, registry, attacker_instance_id)?,
+        ),
         cannot_be_dodged: None,
         immobilize: spec.immobilize,
         sleep: spec.sleep,

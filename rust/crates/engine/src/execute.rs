@@ -1913,7 +1913,7 @@ pub fn handle_haki(
     // The TS `handleHaki` never reads `action.targetInstanceId`.
     let _ = target_instance_id;
     match haki_type {
-        HakiType::Observation => use_observation_haki(state, player_id),
+        HakiType::Observation => use_observation_haki(state, registry, player_id),
         HakiType::King => use_king_haki(state, registry, ctx, player_id),
         // Armament (T7+) is a passive in Rulebook v3.1 — no activation.
         HakiType::Armament => Ok(()),
@@ -3170,7 +3170,7 @@ mod tests {
         let (mut state, reg, mut ctx, _target) = game_with_a_pending_attack();
 
         // The attacker asking directly is refused, and burns nothing.
-        let err = crate::haki::use_observation_haki(&mut state, p).unwrap_err();
+        let err = crate::haki::use_observation_haki(&mut state, &reg, p).unwrap_err();
         assert_eq!(
             err.to_string(),
             "Only the defender can use Observation Haki"

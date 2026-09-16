@@ -9,10 +9,11 @@
 //! before the two counters.
 
 use crate::types::{
-    AtkDefStat, AttackTrait, BaseAction, BuffStat, CardDef, CardType, CounterEffect, Element,
-    EventEffect, Faction, FruitAwakening, FruitAwakeningSpecialAttack, FruitBaseEffects,
-    FruitEffects, ObjectSubtype, PassiveDef, PassiveEffect, Rarity, Row, ShipActive,
-    ShipDestroyEffect, SpecialAttack, SynergyDef, Trait, Transform,
+    ActivatedObjectAbility, AtkDefStat, AttackTrait, BaseAction, BuffStat, CardDef, CardType,
+    CounterEffect, Element, EventEffect, Faction, FruitAwakening, FruitAwakeningSpecialAttack,
+    FruitBaseEffects, FruitEffects, ObjectEffects, ObjectSubtype, OnDestroyClause, PassiveDef,
+    PassiveEffect, Rarity, Row, ShipActive, ShipDestroyEffect, SpecialAttack, SynergyDef, Trait,
+    Transform, WielderClause,
 };
 
 /// `["mugiwara", "bretteur"]` → `Some(vec!["mugiwara".into(), …])`.
@@ -352,6 +353,7 @@ pub fn cards() -> Vec<CardDef> {
             bonus_atk: Some(1),
             restriction: Some("bretteur".to_string()),
             equip_effect: Some("+1 ATK. Si équipée par Zoro : +1 DEF de plus.".to_string()),
+            object_effects: Some(ObjectEffects { wielder: Some(WielderClause { name: "Zoro".to_string(), def_bonus: Some(1), ..Default::default() }), ..Default::default() }),
             ..CardDef::new(
                 "MG-009",
                 "Wado Ichimonji",
@@ -389,6 +391,7 @@ pub fn cards() -> Vec<CardDef> {
             equip_effect: Some(
                 "+1 ATK. Si détruite : le porteur gagne +1 ATK permanent.".to_string(),
             ),
+            object_effects: Some(ObjectEffects { on_destroy: Some(OnDestroyClause { bearer_atk_bonus: Some(1), ..Default::default() }), ..Default::default() }),
             ..CardDef::new(
                 "MG-011",
                 "Yubashiri",
@@ -637,6 +640,7 @@ pub fn cards() -> Vec<CardDef> {
                 "1x/partie : quand le porteur subit une attaque, absorbe les dégâts (→ 0). À votre prochain tour, infligez ce montant à un ennemi (Impact)."
                     .to_string(),
             ),
+            object_effects: Some(ObjectEffects { activated: Some(ActivatedObjectAbility { name: "Dial d'Impact".to_string(), cost: 0, once_per_game: Some(true), target: "none".to_string(), reflect_next_attack: Some(true), ..Default::default() }), ..Default::default() }),
             ..CardDef::new(
                 "MG-018",
                 "Dial d'Impact",

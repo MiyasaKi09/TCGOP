@@ -272,7 +272,8 @@ pub fn granted_attack_traits(
         return Ok(Vec::new());
     };
     let attached = card.attached_objects.clone();
-    attachments_granted_attack_traits(state, registry, &attached)
+    let name = registry.get_card_def(&card.def_id)?.name.clone();
+    attachments_granted_attack_traits(state, registry, &attached, Some(&name))
 }
 
 /// [`granted_attack_traits`] over an explicit attachment list — the form the
@@ -282,6 +283,7 @@ pub fn attachments_granted_attack_traits(
     state: &GameState,
     registry: &CardRegistry,
     attached: &[String],
+    bearer_name: Option<&str>,
 ) -> Result<Vec<AttackTrait>, EngineError> {
     let mut out: Vec<AttackTrait> = Vec::new();
     for obj_id in attached {
@@ -296,8 +298,61 @@ pub fn attachments_granted_attack_traits(
                 }
             }
         }
+        // Decision §8.65 — "Si equipee par Yasopp : … et Percant". The trait is
+        // granted to the NAMED bearer only, so it cannot live in
+        // `grants_traits`, which applies to everyone.
+        if let (Some(wb), Some(name)) = (
+            obj_def
+                .object_effects
+                .as_ref()
+                .and_then(|o| o.wielder.as_ref()),
+            bearer_name,
+        ) {
+            if name.contains(&wb.name) {
+                for t in wb.attack_traits.as_deref().unwrap_or(&[]) {
+                    if !out.contains(t) {
+                        out.push(*t);
+                    }
+                }
+            }
+        }
     }
     Ok(out)
+}
+
+/// Decision §8.65 — the object flags that hold for EVERY bearer
+/// (`ignore_shield`, `grants_haki`, `ignore_stealth`) or for the NAMED bearer
+/// (`no_dodge`). One reader, for characters and captains alike.
+/// TS: `board::wornObjectFlag`.
+pub fn worn_object_flag(
+    state: &GameState,
+    registry: &CardRegistry,
+    attached: &[String],
+    bearer_name: &str,
+    flag: &str,
+) -> Result<bool, EngineError> {
+    for obj_id in attached {
+        let Some(obj) = state.cards.get(obj_id) else {
+            continue;
+        };
+        let Some(fx) = registry.get_card_def(&obj.def_id)?.object_effects.as_ref() else {
+            continue;
+        };
+        let hit = match flag {
+            "noDodge" => fx
+                .wielder
+                .as_ref()
+                .is_some_and(|w| w.no_dodge.unwrap_or(false) && bearer_name.contains(&w.name)),
+            "ignoreShield" => fx.ignore_shield.unwrap_or(false),
+            "grantsHaki" => fx.grants_haki.unwrap_or(false),
+            "ignoreStealth" => fx.ignore_stealth.unwrap_or(false),
+            _ => false,
+        };
+        if hit {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Decision §8.5 — the maximum PV of a board instance: the printed `def.pv`
@@ -1781,9 +1836,19 @@ pub fn get_valid_targets(
     }
 
     // Apply Stealth filter (a unit stripped of Furtif this turn counts as non-stealth)
+    // Decision §8.65 — "Les attaques du porteur ignorent le Furtif" (`BW-015`
+    // Den Den Mushi Secret): the whole filter drops for that attacker.
+    let sees_through_stealth = worn_object_flag(
+        state,
+        registry,
+        &attacker.attached_objects,
+        &attacker_def.name,
+        "ignoreStealth",
+    )?;
     let mut stealthed: Vec<bool> = Vec::with_capacity(targetable.len());
     for id in &targetable {
-        let s = has_trait(state, registry, id, Trait::Stealth)?
+        let s = !sees_through_stealth
+            && has_trait(state, registry, id, Trait::Stealth)?
             && !state
                 .cards
                 .get(id)

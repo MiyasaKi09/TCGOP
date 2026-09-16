@@ -35,9 +35,41 @@ pub fn haki_threshold(haki_type: HakiType) -> u32 {
 ///
 /// `false` below the turn threshold; then `!observationUsed` for Observation,
 /// **always `false`** for Armament (a passive since v3.1), `!kingUsed` for King.
-pub fn is_haki_available(state: &GameState, player_id: PlayerId, haki_type: HakiType) -> bool {
+/// Decision §8.64 — "Vos personnages beneficient de l'esquive Observation
+/// (1x/tour), meme avant le tour 5" (`RH-001` Ben Beckman).
+///
+/// The `GrantObservationAll` passive was declared in the types and printed on
+/// the card, but NO code read it: the turn threshold was unconditional. The
+/// passive lifts that threshold and nothing else — the dodge stays once per
+/// turn and free, and Beckman has to be on the board.
+pub fn has_observation_grant(
+    state: &GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+) -> bool {
+    crate::board::get_board_characters(state, player_id)
+        .iter()
+        .any(|c| {
+            registry.get_card_def(&c.def_id).is_ok_and(|d| {
+                d.passive.as_ref().is_some_and(|p| {
+                    p.effects
+                        .iter()
+                        .any(|e| matches!(e, PassiveEffect::GrantObservationAll))
+                })
+            })
+        })
+}
+
+pub fn is_haki_available(
+    state: &GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+    haki_type: HakiType,
+) -> bool {
     let player = state.players.get(player_id);
-    if state.turn_number < haki_threshold(haki_type) {
+    let threshold_lifted =
+        haki_type == HakiType::Observation && has_observation_grant(state, registry, player_id);
+    if !threshold_lifted && state.turn_number < haki_threshold(haki_type) {
         return false;
     }
 
@@ -73,8 +105,12 @@ pub const NOT_THE_DEFENDER: &str = "Only the defender can use Observation Haki";
 ///
 /// Errors: `Observation Haki not available`, `No pending attack to dodge`,
 /// [`NOT_THE_DEFENDER`], `This attack cannot be dodged`.
-pub fn use_observation_haki(state: &mut GameState, player_id: PlayerId) -> Result<(), EngineError> {
-    if !is_haki_available(state, player_id, HakiType::Observation) {
+pub fn use_observation_haki(
+    state: &mut GameState,
+    registry: &CardRegistry,
+    player_id: PlayerId,
+) -> Result<(), EngineError> {
+    if !is_haki_available(state, registry, player_id, HakiType::Observation) {
         return Err(EngineError::illegal("Observation Haki not available"));
     }
     let Some(pending) = state.pending_attack.as_ref() else {
@@ -185,7 +221,7 @@ pub fn use_king_haki(
     ctx: &EngineContext,
     player_id: PlayerId,
 ) -> Result<(), EngineError> {
-    if !is_haki_available(state, player_id, HakiType::King) {
+    if !is_haki_available(state, registry, player_id, HakiType::King) {
         return Err(EngineError::illegal("Roi Haki not available"));
     }
     if !has_conqueror_in_play(state, registry, player_id)? {
@@ -415,34 +451,53 @@ mod tests {
         let mut s = state_with(4);
         assert!(!is_haki_available(
             &s,
+            &CardRegistry::new(),
             PlayerId::Player1,
             HakiType::Observation
         ));
         s.turn_number = 5;
         assert!(is_haki_available(
             &s,
+            &CardRegistry::new(),
             PlayerId::Player1,
             HakiType::Observation
         ));
         s.players.get_mut(PlayerId::Player1).observation_used = true;
         assert!(!is_haki_available(
             &s,
+            &CardRegistry::new(),
             PlayerId::Player1,
             HakiType::Observation
         ));
         // …per player.
         assert!(is_haki_available(
             &s,
+            &CardRegistry::new(),
             PlayerId::Player2,
             HakiType::Observation
         ));
 
         s.turn_number = 9;
-        assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::King));
+        assert!(!is_haki_available(
+            &s,
+            &CardRegistry::new(),
+            PlayerId::Player1,
+            HakiType::King
+        ));
         s.turn_number = 10;
-        assert!(is_haki_available(&s, PlayerId::Player1, HakiType::King));
+        assert!(is_haki_available(
+            &s,
+            &CardRegistry::new(),
+            PlayerId::Player1,
+            HakiType::King
+        ));
         s.players.get_mut(PlayerId::Player1).king_used = true;
-        assert!(!is_haki_available(&s, PlayerId::Player1, HakiType::King));
+        assert!(!is_haki_available(
+            &s,
+            &CardRegistry::new(),
+            PlayerId::Player1,
+            HakiType::King
+        ));
     }
 
     #[test]
@@ -451,12 +506,14 @@ mod tests {
         assert!(!s.players.get(PlayerId::Player1).armament_used);
         assert!(!is_haki_available(
             &s,
+            &CardRegistry::new(),
             PlayerId::Player1,
             HakiType::Armament
         ));
         s.players.get_mut(PlayerId::Player1).armament_used = true;
         assert!(!is_haki_available(
             &s,
+            &CardRegistry::new(),
             PlayerId::Player1,
             HakiType::Armament
         ));
@@ -468,7 +525,7 @@ mod tests {
     fn observation_dodge_cancels_the_attack_and_logs_verbatim() {
         let mut s = state_with(5);
         s.pending_attack = Some(pending());
-        use_observation_haki(&mut s, PlayerId::Player2).unwrap();
+        use_observation_haki(&mut s, &CardRegistry::new(), PlayerId::Player2).unwrap();
         assert!(s.pending_attack.is_none());
         assert!(s.players.get(PlayerId::Player2).observation_used);
         assert_eq!(s.log.len(), 1);
@@ -484,13 +541,13 @@ mod tests {
         // 1. availability is checked before the pending attack exists.
         let mut s = state_with(4);
         assert_eq!(
-            use_observation_haki(&mut s, PlayerId::Player2),
+            use_observation_haki(&mut s, &CardRegistry::new(), PlayerId::Player2),
             Err(EngineError::illegal("Observation Haki not available"))
         );
         // 2. no pending attack.
         let mut s = state_with(5);
         assert_eq!(
-            use_observation_haki(&mut s, PlayerId::Player2),
+            use_observation_haki(&mut s, &CardRegistry::new(), PlayerId::Player2),
             Err(EngineError::illegal("No pending attack to dodge"))
         );
         // 3. undodgeable attack — nothing is mutated.
@@ -499,7 +556,7 @@ mod tests {
         p.cannot_be_dodged = Some(true);
         s.pending_attack = Some(p);
         assert_eq!(
-            use_observation_haki(&mut s, PlayerId::Player2),
+            use_observation_haki(&mut s, &CardRegistry::new(), PlayerId::Player2),
             Err(EngineError::illegal("This attack cannot be dodged"))
         );
         assert!(s.pending_attack.is_some());
