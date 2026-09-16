@@ -333,7 +333,7 @@ function returnLoans(state: GameState): GameState {
     .map((c) => c.instanceId);
   if (borrowed.length === 0) return state;
 
-  const { removeFromBoard, getEmptySlots, moveAttachedObjectsInDraft } = require("./board");
+  const { removeFromBoard, getEmptySlots, moveAttachedObjectsInDraft, isSlotFree } = require("./board");
   let next = state;
   for (const id of borrowed) {
     const card = next.cards[id];
@@ -344,7 +344,7 @@ function returnLoans(state: GameState): GameState {
     const home = card.loanReturnSlot;
 
     const landing: Slot | undefined = onBoard
-      ? (home && next.players[owner].board[home] === null
+      ? (home && isSlotFree(next, owner, home)
           ? home
           : (getEmptySlots(next, owner) as Slot[])[0])
       : undefined;

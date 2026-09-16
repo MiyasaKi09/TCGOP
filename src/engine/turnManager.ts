@@ -18,6 +18,7 @@ import {
   getBoardCharacters,
   isUntargetableNow,
   captainIsUntargetable,
+  isSlotFree,
   getValidTargets,
   hasSummoningSickness,
   hasTrait,
@@ -623,7 +624,7 @@ function takeControlForTheTurn(
 /** Deploy a token body into an empty slot (no cost, no summoning use). */
 function deployToken(state: GameState, playerId: PlayerId, tokenDefId: string, slot?: Slot): GameState {
   const empties = getEmptySlots(state, playerId);
-  const target = slot && state.players[playerId].board[slot] === null ? slot : empties[0];
+  const target = slot && isSlotFree(state, playerId, slot) ? slot : empties[0];
   if (!target) return state;
   const { generateInstanceId } = require("./utils");
   const def = getCardDef(tokenDefId);
@@ -1482,7 +1483,8 @@ export function getValidActions(
         const { ADJACENCY } = require("./utils");
         const adjacent = ADJACENCY[char.slot] ?? [];
         for (const adjSlot of adjacent) {
-          if (player.board[adjSlot as keyof typeof player.board] === null) {
+          // §8.31 : ne pas proposer un deplacement vers la case du capitaine.
+          if (isSlotFree(state, playerId, adjSlot as import("@/types").Slot)) {
             actions.push({
               type: "moveCharacter",
               instanceId: char.instanceId,

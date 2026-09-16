@@ -21,6 +21,7 @@ import {
   attachmentsGrantTrait,
   attachmentsGrantedAttackTraits,
   moveAttachedObjectsInDraft,
+  isSlotFree,
 } from "./board";
 
 export type FreeFlipReason =
@@ -166,8 +167,9 @@ export function flipCaptain(
   const def = getCaptainDef(captain.defId);
   const condition = def.flipCondition;
 
-  // Check slot availability
-  if (state.players[playerId].board[slot] !== null) {
+  // Check slot availability — §8.31 : un seul predicat pour toutes les
+  // ecritures de case.
+  if (!isSlotFree(state, playerId, slot)) {
     throw new Error(`Slot ${slot} is occupied`);
   }
 

@@ -67,12 +67,33 @@ export function getCharacterInSlot(
 }
 
 /** Get empty slots for a player */
+/**
+ * Decision §8.31 — un capitaine engage occupe SA case.
+ *
+ * Le moteur web ne comptait que `player.board`, donc un personnage pouvait
+ * etre deploye, deplace ou invoque sur la case ou se tenait deja le capitaine :
+ * deux unites au meme endroit, avec toutes les lectures d'adjacence faussees.
+ * `flipCaptain` refusait pourtant deja une case occupee, donc l'asymetrie
+ * etait un bug, pas une regle. Rust : `board::captain_occupies`.
+ */
+export function captainOccupies(state: GameState, playerId: PlayerId, slot: Slot): boolean {
+  const cap = state.players[playerId].captain;
+  return cap.flipped && cap.slot === slot;
+}
+
+/**
+ * La seule question a poser avant d'ecrire dans une case.
+ * Rust : `board::is_slot_free`.
+ */
+export function isSlotFree(state: GameState, playerId: PlayerId, slot: Slot): boolean {
+  return state.players[playerId].board[slot] === null && !captainOccupies(state, playerId, slot);
+}
+
 export function getEmptySlots(
   state: GameState,
   playerId: PlayerId
 ): Slot[] {
-  const player = state.players[playerId];
-  return ALL_SLOTS.filter((s) => player.board[s] === null) as Slot[];
+  return ALL_SLOTS.filter((s) => isSlotFree(state, playerId, s as Slot)) as Slot[];
 }
 
 /** Get the slot of a card instance on the board */
@@ -522,7 +543,8 @@ export function deployCharacter(
   if (def.type !== "character") throw new Error("Not a character card");
 
   const player = state.players[playerId];
-  if (player.board[slot] !== null) throw new Error(`Slot ${slot} is occupied`);
+  // §8.31 : « libre » inclut l'absence du capitaine engage.
+  if (!isSlotFree(state, playerId, slot)) throw new Error(`Slot ${slot} is occupied`);
 
   const cost = deployCost(state, playerId, def);
   if (!canAfford(state, playerId, cost)) {
@@ -886,7 +908,8 @@ export function deployShip(
             }
           }
           if (de.deployToken) {
-            const empty = ALL_SLOTS.find((s) => p.board[s] === null);
+            // §8.31 : la case du capitaine engage n'est pas libre.
+            const empty = ALL_SLOTS.find((s) => p.board[s] === null && !(p.captain.flipped && p.captain.slot === s));
             if (empty) {
               const { generateInstanceId } = require("./utils");
               const tdef = getCardDef(de.deployToken);
@@ -944,7 +967,7 @@ export function moveCharacter(
     throw new Error(`${targetSlot} is not adjacent to ${currentSlot}`);
   }
 
-  if (player.board[targetSlot] !== null) {
+  if (!isSlotFree(state, playerId, targetSlot)) {
     throw new Error(`Slot ${targetSlot} is occupied`);
   }
 

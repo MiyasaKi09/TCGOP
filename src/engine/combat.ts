@@ -20,6 +20,7 @@ import {
   getBoardCharacters,
   getValidTargets,
   assertTargetable,
+  isSlotFree,
   healUnit,
   applyPermanentPvLoss,
   applyCaptainPermanentPvLoss,
@@ -1256,7 +1257,10 @@ export function resolveAttack(state: GameState): GameState {
         // Decision §8.37 (`betrayal`): the cell a body occupies belongs to its
         // *controller*, so that is the board the push reads and writes.
         const tgtSide = controllerOf(tgt);
-        if (slot && back[slot] && next.players[tgtSide].board[back[slot] as keyof typeof next.players.player1.board] === null) {
+        // §8.31 : la destination de la repoussee est toujours une case A*, et
+        // `flipCaptain` accepte les six cases — sans ce test, un capitaine
+        // engage en A1 se faisait recouvrir par le personnage repousse.
+        if (slot && back[slot] && isSlotFree(next, tgtSide, back[slot] as import("@/types").Slot)) {
           const dest = back[slot];
           next = produce(next, (draft) => {
             const p = draft.players[tgtSide];
