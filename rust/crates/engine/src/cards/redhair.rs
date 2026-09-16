@@ -29,7 +29,13 @@ pub fn cards() -> Vec<CardDef> {
             atk: Some(6),
             def: Some(4),
             pv: Some(8),
-            tags: tags(&["redhair"]),
+            // Decision §8.62: Beckman and Lucky Roux carry the `tireur` tag.
+            // Their signature weapons (RH-011, RH-012) require `tireur` and
+            // print "Si equipee par Beckman / Lucky Roux : …" — without the tag
+            // only Yasopp could hold all THREE rifles in the deck and those two
+            // clauses were unreachable, one of them a bonus the engine already
+            // implements.
+            tags: tags(&["redhair", "tireur"]),
             preferred_row: Some(Row::Front),
             passive: Some(PassiveDef {
                 name: "Observation de Maître".to_string(),
@@ -59,7 +65,8 @@ pub fn cards() -> Vec<CardDef> {
             atk: Some(6),
             def: Some(3),
             pv: Some(8),
-            tags: tags(&["redhair"]),
+            // Decision §8.62 — see RH-001.
+            tags: tags(&["redhair", "tireur"]),
             preferred_row: Some(Row::Front),
             passive: Some(PassiveDef {
                 name: "Quick Draw".to_string(),

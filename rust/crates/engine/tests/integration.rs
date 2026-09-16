@@ -182,6 +182,41 @@ fn all_four_decks_verify_against_the_registry() {
 /// Crocodile / Akainu": names that exist in the game only as captains. Under
 /// the character-only reading each of the three decks carried a permanently
 /// dead SR card, and `BW-011`'s Ground Death — the §8.38 × §8.48 work — could
+/// Decision §8.62 — each Red Hair rifle prints "Si equipee par <name>" and
+/// requires the `tireur` tag. Only Yasopp carried it, so Beckman's own rifle
+/// and Lucky Roux's own pistol could never reach the wielder they name, and
+/// the RH-011 wielder bonus the engine implements was dead data.
+#[test]
+fn every_named_rifle_can_reach_the_wielder_it_names() {
+    let registry = cards::registry();
+    for (weapon_id, wielder_id) in [
+        ("RH-011", "RH-001"), // Fusil de Beckman   -> Ben Beckman
+        ("RH-012", "RH-002"), // Pistolet de Lucky Roux -> Lucky Roux
+        ("RH-013", "RH-003"), // Fusil de Yasopp    -> Yasopp
+    ] {
+        let weapon = registry.get_card_def(weapon_id).expect("a shipped weapon");
+        let restriction = weapon
+            .restriction
+            .as_deref()
+            .expect("the weapon prints a restriction");
+        let wielder = registry
+            .get_card_def(wielder_id)
+            .expect("a shipped wielder");
+        assert!(
+            wielder.name.contains(restriction)
+                || wielder
+                    .tags
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|t| t == restriction),
+            "{} ({weapon_id}) names {} ({wielder_id}) but they cannot hold it",
+            weapon.name,
+            wielder.name
+        );
+    }
+}
+
 /// never be played at all.
 #[test]
 fn every_signature_fruit_has_a_bearer_in_its_own_deck() {

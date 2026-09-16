@@ -6,7 +6,12 @@ export const redhairCards: CardDef[] = [
   {
     id: "RH-001", name: "Ben Beckman", type: "character", cost: 5,
     faction: "pirate", rarity: "SR", set: "ST04",
-    atk: 6, def: 4, pv: 8, tags: ["redhair"], preferredRow: "front",
+    // Decision §8.62 : Beckman et Lucky Roux portent le tag `tireur`. Leurs
+    // armes signature (RH-011, RH-012) exigent `tireur` et impriment « Si
+    // equipee par Beckman / Lucky Roux : … » — sans le tag, seul Yasopp
+    // pouvait porter les TROIS fusils du deck et ces deux clauses etaient
+    // inatteignables, dont un bonus que le moteur implemente deja.
+    atk: 6, def: 4, pv: 8, tags: ["redhair", "tireur"], preferredRow: "front",
     passive: { name: "Observation de Maître", description: "Vos personnages bénéficient de l'esquive Observation (1x/tour), même avant le tour 5.", effects: [{ type: "grantObservationAll" }] },
     baseAction: { name: "Tir de Précision", atk: 6, description: "Le bras droit de l'Empereur." },
     specialAttack: { name: "Tir de Maître", cost: 3, atkBonus: 3, attackTraits: ["range"], immobilize: true, description: "Portée · la cible perd sa prochaine action." },
@@ -14,7 +19,8 @@ export const redhairCards: CardDef[] = [
   {
     id: "RH-002", name: "Lucky Roux", type: "character", cost: 4,
     faction: "pirate", rarity: "R", set: "ST04",
-    atk: 6, def: 3, pv: 8, tags: ["redhair"], preferredRow: "front",
+    // Decision §8.62 — voir RH-001.
+    atk: 6, def: 3, pv: 8, tags: ["redhair", "tireur"], preferredRow: "front",
     passive: { name: "Quick Draw", description: "Les attaques de Lucky Roux ne peuvent pas être esquivées.", effects: [{ type: "noDodge" }] },
     baseAction: { name: "Tir", atk: 6, description: "Tir rapide." },
     specialAttack: { name: "Tir à Bout Portant", cost: 2, atkBonus: 3, attackTraits: ["range"], description: "Portée." },
